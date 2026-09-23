@@ -104,7 +104,7 @@
 .hud-top,
 .hud-bot {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
@@ -125,6 +125,11 @@
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--color-accent);
+}
+
+.hud-top .ability-sliders {
+  margin-top: 8px;
+  max-width: 380px;
 }
 
 h1,
@@ -178,9 +183,16 @@ h2 {
 .uni-banner {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 10px;
   position: relative;
   z-index: 6;
+}
+
+.uni-cluster {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
 }
 
 .uni-side {
@@ -202,12 +214,35 @@ h2 {
 }
 
 .uni-side-head > span {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--font-display);
-  font-size: 0.75rem;
-  letter-spacing: 0.14em;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.aim-compass {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35em;
+  height: 1.35em;
+  min-width: 1.35em;
+  min-height: 1.35em;
+  padding: 0;
+  border: 1px solid var(--color-line);
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--color-surface) 70%, transparent);
+  font-size: 1.05rem;
+  letter-spacing: 0;
+  line-height: 1;
+  color: var(--color-fg);
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 .uni-side-head small {
@@ -261,7 +296,7 @@ h2 {
 .start-card {
   position: relative;
   z-index: 2;
-  width: min(440px, 100%);
+  width: min(780px, calc(100vw - 24px));
   max-height: none;
   overflow: visible;
   align-self: center;
@@ -315,6 +350,8 @@ h2 {
 .btn-primary,
 .btn-ghost,
 .cam-row button,
+.mode-grid button,
+.clock-setup button,
 .hud-actions button,
 .burst,
 .dump,
@@ -347,6 +384,24 @@ h2 {
   flex: 1;
 }
 
+.menu-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.menu-sub {
+  align-items: center;
+}
+
+.menu-blurb {
+  flex: 1 1 220px;
+  font-size: 0.78rem;
+}
+
 .cam-row {
   display: flex;
   flex-wrap: wrap;
@@ -359,10 +414,23 @@ h2 {
   gap: 6px;
 }
 
-.cam-row button.is-on {
+.cam-row button.is-on,
+.mode-grid > button.is-on {
   background: var(--color-fg);
   color: var(--color-bg);
   border-color: var(--color-fg);
+}
+
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 9.5rem);
+  gap: 6px;
+  align-items: center;
+}
+
+.mode-grid > button {
+  width: 100%;
+  white-space: nowrap;
 }
 
 .hud-actions {
@@ -442,6 +510,42 @@ h2 {
   padding-top: 0;
   border-top: none;
   margin-left: auto;
+}
+
+.lineup-strip.is-vert {
+  flex-direction: column;
+  margin-left: 0;
+  gap: 2px;
+  justify-content: center;
+}
+
+.hud-sliders {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 108px;
+  flex: 1;
+}
+
+.hud-slider-row {
+  display: grid;
+  grid-template-columns: 3.4rem 1fr;
+  gap: 4px;
+  align-items: center;
+  font-family: var(--font-display);
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.hud-slider-row input[type="range"] {
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--color-fg);
+  cursor: pointer;
 }
 
 .lineup-strip .stepper {
@@ -559,10 +663,10 @@ h2 {
   z-index: 4;
   pointer-events: none;
   flex: 1 0 100%;
-  align-self: center;
-  margin: 0 auto 4px;
+  align-self: flex-start;
+  margin: 0 0 4px;
   min-width: 0;
-  max-width: 320px;
+  max-width: 760px;
   width: 100%;
   padding: 8px 10px;
   border-radius: var(--radius-md);
@@ -624,16 +728,25 @@ h2 {
 
 .clock-setup {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px 8px;
+  grid-template-columns: repeat(4, max-content);
+  gap: 4px 8px;
   pointer-events: auto;
 }
 
-.clock-setup .btn-row {
-  grid-column: 1 / -1;
+.clock-col {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 11rem;
 }
 
-.clock-setup .btn-row button.is-on {
+.clock-col > button {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.clock-setup button.is-on {
   background: var(--color-fg);
   color: var(--color-bg);
   border-color: var(--color-fg);
@@ -643,32 +756,41 @@ h2 {
   margin: 0;
   text-align: center;
   font-family: var(--font-display);
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--color-muted);
+}
+
+.clock-untimed.drop-hint {
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
 }
 
 .clock-mins {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-width: 0;
 }
 
 .clock-mins span {
   font-family: var(--font-display);
   font-size: 0.72rem;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--color-muted);
+  white-space: nowrap;
 }
 
 .clock-mins button {
-  min-width: 36px;
-  min-height: 32px;
+  min-width: 22px;
+  min-height: 24px;
   padding: 0;
-  font-size: 1.1rem;
+  font-size: 0.95rem;
 }
 
 .clock-mins button:disabled {
@@ -676,10 +798,10 @@ h2 {
 }
 
 .clock-mins b {
-  min-width: 1.2em;
+  min-width: 0.9em;
   text-align: center;
   font-family: var(--font-display);
-  font-size: 1.15rem;
+  font-size: 0.92rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -839,7 +961,8 @@ h2 {
   border-color: var(--color-accent);
 }
 
-.whistle.cover {
+.whistle.cover,
+.whistle.offside {
   color: var(--color-fg);
 }
 
@@ -864,7 +987,7 @@ h2 {
 }
 
 .offscreen-arrow.is-puck {
-  color: var(--color-ice);
+  color: #111111;
 }
 
 .legend {

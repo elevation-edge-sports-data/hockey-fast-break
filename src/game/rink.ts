@@ -10,8 +10,9 @@ export const RIBBON_H = 0.14;
 
 export const GOAL_LINE_FROM_END = 11 * FT;
 export const BLUE_FROM_GOAL = 64 * FT;
-export const GOAL_W = 6 * FT;
-export const GOAL_H = 4 * FT;
+const NET_FACE = Math.sqrt(1.25);
+export const GOAL_W = 6 * FT * NET_FACE;
+export const GOAL_H = 4 * FT * NET_FACE;
 export const GOAL_D = (44 / 12) * FT;
 export const GOAL_D_TOP = (22 / 12) * FT;
 export const CREASE_R = 6 * FT;
@@ -19,10 +20,18 @@ export const FACEOFF_R = 15 * FT;
 export const FACEOFF_MARK_R = FACEOFF_R * 0.88;
 export const DOT_R = FT;
 export const HASH_L = 4 * FT;
+export const HASH_MARK_L = 2 * FT;
+export const HASH_MARK_INSIDE = (5 + 11 / 12) * FT;
+export const L_STEM = 4 * FT;
+export const L_ARM = (2 + 10 / 12) * FT;
+export const L_GAP = (18 / 12) * FT;
+export const L_INSET = FT;
+export const MARK_W = (2 / 12) * FT;
 
 export const GOAL_LINE_X = RINK_L / 2 - GOAL_LINE_FROM_END;
 export const BLUE_X = GOAL_LINE_X - BLUE_FROM_GOAL;
 export const FACEOFF_EZ_X = GOAL_LINE_X - 20 * FT;
+export const FACEOFF_NZ_X = BLUE_X - 5 * FT;
 export const FACEOFF_SPOT_Z = 22 * FT;
 
 export const LINE_RED = "#c8102e";

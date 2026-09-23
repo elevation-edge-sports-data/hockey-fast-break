@@ -1,15 +1,29 @@
 import { create } from "zustand";
-import { COL_KIT, DAL_KIT, UNIFORMS, VGK_KIT } from "./uniforms";
+import { COL_KIT, UNIFORMS } from "./uniforms";
 
 export type CamMode = "classic" | "chase" | "broadcast" | "high" | "freestyle";
 export type ArenaLook = "light" | "dark";
 
 export type Lineup = { g: number; d: number; o: number };
+export type PlayMode = "practice" | "scrimmage" | "game" | "drill";
+export type DrillTargets = 8 | 12;
+export type ControlProfile = "classic" | "wings";
 
 export const LINEUP_CAP = 6;
 
-export const DEFAULT_HOME: Lineup = { g: 1, d: 1, o: 2 };
-export const DEFAULT_AWAY: Lineup = { g: 1, d: 1, o: 1 };
+export const MODE_LINEUPS: Record<PlayMode, { home: Lineup; away: Lineup }> = {
+  practice: { home: { g: 0, d: 0, o: 1 }, away: { g: 1, d: 0, o: 0 } },
+  scrimmage: { home: { g: 1, d: 1, o: 2 }, away: { g: 1, d: 1, o: 2 } },
+  game: { home: { g: 1, d: 2, o: 3 }, away: { g: 1, d: 2, o: 3 } },
+  drill: { home: { g: 0, d: 0, o: 1 }, away: { g: 0, d: 0, o: 0 } },
+};
+
+export function modeLineupCap(mode: PlayMode): number {
+  return mode === "scrimmage" ? 5 : 6;
+}
+
+export const DEFAULT_HOME: Lineup = { ...MODE_LINEUPS.scrimmage.home };
+export const DEFAULT_AWAY: Lineup = { ...MODE_LINEUPS.scrimmage.away };
 
 export function lineupTotal(l: Lineup): number {
   return l.g + l.d + l.o;
@@ -20,11 +34,11 @@ export function clampSlot(slot: keyof Lineup, v: number): number {
   return Math.max(0, Math.min(max, Math.round(v)));
 }
 
-export function patchLineup(l: Lineup, slot: keyof Lineup, v: number): Lineup {
+export function patchLineup(l: Lineup, slot: keyof Lineup, v: number, cap = LINEUP_CAP): Lineup {
   const n = clampSlot(slot, v);
   const next = { ...l, [slot]: n };
   const total = lineupTotal(next);
-  if (total > LINEUP_CAP || total < 1) return l;
+  if (total > cap) return l;
   return next;
 }
 
@@ -60,15 +74,19 @@ type GameUi = {
   chargeKind: "pass" | "shot" | null;
   homeScore: number;
   awayScore: number;
-  whistle: "goal" | "cover" | null;
+  whistle: "goal" | "cover" | "offside" | null;
   goalSide: "home" | "away" | null;
   replay: boolean;
-  clockMode: "practice" | "game";
+  clockMode: PlayMode;
+  controlProfile: ControlProfile;
   gameMinutes: number;
   periodClock: number;
   periodOver: boolean;
+  drillScore: number;
+  drillTargets: DrillTargets;
   checkRefs: boolean;
   checkGoalies: boolean;
+  offsides: boolean;
   gameSpeed: number;
   cpuOffense: number;
   cpuDefense: number;
@@ -83,6 +101,8 @@ type GameUi = {
   setFreeCamLive: (v: boolean) => void;
   setHomeKit: (id: number) => void;
   setAwayKit: (id: number) => void;
+  rerollAwayKit: () => void;
+  rerollClockMode: () => void;
   setHomeLineup: (l: Lineup) => void;
   setAwayLineup: (l: Lineup) => void;
   setLiveHome: (l: Lineup) => void;
@@ -97,15 +117,19 @@ type GameUi = {
   setCharge: (n: number, kind: "pass" | "shot" | null) => void;
   setHomeScore: (n: number) => void;
   setAwayScore: (n: number) => void;
-  setWhistle: (w: "goal" | "cover" | null) => void;
+  setWhistle: (w: "goal" | "cover" | "offside" | null) => void;
   setGoalSide: (s: "home" | "away" | null) => void;
   setReplay: (v: boolean) => void;
-  setClockMode: (m: "practice" | "game") => void;
+  setClockMode: (m: PlayMode) => void;
+  setControlProfile: (v: ControlProfile) => void;
   setGameMinutes: (n: number) => void;
   setPeriodClock: (n: number) => void;
   setPeriodOver: (v: boolean) => void;
+  setDrillScore: (n: number) => void;
+  setDrillTargets: (n: DrillTargets) => void;
   setCheckRefs: (v: boolean) => void;
   setCheckGoalies: (v: boolean) => void;
+  setOffsides: (v: boolean) => void;
   setGameSpeed: (n: number) => void;
   setCpuOffense: (n: number) => void;
   setCpuDefense: (n: number) => void;
@@ -133,19 +157,61 @@ function saveLook(v: ArenaLook): void {
   }
 }
 
-function loadClockMode(): "practice" | "game" {
+function rollClockMode(): PlayMode {
+  const r = Math.random();
+  if (r < 0.3) return "drill";
+  if (r < 0.4) return "practice";
+  if (r < 0.5) return "scrimmage";
+  return "game";
+}
+
+function loadClockMode(): PlayMode {
+  return rollClockMode();
+}
+
+function loadDrillTargets(): DrillTargets {
   try {
-    const raw = localStorage.getItem("hfb-clock-mode");
-    if (raw === "game" || raw === "practice") return raw;
+    const raw = localStorage.getItem("hfb-drill-targets");
+    if (raw === "12") return 12;
   } catch {
     /* ignore */
   }
-  return "practice";
+  return 8;
 }
 
-function saveClockMode(v: "practice" | "game"): void {
+function saveDrillTargets(n: DrillTargets): void {
   try {
-    localStorage.setItem("hfb-clock-mode", v);
+    localStorage.setItem("hfb-drill-targets", String(n));
+  } catch {
+    /* ignore */
+  }
+}
+
+function saveClockMode(v: PlayMode): void {
+  try {
+    localStorage.setItem("hfb-play-mode", v);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function persistClockMode(v: PlayMode): void {
+  saveClockMode(v);
+}
+
+function loadControlProfile(): ControlProfile {
+  try {
+    const raw = localStorage.getItem("hfb-control-profile");
+    if (raw === "classic" || raw === "wings") return raw;
+  } catch {
+    /* ignore */
+  }
+  return "classic";
+}
+
+function saveControlProfile(v: ControlProfile): void {
+  try {
+    localStorage.setItem("hfb-control-profile", v);
   } catch {
     /* ignore */
   }
@@ -153,8 +219,10 @@ function saveClockMode(v: "practice" | "game"): void {
 
 function loadGameMinutes(): number {
   try {
-    const n = Number(localStorage.getItem("hfb-game-minutes"));
-    if (Number.isFinite(n)) return Math.max(1, Math.min(5, Math.round(n)));
+    const raw = localStorage.getItem("hfb-game-length");
+    if (raw == null || raw === "") return 2;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 1) return Math.max(1, Math.min(5, Math.round(n)));
   } catch {
     /* ignore */
   }
@@ -163,14 +231,15 @@ function loadGameMinutes(): number {
 
 function saveGameMinutes(n: number): void {
   try {
-    localStorage.setItem("hfb-game-minutes", String(n));
+    localStorage.setItem("hfb-game-length", String(n));
   } catch {
     /* ignore */
   }
 }
 
 function rollAwayKit(): number {
-  return Math.random() < 0.5 ? DAL_KIT : VGK_KIT;
+  const ids = UNIFORMS.map((u) => u.id).filter((id) => id !== COL_KIT);
+  return ids[Math.floor(Math.random() * ids.length)] ?? 2;
 }
 
 function loadFlag(key: string, fallback: boolean): boolean {
@@ -197,6 +266,8 @@ function snapSlider(n: number, min: number, max: number): number {
   return min + Math.max(0, Math.min(20, t)) * ((max - min) / 20);
 }
 
+const INITIAL_MODE = loadClockMode();
+
 export const useGame = create<GameUi>((set, get) => ({
   playing: false,
   paused: false,
@@ -205,10 +276,10 @@ export const useGame = create<GameUi>((set, get) => ({
   freeCamLive: false,
   homeKit: COL_KIT,
   awayKit: rollAwayKit(),
-  homeLineup: { ...DEFAULT_HOME },
-  awayLineup: { ...DEFAULT_AWAY },
-  liveHome: { ...DEFAULT_HOME },
-  liveAway: { ...DEFAULT_AWAY },
+  homeLineup: { ...MODE_LINEUPS[INITIAL_MODE].home },
+  awayLineup: { ...MODE_LINEUPS[INITIAL_MODE].away },
+  liveHome: { ...MODE_LINEUPS[INITIAL_MODE].home },
+  liveAway: { ...MODE_LINEUPS[INITIAL_MODE].away },
   lineupRev: 0,
   powerPlay: loadFlag("hfb-power-play", true),
   speed: 0,
@@ -223,12 +294,16 @@ export const useGame = create<GameUi>((set, get) => ({
   whistle: null,
   goalSide: null,
   replay: false,
-  clockMode: loadClockMode(),
+  clockMode: INITIAL_MODE,
+  controlProfile: loadControlProfile(),
   gameMinutes: loadGameMinutes(),
-  periodClock: 1200,
+  periodClock: INITIAL_MODE === "drill" ? 60 : 1200,
   periodOver: false,
+  drillScore: 0,
+  drillTargets: loadDrillTargets(),
   checkRefs: loadFlag("hfb-check-refs", true),
   checkGoalies: loadFlag("hfb-check-goalies", true),
+  offsides: INITIAL_MODE === "game",
   gameSpeed: 1,
   cpuOffense: 1,
   cpuDefense: 1,
@@ -252,6 +327,18 @@ export const useGame = create<GameUi>((set, get) => ({
     if (id === home) return;
     if (id < 0 || id >= UNIFORMS.length) return;
     set({ awayKit: id, lineupRev: get().lineupRev + 1 });
+  },
+  rerollClockMode: () => {
+    get().setClockMode(rollClockMode());
+  },
+  rerollAwayKit: () => {
+    const home = get().homeKit;
+    const away = get().awayKit;
+    const other = UNIFORMS.map((u) => u.id).filter((id) => id !== home && id !== away);
+    const pool = other.length ? other : UNIFORMS.map((u) => u.id).filter((id) => id !== home);
+    const next = pool[Math.floor(Math.random() * pool.length)];
+    if (next === undefined || next === away) return;
+    set({ awayKit: next, lineupRev: get().lineupRev + 1 });
   },
   setHomeLineup: (l) => {
     set({ homeLineup: l, liveHome: { g: l.g, d: l.d, o: l.o }, lineupRev: get().lineupRev + 1 });
@@ -280,9 +367,25 @@ export const useGame = create<GameUi>((set, get) => ({
   setWhistle: (w) => set({ whistle: w }),
   setGoalSide: (s) => set({ goalSide: s }),
   setReplay: (v) => set({ replay: v }),
+  setControlProfile: (v) => {
+    saveControlProfile(v);
+    set({ controlProfile: v });
+  },
   setClockMode: (m) => {
     saveClockMode(m);
-    set({ clockMode: m, periodOver: false, periodClock: m === "game" ? get().periodClock || 1200 : 1200 });
+    const lu = MODE_LINEUPS[m];
+    set({
+      clockMode: m,
+      homeLineup: { ...lu.home },
+      awayLineup: { ...lu.away },
+      liveHome: { ...lu.home },
+      liveAway: { ...lu.away },
+      lineupRev: get().lineupRev + 1,
+      periodOver: false,
+      periodClock: m === "game" ? get().periodClock || 1200 : m === "drill" ? 60 : 1200,
+      drillScore: 0,
+      offsides: m === "game",
+    });
   },
   setGameMinutes: (n) => {
     const minutes = Math.max(1, Math.min(5, Math.round(n)));
@@ -291,6 +394,12 @@ export const useGame = create<GameUi>((set, get) => ({
   },
   setPeriodClock: (n) => set({ periodClock: n }),
   setPeriodOver: (v) => set({ periodOver: v }),
+  setDrillScore: (n) => set({ drillScore: n }),
+  setDrillTargets: (n) => {
+    const v: DrillTargets = n === 12 ? 12 : 8;
+    saveDrillTargets(v);
+    set({ drillTargets: v });
+  },
   setCheckRefs: (v) => {
     saveFlag("hfb-check-refs", v);
     set({ checkRefs: v });
@@ -298,6 +407,10 @@ export const useGame = create<GameUi>((set, get) => ({
   setCheckGoalies: (v) => {
     saveFlag("hfb-check-goalies", v);
     set({ checkGoalies: v });
+  },
+  setOffsides: (v) => {
+    saveFlag("hfb-offsides", v);
+    set({ offsides: v });
   },
   setGameSpeed: (n) => set({ gameSpeed: snapSlider(n, 0.5, 1.5) }),
   setCpuOffense: (n) => set({ cpuOffense: snapSlider(n, 0, 2) }),

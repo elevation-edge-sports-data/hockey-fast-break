@@ -83,7 +83,7 @@ World axes: +X is toward the CPU/away net for the home team. Classic camera
 
 ## Product defaults (do not change unless asked)
 
-- Home COL (Avalanche blue `#236192`, not navy), away DAL or VGK
+- Home burgundy and blue (`#236192` on helmet/yoke/pants, not navy), away green and black
 - Light rink is default; dark is an explicit mode
 - Lineup UI label is **F (Forwards)** — the field is still `lineup.o`
 - Shot-speed HUD shows **max speed of the current shot attempt only**

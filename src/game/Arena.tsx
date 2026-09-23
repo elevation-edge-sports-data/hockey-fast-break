@@ -8,11 +8,11 @@ import {
   createScoreboardCanvas,
   mixHex,
 } from "./iceTexture";
-import { GOAL_LINE_X, RINK_W } from "./rink";
+import { BOARD_H, CORNER_R, GLASS_H, GOAL_LINE_X, RINK_L, RINK_W } from "./rink";
 import { rinkPerimeter } from "./rinkGeom";
 import { kitById } from "./uniforms";
 import { useGame, type ArenaLook } from "./store";
-import { jumboReplayView, penaltyNumbers, stepJumboReplay, world } from "./sim";
+import { benchGoalieNumber, defendDir, jumboReplayView, penaltyNumbers, stepJumboReplay, world } from "./sim";
 import { SeatedPlayer } from "./PlayerMesh";
 
 const seatGeo = new THREE.BoxGeometry(0.48, 0.36, 0.44);
@@ -20,12 +20,22 @@ const personGeo = new THREE.CylinderGeometry(0.1, 0.12, 0.34, 5);
 
 type SeatSpot = { x: number; y: number; z: number; rot: number; awayFan: boolean };
 
+function skipRinkside(x: number, z: number): boolean {
+  if (Math.abs(x) > RINK_L / 2 - CORNER_R + 0.6) return false;
+  const out = Math.abs(z) - RINK_W / 2;
+  if (out < 0.15 || out > 3.4) return false;
+  if (z < 0 && Math.abs(x) < 10.6) return true;
+  if (z > 0 && Math.abs(x) < 4.1) return true;
+  return false;
+}
+
 function buildStands(
   rows: number,
   gap: number,
   y0: number,
   rowD: number,
   rise: number,
+  skip?: (x: number, z: number) => boolean,
 ): SeatSpot[] {
   const spots: SeatSpot[] = [];
   const seatW = 0.72;
@@ -53,7 +63,7 @@ function buildStands(
         const t = (nextSeat - dist) / len;
         const x = a.x + dx * t;
         const z = a.z + dz * t;
-        spots.push({ x, y, z, rot, awayFan: false });
+        if (!skip?.(x, z)) spots.push({ x, y, z, rot, awayFan: false });
         nextSeat += seatW;
       }
       dist += len;
@@ -62,24 +72,23 @@ function buildStands(
   return spots;
 }
 
-const LOWER = buildStands(16, 4.9, 1.32, 0.51, 0.25);
-const UPPER = buildStands(7, 13.8, 6.35, 1.08, 0.54);
+const GLASS = buildStands(2, 0.52, 0.96, 0.52, 0.1, skipRinkside);
+const INNER = buildStands(2, 1.56, 1.16, 0.5, 0.08, skipRinkside);
+const LOWER = buildStands(21, 2.5, 1.28, 0.51, 0.18, skipRinkside);
+const UPPER = buildStands(14, 13.8, 6.35, 0.54, 0.27);
 const THIRD = buildStands(12, 21.8, 10.9, 0.56, 0.28).filter(
-  (p) => !(p.z > RINK_W / 2 + 25.6 && Math.abs(p.x) < 9.4 && p.y > 13.4),
+  (p) => !(p.z > RINK_W / 2 + 25.6 && p.x > -9.4 && p.x < 28.2 && p.y > 13.4),
 );
-const STANDS = [...LOWER, ...UPPER, ...THIRD];
+const STANDS = [...GLASS, ...INNER, ...LOWER, ...UPPER, ...THIRD];
 (() => {
-  const nAway = Math.round(STANDS.length * 0.1);
+  const nAway = Math.round(STANDS.length * 0.05);
   const pocket = STANDS.map((p, i) => ({ p, i }))
-    .filter(({ p }) => p.z > RINK_W / 2 + 1.6 && p.x > 0.6)
-    .sort((a, b) => b.p.z + b.p.x * 0.15 - (a.p.z + a.p.x * 0.15));
+    .filter(({ p }) => p.y >= 10.9 && p.x > 0 && p.z < 0)
+    .sort((a, b) => a.p.z - b.p.z || Math.abs(a.p.x - 5) - Math.abs(b.p.x - 5));
   const away = new Set<number>();
   for (const { i } of pocket) {
     if (away.size >= nAway) break;
     away.add(i);
-  }
-  for (let k = 0; away.size < nAway && k < STANDS.length; k++) {
-    away.add((k * 19 + 7) % STANDS.length);
   }
   for (const i of away) STANDS[i]!.awayFan = true;
 })();
@@ -150,8 +159,11 @@ function SeatDeck() {
     const crowd = crowdRef.current;
     if (!seats || !crowd) return;
     const dummy = _crowdDummy;
-    const on = world.goalTicker > 0 && !!world.goalSide;
-    const scoringHome = world.goalSide === "home";
+    const ui = useGame.getState();
+    const winHome = world.periodOver && ui.homeScore > ui.awayScore;
+    const winAway = world.periodOver && ui.awayScore > ui.homeScore;
+    const on = (world.goalTicker > 0 && !!world.goalSide) || winHome || winAway;
+    const scoringHome = winHome || (!world.periodOver && world.goalSide === "home");
     const t = world.time;
     const cx = camera.position.x;
     const cy = camera.position.y;
@@ -172,13 +184,7 @@ function SeatDeck() {
       const dist = Math.hypot(vx, vy, vz);
       const depth = vx * fx + vy * fy + vz * fz;
       const below = -(vx * upx + vy * upy + vz * upz);
-      const longSide = Math.abs(p.z) > RINK_W / 2 + 0.15;
-      const lowerBowl = p.y < 5.5;
-      const nearLong = longSide && lowerBowl && below > -1.2 && depth < 18;
-      const nearEnd = p.x < cx + 3.2 && p.y < 6.2;
-      const nearCam = dist < 11;
-      const inFrontLow = cy < 8 && lowerBowl && depth > 0.4 && depth < 14 && below > -2.4;
-      const hide = nearLong || nearEnd || nearCam || inFrontLow;
+      const hide = dist < 4.4 && depth > 0 && depth < 5.2 && p.y < 4.2 && below > 0.15;
       const sc = hide ? 0.001 : 1;
       let hop = 0;
       if (on && p.awayFan !== scoringHome) {
@@ -411,25 +417,25 @@ function LightRig({ look }: { look: ArenaLook }) {
       netGlow.current.color.set(hex);
       netGlow.current.intensity = scored ? (dark ? 140 : 640) * (partyOn ? pulse : 0.55) : 0;
     }
-    if (amb.current) amb.current.intensity = (dark ? 0.46 : 0.28) + (partyOn ? 1.05 * pulse : 0);
+    if (amb.current) amb.current.intensity = (dark ? 0.62 : 0.5) + (partyOn ? 1.05 * pulse : 0);
     if (hemi.current) {
       if (partyOn) {
         hemi.current.color.set(hex);
-        hemi.current.intensity = (dark ? 0.34 : 0.62) + 0.55 * pulse;
+        hemi.current.intensity = (dark ? 0.5 : 0.88) + 0.55 * pulse;
       } else {
-        hemi.current.color.set(dark ? "#9aabbc" : "#c5d4e4");
-        hemi.current.intensity = dark ? 0.34 : 0.62;
+        hemi.current.color.set(dark ? "#b4c4d4" : "#d4e0ec");
+        hemi.current.intensity = dark ? 0.5 : 0.88;
       }
     }
   });
   return (
     <group>
-      <hemisphereLight ref={hemi} args={dark ? ["#9aabbc", "#1c1814", 0.34] : ["#c5d4e4", "#2a241c", 0.62]} />
-      <ambientLight ref={amb} intensity={dark ? 0.46 : 0.28} />
+      <hemisphereLight ref={hemi} args={dark ? ["#b4c4d4", "#2a2620", 0.5] : ["#d4e0ec", "#3a3428", 0.88]} />
+      <ambientLight ref={amb} intensity={dark ? 0.62 : 0.5} />
       <directionalLight
         position={dark ? [8, 32, 6] : [10, 28, 8]}
-        intensity={dark ? 0.62 : 1.45}
-        color={dark ? "#e8e4dc" : "#f3efe6"}
+        intensity={dark ? 0.95 : 1.75}
+        color={dark ? "#efeae2" : "#f7f3ec"}
       />
       {spots.map((p, i) => (
         <group key={i}>
@@ -573,8 +579,12 @@ function Jumbotron() {
     const celebrating = world.whistle === "goal";
     g.visible =
       cam !== "high" &&
+      cam !== "classic" &&
+      cam !== "chase" &&
+      cam !== "broadcast" &&
       !overhead &&
-      (celebrating || ((cam === "freestyle" || paused) && far && !occludes));
+      !occludes &&
+      (celebrating || ((cam === "freestyle" || paused) && far));
 
     const scoring = world.goalSide ?? goalSide;
     const fill =
@@ -662,8 +672,8 @@ function PressBox() {
   const y = deckTopY + 0.62 + boxH / 2;
   const z = RINK_W / 2 + 21.8 + 11 * 0.56 - 0.2;
   if (cam === "high") return null;
-  return (
-    <group position={[0, y, z]}>
+  const bay = (ox: number) => (
+    <group key={ox} position={[ox, 0, 0]}>
       <mesh material={shell} position={[0, 0, 0.2]}>
         <boxGeometry args={[18.4, boxH, 4.6]} />
       </mesh>
@@ -675,6 +685,12 @@ function PressBox() {
           <boxGeometry args={[2.7, 2.15, 0.08]} />
         </mesh>
       ))}
+    </group>
+  );
+  return (
+    <group position={[0, y, z]}>
+      {bay(0)}
+      {bay(18.4)}
     </group>
   );
 }
@@ -704,8 +720,14 @@ function Truss() {
   );
 }
 
-const HOME_BENCH_NUMS = [84, 42, 25, 11, 10];
-const AWAY_BENCH_NUMS = [2, 4, 9, 14, 17];
+const HOME_BENCH_NUMS = [84, 62, 42, 25, 11, 10];
+const AWAY_BENCH_NUMS = [2, 4, 9, 14, 17, 19];
+const HOME_BENCH_XS = [-9.15, -7.75, -6.35, -4.95, -3.55, -2.15, -0.75];
+const AWAY_BENCH_XS = [0.75, 2.15, 3.55, 4.95, 6.35, 7.75, 9.15];
+
+function penaltyBoxWidth(n: number): number {
+  return n <= 2 ? 2.6 : Math.min(5.1, 1.15 + n * 0.96);
+}
 
 function PenaltyBox({
   x,
@@ -729,23 +751,24 @@ function PenaltyBox({
     [],
   );
   const n = sitters?.length ?? 0;
-  const w = n <= 2 ? 2.6 : Math.min(5.1, 1.15 + n * 0.96);
+  const w = penaltyBoxWidth(n);
+  const gY = BOARD_H + GLASS_H / 2;
   return (
-    <group position={[x, 0, z]}>
+    <group position={[x, 0, z]} rotation={[0, Math.PI, 0]}>
       <mesh position={[0, 0.56, -0.12]} material={wood}>
         <boxGeometry args={[w, 0.1, 0.55]} />
       </mesh>
       <mesh position={[0, 0.28, -0.32]} material={wood}>
         <boxGeometry args={[w, 0.56, 0.22]} />
       </mesh>
-      <mesh position={[0, 1.05, -0.52]} material={glass}>
-        <boxGeometry args={[w - 0.05, 1.05, 0.06]} />
+      <mesh position={[0, gY, -0.52]} material={glass}>
+        <boxGeometry args={[w - 0.05, GLASS_H, 0.06]} />
       </mesh>
-      <mesh position={[-(w / 2 - 0.05), 1.05, 0]} material={glass}>
-        <boxGeometry args={[0.06, 1.05, 1.1]} />
+      <mesh position={[-(w / 2 - 0.05), gY, 0]} material={glass}>
+        <boxGeometry args={[0.06, GLASS_H, 1.1]} />
       </mesh>
-      <mesh position={[w / 2 - 0.05, 1.05, 0]} material={glass}>
-        <boxGeometry args={[0.06, 1.05, 1.1]} />
+      <mesh position={[w / 2 - 0.05, gY, 0]} material={glass}>
+        <boxGeometry args={[0.06, GLASS_H, 1.1]} />
       </mesh>
       {sitters?.map((s, i) => (
         <group
@@ -764,41 +787,75 @@ function Benches() {
   const away = kitById(useGame((s) => s.awayKit));
   const liveHome = useGame((s) => s.liveHome);
   const liveAway = useGame((s) => s.liveAway);
-  const homeBox = penaltyNumbers("home", liveHome);
-  const awayBox = penaltyNumbers("away", liveAway);
+  useGame((s) => s.lineupRev);
+  const practice = useGame((s) => s.clockMode) === "practice";
+  const homeBox = practice ? [] : penaltyNumbers("home", liveHome);
+  const awayBox = practice ? [] : penaltyNumbers("away", liveAway);
+  const homeGSlot = defendDir("home") < 0 ? 0 : HOME_BENCH_XS.length - 1;
+  const awayGSlot = defendDir("away") < 0 ? 0 : AWAY_BENCH_XS.length - 1;
+  const homeGNum = benchGoalieNumber("home", liveHome.g);
+  const awayGNum = benchGoalieNumber("away", liveAway.g);
   const wood = useMemo(() => new THREE.MeshStandardMaterial({ color: "#d8dde3", roughness: 0.5 }), []);
-  const zBench = RINK_W / 2 + 1.58;
-  const zBox = -RINK_W / 2 - 1.55;
-  const homeXs = [-7.4, -5.9, -4.4, -2.9, -1.4];
-  const awayXs = [1.4, 2.9, 4.4, 5.9, 7.4];
+  const glass = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: "#c8d8e8",
+        transparent: true,
+        opacity: 0.22,
+        roughness: 0.12,
+        metalness: 0.08,
+      }),
+    [],
+  );
+  const zBench = -RINK_W / 2 - 1.58;
+  const zBox = RINK_W / 2 + 1.55;
+  const gY = BOARD_H + GLASS_H / 2;
+  const benchW = 19.6;
   return (
     <group>
-      <mesh position={[0, 0.7, zBench - 0.08]} material={wood}>
-        <boxGeometry args={[16.4, 0.1, 0.58]} />
+      <mesh position={[0, 0.7, zBench + 0.08]} material={wood}>
+        <boxGeometry args={[benchW, 0.1, 0.58]} />
       </mesh>
-      <mesh position={[0, 0.34, zBench + 0.22]} material={wood}>
-        <boxGeometry args={[16.4, 0.68, 0.28]} />
+      <mesh position={[0, 0.34, zBench - 0.22]} material={wood}>
+        <boxGeometry args={[benchW, 0.68, 0.28]} />
       </mesh>
-      <mesh position={[0, 1.05, zBench + 0.48]} material={wood}>
-        <boxGeometry args={[16.4, 0.58, 0.12]} />
+      <mesh position={[0, 0.7, zBench - 0.48]} material={wood}>
+        <boxGeometry args={[benchW, 0.22, 0.12]} />
       </mesh>
-      {homeXs.map((x, i) => (
-        <group key={`h${HOME_BENCH_NUMS[i]}-${home.id}`} position={[x, 0.75, zBench + 0.04]} rotation={[0, Math.PI, 0]}>
-          <SeatedPlayer kit={home} number={HOME_BENCH_NUMS[i]!} holdStick={i % 2 === 0} />
-        </group>
-      ))}
-      {awayXs.map((x, i) => (
-        <group key={`a${AWAY_BENCH_NUMS[i]}-${away.id}`} position={[x, 0.75, zBench + 0.04]} rotation={[0, Math.PI, 0]}>
-          <SeatedPlayer kit={away} number={AWAY_BENCH_NUMS[i]!} holdStick={i % 2 === 1} />
-        </group>
-      ))}
+      <mesh position={[0, gY, zBench - 0.62]} material={glass}>
+        <boxGeometry args={[benchW, GLASS_H, 0.06]} />
+      </mesh>
+      <mesh position={[-(benchW / 2), gY, zBench - 0.18]} material={glass}>
+        <boxGeometry args={[0.06, GLASS_H, 1.05]} />
+      </mesh>
+      <mesh position={[benchW / 2, gY, zBench - 0.18]} material={glass}>
+        <boxGeometry args={[0.06, GLASS_H, 1.05]} />
+      </mesh>
+      {HOME_BENCH_XS.map((x, i) => {
+        const goalie = i === homeGSlot;
+        const number = goalie ? homeGNum : HOME_BENCH_NUMS[i < homeGSlot ? i : i - 1]!;
+        return (
+          <group key={`h${number}-${home.id}`} position={[x, 0.75, zBench - 0.04]}>
+            <SeatedPlayer kit={home} number={number} holdStick={!goalie && i % 2 === 0} goalie={goalie} />
+          </group>
+        );
+      })}
+      {AWAY_BENCH_XS.map((x, i) => {
+        const goalie = i === awayGSlot;
+        const number = goalie ? awayGNum : AWAY_BENCH_NUMS[i < awayGSlot ? i : i - 1]!;
+        return (
+          <group key={`a${number}-${away.id}`} position={[x, 0.75, zBench - 0.04]}>
+            <SeatedPlayer kit={away} number={number} holdStick={!goalie && i % 2 === 1} goalie={goalie} />
+          </group>
+        );
+      })}
       <PenaltyBox
-        x={-3.15}
+        x={-(penaltyBoxWidth(homeBox.length) / 2 + 0.05)}
         z={zBox}
         sitters={homeBox.map((number) => ({ kit: home, number }))}
       />
       <PenaltyBox
-        x={3.15}
+        x={penaltyBoxWidth(awayBox.length) / 2 + 0.05}
         z={zBox}
         sitters={awayBox.map((number) => ({ kit: away, number }))}
       />

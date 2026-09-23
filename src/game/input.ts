@@ -184,7 +184,11 @@ function radialDeadzone(x: number, y: number, dz = 0.1): { x: number; y: number 
   return { x: x * scale, y: y * scale };
 }
 
-function readPad(): {
+const T9_ID = /1949.*0402|Vendor:\s*1949\s*Product:\s*0402|\bT-?9\b|Terios/i;
+const T9_BTN = [0, 1, 3, 4, 6, 7, 8, 9, 10, 11, 13, 14];
+const T9_HAT = [-1, 1, -0.71, 0.71, 0.43, 0.14, -0.14, -0.43];
+
+type PadRead = {
   mx: number;
   my: number;
   ax: number;
@@ -201,49 +205,129 @@ function readPad(): {
   view: boolean;
   connected: boolean;
   name: string | null;
-} {
+};
+
+function isT9Pad(pad: Gamepad): boolean {
+  return T9_ID.test(pad.id || "");
+}
+
+function t9Raw(pad: Gamepad): boolean {
+  return isT9Pad(pad) && pad.mapping !== "standard";
+}
+
+function t9HatDown(pad: Gamepad): boolean {
+  const hat = pad.axes[9] ?? 3.29;
+  if (hat >= 2.5) return false;
+  let best = 0.35;
+  for (const v of T9_HAT) {
+    const dist = Math.abs(hat - v);
+    if (dist < best) best = dist;
+  }
+  return best < 0.35;
+}
+
+function padLive(pad: Gamepad): boolean {
+  for (const b of pad.buttons) {
+    if (b && (b.pressed || b.value > 0.2)) return true;
+  }
+  const raw = t9Raw(pad);
+  for (let i = 0; i < pad.axes.length; i++) {
+    if (raw && i === 9) continue;
+    if (Math.abs(pad.axes[i] ?? 0) > 0.2) return true;
+  }
+  return raw && t9HatDown(pad);
+}
+
+function t9Button(pad: Gamepad, standardIndex: number): boolean {
+  const idx = T9_BTN[standardIndex];
+  if (idx === undefined) return false;
+  const b = pad.buttons[idx];
+  return !!b && (b.pressed || b.value > 0.4);
+}
+
+function readStandardPad(pad: Gamepad): PadRead {
+  const stick = radialDeadzone(pad.axes[0] ?? 0, pad.axes[1] ?? 0);
+  const aim = radialDeadzone(pad.axes[2] ?? 0, pad.axes[3] ?? 0);
+  return {
+    mx: stick.x,
+    my: -stick.y,
+    ax: aim.x,
+    ay: -aim.y,
+    a: Boolean(pad.buttons[0]?.pressed),
+    b: Boolean(pad.buttons[1]?.pressed),
+    x: Boolean(pad.buttons[2]?.pressed),
+    y: Boolean(pad.buttons[3]?.pressed),
+    r3: Boolean(pad.buttons[11]?.pressed),
+    lt: Boolean(pad.buttons[6]?.pressed) || (pad.buttons[6]?.value ?? 0) > 0.42,
+    rt: Boolean(pad.buttons[7]?.pressed) || (pad.buttons[7]?.value ?? 0) > 0.42,
+    lb: Boolean(pad.buttons[4]?.pressed),
+    rb: Boolean(pad.buttons[5]?.pressed),
+    view: Boolean(pad.buttons[8]?.pressed),
+    connected: true,
+    name: pad.id,
+  };
+}
+
+function readT9Pad(pad: Gamepad): PadRead {
+  const stick = radialDeadzone(pad.axes[0] ?? 0, pad.axes[1] ?? 0);
+  const aim = radialDeadzone(pad.axes[2] ?? 0, pad.axes[5] ?? 0);
+  const lt = pad.buttons[8];
+  const rt = pad.buttons[9];
+  return {
+    mx: stick.x,
+    my: -stick.y,
+    ax: aim.x,
+    ay: -aim.y,
+    a: t9Button(pad, 0),
+    b: t9Button(pad, 1),
+    x: t9Button(pad, 2),
+    y: t9Button(pad, 3),
+    r3: t9Button(pad, 11),
+    lt: !!lt && (lt.pressed || lt.value > 0.42),
+    rt: !!rt && (rt.pressed || rt.value > 0.42),
+    lb: t9Button(pad, 4),
+    rb: t9Button(pad, 5),
+    view: t9Button(pad, 8),
+    connected: true,
+    name: pad.id,
+  };
+}
+
+function readPad(): PadRead {
   const pads = navigator.getGamepads?.() ?? [];
+  let fallback: Gamepad | null = null;
+  let live: Gamepad | null = null;
   for (const pad of pads) {
-    if (!pad || pad.mapping !== "standard") continue;
-    const stick = radialDeadzone(pad.axes[0] ?? 0, pad.axes[1] ?? 0);
-    const aim = radialDeadzone(pad.axes[2] ?? 0, pad.axes[3] ?? 0);
+    if (!pad || pad.connected === false) continue;
+    if (!isT9Pad(pad) && pad.mapping !== "standard") continue;
+    if (!fallback) fallback = pad;
+    if (padLive(pad)) {
+      live = pad;
+      break;
+    }
+  }
+  const pad = live ?? fallback;
+  if (!pad) {
     return {
-      mx: stick.x,
-      my: -stick.y,
-      ax: aim.x,
-      ay: -aim.y,
-      a: Boolean(pad.buttons[0]?.pressed),
-      b: Boolean(pad.buttons[1]?.pressed),
-      x: Boolean(pad.buttons[2]?.pressed),
-      y: Boolean(pad.buttons[3]?.pressed),
-      r3: Boolean(pad.buttons[11]?.pressed),
-      lt: Boolean(pad.buttons[6]?.pressed) || (pad.buttons[6]?.value ?? 0) > 0.42,
-      rt: Boolean(pad.buttons[7]?.pressed) || (pad.buttons[7]?.value ?? 0) > 0.42,
-      lb: Boolean(pad.buttons[4]?.pressed),
-      rb: Boolean(pad.buttons[5]?.pressed),
-      view: Boolean(pad.buttons[8]?.pressed),
-      connected: true,
-      name: pad.id,
+      mx: 0,
+      my: 0,
+      ax: 0,
+      ay: 0,
+      a: false,
+      b: false,
+      x: false,
+      y: false,
+      r3: false,
+      lt: false,
+      rt: false,
+      lb: false,
+      rb: false,
+      view: false,
+      connected: false,
+      name: null,
     };
   }
-  return {
-    mx: 0,
-    my: 0,
-    ax: 0,
-    ay: 0,
-    a: false,
-    b: false,
-    x: false,
-    y: false,
-    r3: false,
-    lt: false,
-    rt: false,
-    lb: false,
-    rb: false,
-    view: false,
-    connected: false,
-    name: null,
-  };
+  return t9Raw(pad) ? readT9Pad(pad) : readStandardPad(pad);
 }
 
 export function readActions(): Actions {

@@ -8,7 +8,7 @@ import { PlayerMesh, PuckMesh, RefereeMesh } from "./PlayerMesh";
 import { attachInput } from "./input";
 import { installControlsProbe, resetWorld, stepSim, world } from "./sim";
 import { useGame, type CamMode } from "./store";
-import { BOARD_H, BLUE_X, GLASS_H, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
+import { BOARD_H, BLUE_X, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
 
 function LookSync() {
   const look = useGame((s) => s.arenaLook);
@@ -76,12 +76,14 @@ function writeCamBasis(camera: THREE.Camera) {
   world.camFx = fx;
   world.camFz = fz;
   world.camRx = rx;
+  world.camRy = e[1];
   world.camRz = rz;
-  (world as { camX?: number }).camX = camera.position.x;
-  (world as { camY?: number }).camY = camera.position.y;
-  (world as { camZ?: number }).camZ = camera.position.z;
-  (world as { camUpX?: number }).camUpX = camera.up.x;
-  (world as { camUpY?: number }).camUpY = camera.up.y;
+  world.camUx = e[4];
+  world.camUy = e[5];
+  world.camUz = e[6];
+  world.camX = camera.position.x;
+  world.camY = camera.position.y;
+  world.camZ = camera.position.z;
 }
 
 function keepPuckFramed(
@@ -175,13 +177,12 @@ function puckBlockedByBoards(camera: THREE.Camera): boolean {
   const cx = camera.position.x;
   const cy = camera.position.y;
   const cz = camera.position.z;
-  const wall = BOARD_H + GLASS_H;
   for (let i = 1; i <= 10; i++) {
     const t = i / 11;
     const x = cx + (px - cx) * t;
     const y = cy + (py - cy) * t;
     const z = cz + (pz - cz) * t;
-    if (y > wall + 0.2) continue;
+    if (y > BOARD_H + 0.04) continue;
     if (resolveRink(x, z, 0.05).hit) return true;
   }
   return false;
@@ -353,12 +354,10 @@ function CameraRig() {
     const idle = !playing || paused;
     const scoring =
       !idle && world.whistle === "goal" && (world.goalSide === "home" || world.goalSide === "away");
-    const netSign: 1 | -1 =
-      world.goalSide === "home" ? world.homeAttack : ((-world.homeAttack) as 1 | -1);
-    const netX = netSign * GOAL_LINE_X;
-    const px = idle ? 0 : scoring ? puck.x * netSign > 2 ? puck.x : netX - netSign * 1.2 : puck.x;
-    const pz = idle ? 0 : scoring ? Math.max(-2.4, Math.min(2.4, puck.z)) : puck.z;
-    const py = idle ? 0.45 : scoring ? 0.55 : Math.max(0.35, puck.y);
+    const scorer = scoring && world.lastShooter !== null ? world.skaters[world.lastShooter] : undefined;
+    const px = idle ? 0 : scorer ? scorer.x : puck.x;
+    const pz = idle ? 0 : scorer ? scorer.z : puck.z;
+    const py = idle ? 0.45 : scorer ? 1.05 : Math.max(0.35, puck.y);
     const switched = prevMode.current !== mode;
     prevMode.current = mode;
 
@@ -556,7 +555,8 @@ export function World() {
           kitId={s.side === "home" ? homeKit : awayKit}
         />
       ))}
-      <RefereeMesh />
+      <RefereeMesh lane={1} />
+      <RefereeMesh lane={-1} />
       <PuckMesh />
       <CameraRig />
       <FreestyleControls />

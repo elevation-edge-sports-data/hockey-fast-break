@@ -1,7 +1,9 @@
-import { useLayoutEffect, useMemo } from "react";
+import { useFrame } from "@react-three/fiber";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import {
   createAdTexture,
+  createFaceoffDotTexture,
   createIceTextures,
   createNetTexture,
 } from "./iceTexture";
@@ -13,9 +15,19 @@ import {
   CENTER_LINE_W,
   CORNER_R,
   CREASE_R,
+  DOT_R,
   FACEOFF_EZ_X,
   FACEOFF_MARK_R,
+  FACEOFF_NZ_X,
+  FACEOFF_R,
   FACEOFF_SPOT_Z,
+  HASH_MARK_INSIDE,
+  HASH_MARK_L,
+  L_ARM,
+  L_GAP,
+  L_INSET,
+  L_STEM,
+  MARK_W,
   GLASS_H,
   GOAL_D,
   GOAL_D_TOP,
@@ -34,6 +46,7 @@ import {
 import { roundedRectShape, rinkPerimeter } from "./rinkGeom";
 import { kitById } from "./uniforms";
 import { useGame } from "./store";
+import { drillGrid, drillTargetList, resetWorld, setPracticeDrop, world } from "./sim";
 
 function extrudeRing(outerInset: number, innerInset: number, depth: number) {
   const outer = roundedRectShape(RINK_L, RINK_W, CORNER_R, outerInset);
@@ -66,21 +79,73 @@ function IceStripe({
   );
 }
 
-function FaceoffCircle({ x, z, dot = true }: { x: number; z: number; dot?: boolean }) {
-  const inner = FACEOFF_MARK_R;
-  const outer = FACEOFF_MARK_R + 0.09;
+function FaceoffCircle({ x, z, r = FACEOFF_R }: { x: number; z: number; r?: number }) {
+  return (
+    <mesh position={[x, 0.026, z]} rotation={[-Math.PI / 2, 0, 0]}>
+      <ringGeometry args={[r, r + 0.09, 72]} />
+      <meshBasicMaterial color={LINE_RED} toneMapped={false} side={THREE.DoubleSide} />
+    </mesh>
+  );
+}
+
+function MarkLine({
+  x,
+  z,
+  alongX,
+  alongZ,
+}: {
+  x: number;
+  z: number;
+  alongX: number;
+  alongZ: number;
+}) {
+  return (
+    <mesh position={[x, 0.027, z]} rotation={[-Math.PI / 2, 0, 0]}>
+      <planeGeometry args={[Math.max(alongX, MARK_W), Math.max(alongZ, MARK_W)]} />
+      <meshBasicMaterial color={LINE_RED} toneMapped={false} />
+    </mesh>
+  );
+}
+
+function EndZoneMarks({ x, z }: { x: number; z: number }) {
+  const inner = HASH_MARK_INSIDE / 2;
+  const halfGap = L_GAP / 2;
   return (
     <group>
-      <mesh position={[x, 0.026, z]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[inner, outer, 72]} />
-        <meshBasicMaterial color={LINE_RED} toneMapped={false} side={THREE.DoubleSide} />
-      </mesh>
-      {dot ? (
-        <mesh position={[x, 0.028, z]}>
-          <cylinderGeometry args={[0.34, 0.34, 0.03, 28]} />
-          <meshBasicMaterial color={LINE_RED} toneMapped={false} />
-        </mesh>
-      ) : null}
+      <FaceoffCircle x={x} z={z} />
+      {([-1, 1] as const).flatMap((szn) =>
+        ([-1, 1] as const).map((sxn) => (
+          <MarkLine
+            key={`h${sxn}${szn}`}
+            x={x + sxn * inner}
+            z={z + szn * (FACEOFF_R + HASH_MARK_L / 2)}
+            alongX={MARK_W}
+            alongZ={HASH_MARK_L}
+          />
+        )),
+      )}
+      {([-1, 1] as const).flatMap((sxn) =>
+        ([-1, 1] as const).flatMap((szn) => {
+          const xInner = x + sxn * L_INSET;
+          const zStem = z + szn * halfGap;
+          return [
+            <MarkLine
+              key={`ls${sxn}${szn}`}
+              x={x + sxn * (L_INSET + L_STEM / 2)}
+              z={zStem}
+              alongX={L_STEM}
+              alongZ={MARK_W}
+            />,
+            <MarkLine
+              key={`la${sxn}${szn}`}
+              x={xInner}
+              z={z + szn * (halfGap + L_ARM / 2)}
+              alongX={MARK_W}
+              alongZ={L_ARM}
+            />,
+          ];
+        }),
+      )}
     </group>
   );
 }
@@ -103,15 +168,55 @@ function CenterIceLogo() {
   );
 }
 
+function FaceoffDot({
+  x,
+  z,
+  map,
+}: {
+  x: number;
+  z: number;
+  map: THREE.CanvasTexture;
+}) {
+  return (
+    <mesh position={[x, 0.028, z]} rotation={[-Math.PI / 2, 0, 0]}>
+      <circleGeometry args={[DOT_R, 48]} />
+      <meshBasicMaterial map={map} toneMapped={false} />
+    </mesh>
+  );
+}
+
 function FaceoffCircles() {
+  const map = useMemo(() => createFaceoffDotTexture(), []);
+  useLayoutEffect(() => () => map.dispose(), [map]);
+  const scrimmage = useGame((s) => s.clockMode) === "scrimmage";
+  const dots: readonly (readonly [number, number])[] = scrimmage
+    ? [
+        [FACEOFF_EZ_X, FACEOFF_SPOT_Z],
+        [FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
+        [-FACEOFF_EZ_X, FACEOFF_SPOT_Z],
+        [-FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
+      ]
+    : [
+        [FACEOFF_EZ_X, FACEOFF_SPOT_Z],
+        [FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
+        [-FACEOFF_EZ_X, FACEOFF_SPOT_Z],
+        [-FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
+        [FACEOFF_NZ_X, FACEOFF_SPOT_Z],
+        [FACEOFF_NZ_X, -FACEOFF_SPOT_Z],
+        [-FACEOFF_NZ_X, FACEOFF_SPOT_Z],
+        [-FACEOFF_NZ_X, -FACEOFF_SPOT_Z],
+      ];
   return (
     <group>
       <CenterIceLogo />
-      <FaceoffCircle x={0} z={0} dot={false} />
-      <FaceoffCircle x={FACEOFF_EZ_X} z={FACEOFF_SPOT_Z} />
-      <FaceoffCircle x={FACEOFF_EZ_X} z={-FACEOFF_SPOT_Z} />
-      <FaceoffCircle x={-FACEOFF_EZ_X} z={FACEOFF_SPOT_Z} />
-      <FaceoffCircle x={-FACEOFF_EZ_X} z={-FACEOFF_SPOT_Z} />
+      <FaceoffCircle x={0} z={0} r={FACEOFF_MARK_R} />
+      <EndZoneMarks x={FACEOFF_EZ_X} z={FACEOFF_SPOT_Z} />
+      <EndZoneMarks x={FACEOFF_EZ_X} z={-FACEOFF_SPOT_Z} />
+      <EndZoneMarks x={-FACEOFF_EZ_X} z={FACEOFF_SPOT_Z} />
+      <EndZoneMarks x={-FACEOFF_EZ_X} z={-FACEOFF_SPOT_Z} />
+      {dots.map(([x, z]) => (
+        <FaceoffDot key={`${x}:${z}`} x={x} z={z} map={map} />
+      ))}
     </group>
   );
 }
@@ -174,15 +279,19 @@ function Crease({ side }: { side: 1 | -1 }) {
   );
 }
 
-function IceLines() {
+function IceLines({ blue }: { blue: boolean }) {
   return (
     <group>
       <Crease side={-1} />
       <Crease side={1} />
       <IceStripe x={-GOAL_LINE_X} color={LINE_RED} width={GOAL_LINE_W} />
       <IceStripe x={GOAL_LINE_X} color={LINE_RED} width={GOAL_LINE_W} />
-      <IceStripe x={-BLUE_X} color={LINE_BLUE} width={BLUE_LINE_W} />
-      <IceStripe x={BLUE_X} color={LINE_BLUE} width={BLUE_LINE_W} />
+      {blue ? (
+        <>
+          <IceStripe x={-BLUE_X} color={LINE_BLUE} width={BLUE_LINE_W} />
+          <IceStripe x={BLUE_X} color={LINE_BLUE} width={BLUE_LINE_W} />
+        </>
+      ) : null}
       <IceStripe x={0} color={LINE_RED} width={CENTER_LINE_W} />
     </group>
   );
@@ -361,13 +470,82 @@ function Goal({ side }: { side: 1 | -1 }) {
   );
 }
 
+function DrillTargets() {
+  const mode = useGame((s) => s.clockMode);
+  const count = useGame((s) => s.drillTargets);
+  const mesh = useRef<(THREE.Mesh | null)[]>([]);
+  useFrame(() => {
+    if (mode !== "drill") return;
+    const targets = drillTargetList();
+    for (let i = 0; i < targets.length; i++) {
+      const g = mesh.current[i];
+      if (!g) continue;
+      const flash = world.drillFlash[i] ?? 0;
+      const gone = !!world.drillGone[i];
+      g.visible = !gone || flash > 0;
+      const mat = g.material as THREE.MeshBasicMaterial;
+      const t = targets[i]!;
+      const hot = flash > 0;
+      mat.color.set(t.pts === 20 ? (hot ? "#f0b8c4" : "#5a1021") : hot ? "#8ad0ff" : "#236192");
+    }
+  });
+  if (mode !== "drill") return null;
+  const targets = drillTargetList();
+  const { cols, rows } = drillGrid();
+  const hw = GOAL_W / 2;
+  const colW = GOAL_W / cols;
+  const rowH = GOAL_H / rows;
+  return (
+    <group key={count} position={[GOAL_LINE_X, 0, 0]}>
+      {targets.map((t, i) => (
+        <mesh
+          key={i}
+          ref={(el) => {
+            mesh.current[i] = el;
+          }}
+          position={[-0.05, (t.row + 0.5) * rowH, -hw + (t.col + 0.5) * colW]}
+          rotation={[0, -Math.PI / 2, 0]}
+        >
+          <planeGeometry args={[colW * 0.88, rowH * 0.88]} />
+          <meshBasicMaterial
+            color={t.pts === 20 ? "#5a1021" : "#236192"}
+            transparent
+            opacity={0.85}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function PracticeDropMark() {
+  const mode = useGame((s) => s.clockMode);
+  const playing = useGame((s) => s.playing);
+  const paused = useGame((s) => s.paused);
+  useGame((s) => s.lineupRev);
+  if (mode !== "practice" || (playing && !paused)) return null;
+  return (
+    <mesh position={[world.practiceDropX, 0.04, world.practiceDropZ]} rotation={[-Math.PI / 2, 0, 0]}>
+      <ringGeometry args={[0.22, 0.34, 28]} />
+      <meshBasicMaterial color="#c8102e" toneMapped={false} />
+    </mesh>
+  );
+}
+
 export function Rink() {
   const homeKit = useGame((s) => s.homeKit);
   const awayKit = useGame((s) => s.awayKit);
+  const clockMode = useGame((s) => s.clockMode);
+  const playing = useGame((s) => s.playing);
+  const paused = useGame((s) => s.paused);
   const home = kitById(homeKit);
   const away = kitById(awayKit);
+  const showBlue = clockMode !== "scrimmage";
+  const nzDots = clockMode !== "scrimmage";
 
-  const ice = useMemo(() => createIceTextures(), []);
+  const ice = useMemo(() => createIceTextures(showBlue, nzDots), [showBlue, nzDots]);
   const adsHome = useMemo(() => createAdTexture(home.ribbon, home.yoke), [home]);
   const adsAway = useMemo(() => createAdTexture(away.ribbon, away.yoke), [away]);
 
@@ -392,8 +570,27 @@ export function Rink() {
   const kickGeo = useMemo(() => extrudeRing(-0.22, 0.01, KICK_H), []);
   const boardGeo = useMemo(() => extrudeRing(-0.2, 0.02, BOARD_H - KICK_H), []);
   const ribbonGeo = useMemo(() => extrudeRing(-0.21, 0.0, RIBBON_H), []);
-  const glassGeo = useMemo(() => extrudeRing(-0.12, 0.04, GLASS_H), []);
-  const posts = useMemo(() => rinkPerimeter(0.06, 64), []);
+  const posts = useMemo(
+    () => rinkPerimeter(0.06, 64).filter((p) => !(p.z < -RINK_W / 2 + 0.85 && Math.abs(p.x) < 9.95)),
+    [],
+  );
+  const glassWalls = useMemo(() => {
+    const ring = rinkPerimeter(-0.06, 96);
+    const out: { x: number; z: number; len: number; rot: number }[] = [];
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i]!;
+      const b = ring[(i + 1) % ring.length]!;
+      const mx = (a.x + b.x) / 2;
+      const mz = (a.z + b.z) / 2;
+      if (mz < -RINK_W / 2 + 0.85 && Math.abs(mx) < 9.95) continue;
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const len = Math.hypot(dx, dz);
+      if (len < 0.08) continue;
+      out.push({ x: mx, z: mz, len, rot: Math.atan2(-dz, dx) });
+    }
+    return out;
+  }, []);
 
   const iceMat = useMemo(
     () =>
@@ -410,9 +607,21 @@ export function Rink() {
 
   return (
     <group>
-      <mesh geometry={iceGeo} material={iceMat} position={[0, 0.012, 0]} />
-      <IceLines />
-      <FaceoffCircles />
+      <group
+        onPointerDown={(e) => {
+          if (clockMode !== "practice") return;
+          if (playing && !paused) return;
+          e.stopPropagation();
+          setPracticeDrop(e.point.x, e.point.z);
+          if (playing && paused) resetWorld({ keepScore: true });
+          else useGame.getState().bumpLineup();
+        }}
+      >
+        <mesh geometry={iceGeo} material={iceMat} position={[0, 0.012, 0]} />
+        <IceLines blue={showBlue} />
+        <FaceoffCircles />
+        <PracticeDropMark />
+      </group>
       <mesh geometry={kickGeo}>
         <meshStandardMaterial color="#e7b416" roughness={0.45} metalness={0.08} />
       </mesh>
@@ -422,17 +631,20 @@ export function Rink() {
       <mesh geometry={ribbonGeo} position={[0, BOARD_H - RIBBON_H, 0]}>
         <meshStandardMaterial color={home.ribbon} roughness={0.5} />
       </mesh>
-      <mesh geometry={glassGeo} position={[0, BOARD_H, 0]}>
-        <meshPhysicalMaterial
-          color="#cfe0ee"
-          transparent
-          opacity={0.07}
-          roughness={0.08}
-          metalness={0.08}
-          depthWrite={false}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
+      {glassWalls.map((w, i) => (
+        <mesh key={`gw${i}`} position={[w.x, BOARD_H + GLASS_H / 2, w.z]} rotation={[0, w.rot, 0]}>
+          <boxGeometry args={[w.len + 0.04, GLASS_H, 0.07]} />
+          <meshPhysicalMaterial
+            color="#cfe0ee"
+            transparent
+            opacity={0.07}
+            roughness={0.08}
+            metalness={0.08}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
 
       {posts.map((p, i) => (
         <mesh key={i} position={[p.x, BOARD_H + GLASS_H / 2, p.z]}>
@@ -452,6 +664,7 @@ export function Rink() {
 
       <Goal side={1} />
       <Goal side={-1} />
+      <DrillTargets />
     </group>
   );
 }

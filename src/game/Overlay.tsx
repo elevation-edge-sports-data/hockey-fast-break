@@ -1,18 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CircleHelp, Pause, Play, RotateCcw, Settings } from "lucide-react";
+import { Pause, Play, RotateCcw } from "lucide-react";
 import { setTouchBurst, setTouchFace, setTouchLt, setTouchMove } from "./input";
 import {
   resetWorld,
   world,
+  attackCompass,
+  cycleAimCompass,
+  setPracticeDrop,
   beginPauseCam,
-  finishPauseCam,
   beginPauseReplay,
   stopPauseReplay,
   replayHasFootage,
+  drillMaxScore,
+  previewPausedMode,
+  previewPausedTargets,
+  previewPausedMinutes,
+  resumePausedGame,
+  resetPausedGame,
 } from "./sim";
 import {
-  LINEUP_CAP,
   lineupTotal,
+  modeLineupCap,
   patchLineup,
   useGame,
   type CamMode,
@@ -142,21 +150,62 @@ function Stepper({
   const max = slot === "g" ? 1 : slot === "d" ? 2 : 4;
   const val = lineup[slot];
   const total = lineupTotal(lineup);
-  const canInc = !disabled && val < max && total < LINEUP_CAP;
-  const canDec = !disabled && val > 0 && total > 1;
+  const cap = modeLineupCap(useGame.getState().clockMode);
+  const canInc = !disabled && val < max && total < cap;
+  const canDec = !disabled && val > 0;
   return (
     <div className="stepper">
       <span>{label}</span>
       <div className="stepper-row">
-        <button type="button" aria-label={`${label} down`} disabled={!canDec} onClick={() => onChange(patchLineup(lineup, slot, val - 1))}>
+        <button type="button" aria-label={`${label} down`} disabled={!canDec} onClick={() => onChange(patchLineup(lineup, slot, val - 1, cap))}>
           −
         </button>
         <b>{val}</b>
-        <button type="button" aria-label={`${label} up`} disabled={!canInc} onClick={() => onChange(patchLineup(lineup, slot, val + 1))}>
+        <button type="button" aria-label={`${label} up`} disabled={!canInc} onClick={() => onChange(patchLineup(lineup, slot, val + 1, cap))}>
           +
         </button>
       </div>
     </div>
+  );
+}
+
+function AimCompass({ flip = false }: { flip?: boolean }) {
+  const [dir, setDir] = useState<"up" | "down" | "left" | "right">("up");
+  useEffect(() => {
+    let id = 0;
+    const tick = () => {
+      const d = attackCompass();
+      setDir((prev) => (prev === d ? prev : d));
+      id = requestAnimationFrame(tick);
+    };
+    id = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const shown =
+    !flip
+      ? dir
+      : dir === "up"
+        ? "down"
+        : dir === "down"
+          ? "up"
+          : dir === "left"
+            ? "right"
+            : "left";
+  const ch = shown === "up" ? "↑" : shown === "down" ? "↓" : shown === "left" ? "←" : "→";
+  return (
+    <button
+      type="button"
+      className="aim-compass"
+      title={`Attack ${shown} — click to rotate`}
+      aria-label={`Attack ${shown}, click to rotate aim`}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        cycleAimCompass();
+      }}
+    >
+      {ch}
+    </button>
   );
 }
 
@@ -180,10 +229,10 @@ function LineupStrip({
   disabled: boolean;
 }) {
   return (
-    <div className="lineup-strip">
-      <Stepper label="G" slot="g" lineup={lineup} onChange={onChange} disabled={disabled} />
-      <Stepper label="D" slot="d" lineup={lineup} onChange={onChange} disabled={disabled} />
+    <div className="lineup-strip is-vert">
       <Stepper label="F" slot="o" lineup={lineup} onChange={onChange} disabled={disabled} />
+      <Stepper label="D" slot="d" lineup={lineup} onChange={onChange} disabled={disabled} />
+      <Stepper label="G" slot="g" lineup={lineup} onChange={onChange} disabled={disabled} />
     </div>
   );
 }
@@ -205,32 +254,55 @@ function fmtClock(sec: number): string {
 
 function AbilitySliders() {
   const gameSpeed = useGame((s) => s.gameSpeed);
-  const cpuOffense = useGame((s) => s.cpuOffense);
-  const cpuDefense = useGame((s) => s.cpuDefense);
-  const cpuGoalie = useGame((s) => s.cpuGoalie);
+  const setGameSpeed = useGame((s) => s.setGameSpeed);
+  return (
+    <div className="ability-sliders">
+      <label className="ability-row">
+        <span>Game Speed</span>
+        <input
+          type="range"
+          min={0.5}
+          max={1.5}
+          step={0.05}
+          value={gameSpeed}
+          aria-label="Game Speed"
+          onChange={(e) => setGameSpeed(Number(e.target.value))}
+        />
+        <b>{Math.round(((gameSpeed - 0.5) / 1) * 20) * 5}</b>
+      </label>
+    </div>
+  );
+}
+
+function SideSliders({ who }: { who: "user" | "cpu" }) {
   const userOffense = useGame((s) => s.userOffense);
   const userDefense = useGame((s) => s.userDefense);
   const userGoalie = useGame((s) => s.userGoalie);
-  const setGameSpeed = useGame((s) => s.setGameSpeed);
-  const setCpuOffense = useGame((s) => s.setCpuOffense);
-  const setCpuDefense = useGame((s) => s.setCpuDefense);
-  const setCpuGoalie = useGame((s) => s.setCpuGoalie);
+  const cpuOffense = useGame((s) => s.cpuOffense);
+  const cpuDefense = useGame((s) => s.cpuDefense);
+  const cpuGoalie = useGame((s) => s.cpuGoalie);
   const setUserOffense = useGame((s) => s.setUserOffense);
   const setUserDefense = useGame((s) => s.setUserDefense);
   const setUserGoalie = useGame((s) => s.setUserGoalie);
-  const rows: { label: string; value: number; min: number; max: number; set: (n: number) => void }[] = [
-    { label: "Game Speed", value: gameSpeed, min: 0.5, max: 1.5, set: setGameSpeed },
-    { label: "CPU Offense", value: cpuOffense, min: 0, max: 2, set: setCpuOffense },
-    { label: "CPU Defense", value: cpuDefense, min: 0, max: 2, set: setCpuDefense },
-    { label: "CPU Goalie", value: cpuGoalie, min: 0, max: 1.6, set: setCpuGoalie },
-    { label: "User Offense", value: userOffense, min: 0, max: 1.2, set: setUserOffense },
-    { label: "User Defense", value: userDefense, min: 0, max: 2, set: setUserDefense },
-    { label: "User Goalie", value: userGoalie, min: 0, max: 1, set: setUserGoalie },
-  ];
+  const setCpuOffense = useGame((s) => s.setCpuOffense);
+  const setCpuDefense = useGame((s) => s.setCpuDefense);
+  const setCpuGoalie = useGame((s) => s.setCpuGoalie);
+  const rows =
+    who === "user"
+      ? [
+          { label: "Offense", value: userOffense, min: 0, max: 1.2, set: setUserOffense },
+          { label: "Defense", value: userDefense, min: 0, max: 2, set: setUserDefense },
+          { label: "Goalie", value: userGoalie, min: 0, max: 1, set: setUserGoalie },
+        ]
+      : [
+          { label: "Offense", value: cpuOffense, min: 0, max: 2, set: setCpuOffense },
+          { label: "Defense", value: cpuDefense, min: 0, max: 2, set: setCpuDefense },
+          { label: "Goalie", value: cpuGoalie, min: 0, max: 1.6, set: setCpuGoalie },
+        ];
   return (
-    <div className="ability-sliders">
+    <div className="hud-sliders">
       {rows.map((row) => (
-        <label key={row.label} className="ability-row">
+        <label key={row.label} className="hud-slider-row">
           <span>{row.label}</span>
           <input
             type="range"
@@ -238,72 +310,355 @@ function AbilitySliders() {
             max={row.max}
             step={(row.max - row.min) / 20}
             value={row.value}
-            aria-label={row.label}
+            aria-label={`${who} ${row.label}`}
             onChange={(e) => row.set(Number(e.target.value))}
           />
-          <b>{Math.round(((row.value - row.min) / (row.max - row.min)) * 20) * 5}</b>
         </label>
       ))}
     </div>
   );
 }
 
-function ClockSetup() {
-  const clockMode = useGame((s) => s.clockMode);
-  const setClockMode = useGame((s) => s.setClockMode);
+function chooseMode(m: "drill" | "practice" | "scrimmage" | "game"): void {
+  const ui = useGame.getState();
+  if (ui.playing && ui.paused) {
+    previewPausedMode(m);
+    return;
+  }
+  ui.setClockMode(m);
+  resetWorld();
+}
+
+function GameMinutes() {
   const gameMinutes = useGame((s) => s.gameMinutes);
   const setGameMinutes = useGame((s) => s.setGameMinutes);
+  const playing = useGame((s) => s.playing);
+  const paused = useGame((s) => s.paused);
+  const setMin = (n: number) => {
+    if (playing && paused) previewPausedMinutes(n);
+    else setGameMinutes(n);
+  };
+  return (
+    <div className="clock-mins">
+      <button type="button" aria-label="Fewer minutes" disabled={gameMinutes <= 1} onClick={() => setMin(gameMinutes - 1)}>
+        −
+      </button>
+      <b>{gameMinutes}</b>
+      <button type="button" aria-label="More minutes" disabled={gameMinutes >= 5} onClick={() => setMin(gameMinutes + 1)}>
+        +
+      </button>
+      <span>minutes</span>
+    </div>
+  );
+}
+
+function ClockSetup() {
+  const clockMode = useGame((s) => s.clockMode);
   return (
     <div className="clock-setup">
-      <div className="btn-row">
+      <div className="clock-col">
+        <button
+          type="button"
+          className={clockMode === "drill" ? "is-on" : ""}
+          onClick={() => chooseMode("drill")}
+        >
+          Drill
+        </button>
+        {clockMode === "drill" ? (
+          <>
+            <p className="clock-untimed">1:00</p>
+            <DrillTargetPick />
+          </>
+        ) : null}
+      </div>
+      <div className="clock-col">
         <button
           type="button"
           className={clockMode === "practice" ? "is-on" : ""}
-          onClick={() => setClockMode("practice")}
+          onClick={() => chooseMode("practice")}
+        >
+          Practice
+        </button>
+        {clockMode === "practice" ? (
+          <>
+            <p className="clock-untimed">Untimed</p>
+            <p className="clock-untimed drop-hint">Click ice to set drop</p>
+          </>
+        ) : null}
+      </div>
+      <div className="clock-col">
+        <button
+          type="button"
+          className={clockMode === "scrimmage" ? "is-on" : ""}
+          onClick={() => chooseMode("scrimmage")}
         >
           Scrimmage
         </button>
+        {clockMode === "scrimmage" ? <p className="clock-untimed">Untimed</p> : null}
+      </div>
+      <div className="clock-col">
         <button
           type="button"
           className={clockMode === "game" ? "is-on" : ""}
-          onClick={() => setClockMode("game")}
+          onClick={() => chooseMode("game")}
         >
           Game
         </button>
+        {clockMode === "game" ? <GameMinutes /> : null}
       </div>
-      {clockMode === "practice" ? <p className="clock-untimed">Untimed</p> : <span />}
-      {clockMode === "game" ? (
-        <div className="clock-mins">
+    </div>
+  );
+}
+
+type MenuId = "mode" | "controller" | "gameplay" | "camera";
+
+const MODES: { id: "drill" | "practice" | "scrimmage" | "game"; label: string }[] = [
+  { id: "drill", label: "Drill" },
+  { id: "practice", label: "Practice" },
+  { id: "scrimmage", label: "Scrimmage" },
+  { id: "game", label: "Game" },
+];
+
+function DrillTargetPick() {
+  const drillTargets = useGame((s) => s.drillTargets);
+  const pick = (n: 8 | 12) => {
+    if (drillTargets === n) return;
+    previewPausedTargets(n);
+  };
+  return (
+    <div className="clock-mins">
+      <button type="button" className={drillTargets === 8 ? "is-on" : ""} onClick={() => pick(8)}>
+        8
+      </button>
+      <button type="button" className={drillTargets === 12 ? "is-on" : ""} onClick={() => pick(12)}>
+        12
+      </button>
+    </div>
+  );
+}
+
+function MainMenus() {
+  const [menu, setMenu] = useState<MenuId | null>(null);
+  const [help, setHelp] = useState(false);
+  const controlProfile = useGame((s) => s.controlProfile);
+  const setControlProfile = useGame((s) => s.setControlProfile);
+  const powerPlay = useGame((s) => s.powerPlay);
+  const setPowerPlay = useGame((s) => s.setPowerPlay);
+  const offsides = useGame((s) => s.offsides);
+  const setOffsides = useGame((s) => s.setOffsides);
+  const checkRefs = useGame((s) => s.checkRefs);
+  const setCheckRefs = useGame((s) => s.setCheckRefs);
+  const checkGoalies = useGame((s) => s.checkGoalies);
+  const setCheckGoalies = useGame((s) => s.setCheckGoalies);
+  const camMode = useGame((s) => s.camMode);
+  const setCamMode = useGame((s) => s.setCamMode);
+  const arenaLook = useGame((s) => s.arenaLook);
+  const setArenaLook = useGame((s) => s.setArenaLook);
+  const clockMode = useGame((s) => s.clockMode);
+  const playing = useGame((s) => s.playing);
+  const paused = useGame((s) => s.paused);
+  const setPaused = useGame((s) => s.setPaused);
+  const replay = useGame((s) => s.replay);
+  const toggle = (id: MenuId) => setMenu((cur) => (cur === id ? null : id));
+  const blurb =
+    controlProfile === "wings"
+      ? "LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB takes goalie; RB dives."
+      : "Current map, LT goalie.";
+  const startReplay = () => {
+    if (replay) {
+      stopPauseReplay();
+      return;
+    }
+    if (!playing || !replayHasFootage()) return;
+    if (!paused) {
+      beginPauseCam(camMode);
+      setPaused(true);
+    }
+    beginPauseReplay();
+  };
+  return (
+    <div className="menu-stack">
+      {menu === "camera" ? (
+        <div className="cam-row menu-sub">
           <button
             type="button"
-            aria-label="Fewer minutes"
-            disabled={gameMinutes <= 1}
-            onClick={() => setGameMinutes(gameMinutes - 1)}
+            className={arenaLook === "light" ? "is-on" : ""}
+            onClick={() => setArenaLook("light")}
           >
-            −
+            Rink Light
           </button>
-          <b>{gameMinutes}</b>
           <button
             type="button"
-            aria-label="More minutes"
-            disabled={gameMinutes >= 5}
-            onClick={() => setGameMinutes(gameMinutes + 1)}
+            className={arenaLook === "dark" ? "is-on" : ""}
+            onClick={() => setArenaLook("dark")}
           >
-            +
+            Rink Dark
           </button>
-          <span>minutes</span>
         </div>
-      ) : (
-        <span />
-      )}
+      ) : null}
+      {menu === "mode" ? (
+        <div className="mode-grid">
+          {clockMode === "drill" || clockMode === "game" ? (
+            <>
+              <div>{clockMode === "drill" ? <DrillTargetPick /> : null}</div>
+              <div />
+              <div />
+              <div>{clockMode === "game" ? <GameMinutes /> : null}</div>
+            </>
+          ) : null}
+          {MODES.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              className={clockMode === m.id ? "is-on" : ""}
+              onClick={() => chooseMode(m.id)}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {menu && menu !== "mode" ? (
+        <div className="cam-row menu-sub">
+          {menu === "controller" ? (
+            <>
+              <button
+                type="button"
+                className={controlProfile === "classic" ? "is-on" : ""}
+                title="Current map, LT goalie."
+                onClick={() => setControlProfile("classic")}
+              >
+                Classic
+              </button>
+              <button
+                type="button"
+                className={controlProfile === "wings" ? "is-on" : ""}
+                title="LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB takes goalie; RB dives."
+                onClick={() => setControlProfile("wings")}
+              >
+                Wings
+              </button>
+              <p className="hint menu-blurb">{blurb}</p>
+            </>
+          ) : null}
+          {menu === "gameplay" ? (
+            <>
+              <button
+                type="button"
+                className={offsides ? "is-on" : ""}
+                aria-pressed={offsides}
+                onClick={() => setOffsides(!offsides)}
+              >
+                Offsides
+              </button>
+              <button
+                type="button"
+                className={powerPlay ? "is-on" : ""}
+                title="Scored-on team gets a player out of the box on the next faceoff"
+                aria-pressed={powerPlay}
+                onClick={() => setPowerPlay(!powerPlay)}
+              >
+                Power Play
+              </button>
+              <button
+                type="button"
+                className={checkRefs ? "is-on" : ""}
+                aria-pressed={checkRefs}
+                onClick={() => setCheckRefs(!checkRefs)}
+              >
+                Check Refs
+              </button>
+              <button
+                type="button"
+                className={checkGoalies ? "is-on" : ""}
+                aria-pressed={checkGoalies}
+                onClick={() => setCheckGoalies(!checkGoalies)}
+              >
+                Check Goalies
+              </button>
+            </>
+          ) : null}
+          {menu === "camera" ? (
+            CAMS.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className={camMode === c.id ? "is-on" : ""}
+                title={c.blurb}
+                onClick={() => setCamMode(c.id)}
+              >
+                {c.label}
+              </button>
+            ))
+          ) : null}
+        </div>
+      ) : null}
+      <div className="cam-row">
+        <button
+          type="button"
+          className={menu === "mode" ? "is-on" : ""}
+          aria-expanded={menu === "mode"}
+          onClick={() => toggle("mode")}
+        >
+          Mode
+        </button>
+        <button
+          type="button"
+          className={menu === "controller" ? "is-on" : ""}
+          aria-expanded={menu === "controller"}
+          onClick={() => toggle("controller")}
+        >
+          Controller
+        </button>
+        <button
+          type="button"
+          className={menu === "gameplay" ? "is-on" : ""}
+          aria-expanded={menu === "gameplay"}
+          onClick={() => toggle("gameplay")}
+        >
+          Gameplay
+        </button>
+        <button
+          type="button"
+          className={menu === "camera" ? "is-on" : ""}
+          aria-expanded={menu === "camera"}
+          onClick={() => toggle("camera")}
+        >
+          Camera
+        </button>
+        <button
+          type="button"
+          className={replay ? "is-on" : ""}
+          disabled={!replay && (!playing || !replayHasFootage())}
+          onClick={startReplay}
+        >
+          Replay
+        </button>
+        <div className="cam-pop">
+          {help ? <ControlsHelp /> : null}
+          <button
+            type="button"
+            className={help ? "is-on" : ""}
+            aria-expanded={help}
+            onClick={() => setHelp((v) => !v)}
+          >
+            Info
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
 function ControlsHelp() {
+  const wings = useGame((s) => s.controlProfile) === "wings";
   return (
     <div className="help-tip">
-      <p className="hint">A / E start · WASD skate · F shot · Q deke/hit · Space burst · Shift / RT dive · G / LT net · P pause</p>
+      <p className="hint">
+        {wings
+          ? "A / E start · WASD skate · F shot · Q deke/hit · Space burst · G left · Shift right · LB / N goalie · M / RB dive · P pause"
+          : "A / E start · WASD skate · F shot · Q deke/hit · Space burst · Shift / RT dive · G / LT net · P pause"}
+      </p>
       <dl className="legend">
         <div>
           <dt>With puck</dt>
@@ -311,97 +666,28 @@ function ControlsHelp() {
         </div>
         <div>
           <dt>No puck</dt>
-          <dd>A switch · X poke / one-timer · Y hit · B burst · RT / Shift dive · frozen puck: Y check</dd>
+          <dd>
+            {wings
+              ? "A switch · X poke / one-timer / hold slap one-timer · Y hit · B burst · G / LT left · Shift / RT right · RB / M dive · frozen puck: Y check"
+              : "A switch · X poke / one-timer / hold slap one-timer · Y hit · B burst · RT / Shift dive · frozen puck: Y check"}
+          </dd>
         </div>
         <div>
           <dt>Net</dt>
-          <dd>Hold LT or G — take your goalie (only if you don't have the puck)</dd>
+          <dd>
+            {wings
+              ? "Hold LB, comma, or N — take your goalie (only if you don't have the puck)"
+              : "Hold LT or G — take your goalie (only if you don't have the puck)"}
+          </dd>
         </div>
-      </dl>
-    </div>
-  );
-}
-
-function CamTools() {
-  const [open, setOpen] = useState(false);
-  const [help, setHelp] = useState(false);
-  const checkRefs = useGame((s) => s.checkRefs);
-  const setCheckRefs = useGame((s) => s.setCheckRefs);
-  const checkGoalies = useGame((s) => s.checkGoalies);
-  const setCheckGoalies = useGame((s) => s.setCheckGoalies);
-  const setGameSpeed = useGame((s) => s.setGameSpeed);
-  const setCpuOffense = useGame((s) => s.setCpuOffense);
-  const setCpuDefense = useGame((s) => s.setCpuDefense);
-  const setCpuGoalie = useGame((s) => s.setCpuGoalie);
-  const setUserOffense = useGame((s) => s.setUserOffense);
-  const setUserDefense = useGame((s) => s.setUserDefense);
-  const setUserGoalie = useGame((s) => s.setUserGoalie);
-  const resetSliders = () => {
-    setGameSpeed(1);
-    setCpuOffense(1);
-    setCpuDefense(1);
-    setCpuGoalie(0.8);
-    setUserOffense(0.6);
-    setUserDefense(1);
-    setUserGoalie(0.5);
-  };
-  return (
-    <>
-      <div className="cam-pop">
-        {open ? (
-          <div className="settings-panel">
-            <AbilitySliders />
-            <button
-              type="button"
-              className={`settings-toggle${checkRefs ? " is-on" : ""}`}
-              aria-pressed={checkRefs}
-              onClick={() => setCheckRefs(!checkRefs)}
-            >
-              Check Refs
-            </button>
-            <button
-              type="button"
-              className={`settings-toggle${checkGoalies ? " is-on" : ""}`}
-              aria-pressed={checkGoalies}
-              onClick={() => setCheckGoalies(!checkGoalies)}
-            >
-              Check Goalies
-            </button>
-            <button type="button" className="settings-toggle" onClick={resetSliders}>
-              Reset
-            </button>
+        {wings ? (
+          <div>
+            <dt>Wings</dt>
+            <dd>LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB takes goalie; RB dives.</dd>
           </div>
         ) : null}
-        <button
-          type="button"
-          className={open ? "is-on" : ""}
-          aria-expanded={open}
-          aria-label="Settings"
-          onClick={() => {
-            setOpen((v) => !v);
-            setHelp(false);
-          }}
-        >
-          <Settings size={16} />
-          Settings
-        </button>
-      </div>
-      <div className="cam-pop">
-        {help ? <ControlsHelp /> : null}
-        <button
-          type="button"
-          className={`settings-help-btn${help ? " is-on" : ""}`}
-          aria-expanded={help}
-          aria-label="Controls help"
-          onClick={() => {
-            setHelp((v) => !v);
-            setOpen(false);
-          }}
-        >
-          <CircleHelp size={16} />
-        </button>
-      </div>
-    </>
+      </dl>
+    </div>
   );
 }
 
@@ -432,6 +718,8 @@ function OffscreenArrow({ kind }: { kind: "user" | "puck" }) {
   const ref = useRef<HTMLDivElement>(null);
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
+  const homeKit = useGame((s) => s.homeKit);
+  const teamColor = kitById(homeKit).ribbon;
 
   useEffect(() => {
     let raf = 0;
@@ -456,7 +744,12 @@ function OffscreenArrow({ kind }: { kind: "user" | "puck" }) {
   }, [playing, paused, kind]);
 
   return (
-    <div ref={ref} className={`offscreen-arrow${kind === "puck" ? " is-puck" : ""}`} aria-hidden="true">
+    <div
+      ref={ref}
+      className={`offscreen-arrow${kind === "puck" ? " is-puck" : ""}`}
+      style={kind === "user" ? { color: teamColor } : undefined}
+      aria-hidden="true"
+    >
       <svg viewBox="0 0 24 24" width="32" height="32">
         <path d="M12 2 L22 20 L12 15 L2 20 Z" />
       </svg>
@@ -512,10 +805,8 @@ export function Overlay() {
   const awayLineup = useGame((s) => s.awayLineup);
   const liveHome = useGame((s) => s.liveHome);
   const liveAway = useGame((s) => s.liveAway);
-  const powerPlay = useGame((s) => s.powerPlay);
   const speed = useGame((s) => s.speed);
   const pad = useGame((s) => s.pad);
-  const arenaLook = useGame((s) => s.arenaLook);
   const hasPuck = useGame((s) => s.hasPuck);
   const charge = useGame((s) => s.charge);
   const chargeKind = useGame((s) => s.chargeKind);
@@ -524,17 +815,17 @@ export function Overlay() {
   const whistle = useGame((s) => s.whistle);
   const replay = useGame((s) => s.replay);
   const clockMode = useGame((s) => s.clockMode);
+  const controlProfile = useGame((s) => s.controlProfile);
   const periodClock = useGame((s) => s.periodClock);
+  const drillScore = useGame((s) => s.drillScore);
+  const drillTargets = useGame((s) => s.drillTargets);
   const periodOver = useGame((s) => s.periodOver);
   const setPlaying = useGame((s) => s.setPlaying);
   const setPaused = useGame((s) => s.setPaused);
-  const setCamMode = useGame((s) => s.setCamMode);
   const setHomeKit = useGame((s) => s.setHomeKit);
   const setAwayKit = useGame((s) => s.setAwayKit);
   const setHomeLineup = useGame((s) => s.setHomeLineup);
   const setAwayLineup = useGame((s) => s.setAwayLineup);
-  const setArenaLook = useGame((s) => s.setArenaLook);
-  const setPowerPlay = useGame((s) => s.setPowerPlay);
 
   useEffect(() => {
     if (!paused) return;
@@ -569,73 +860,99 @@ export function Overlay() {
     <div className="hud">
       <div className="hud-top-stack">
         <div className="uni-banner">
-          <div className="uni-side">
-            <div className="uni-side-head">
-              <span>Home</span>
-              {!playing || paused ? (
-                <LineupStrip lineup={playing ? liveHome : homeLineup} onChange={applyHome} disabled={false} />
-              ) : (
-                <small>
-                  {lineupTotal(liveHome)} / {LINEUP_CAP}
-                </small>
-              )}
+          <div className="uni-cluster">
+            <div className="uni-side">
+              <div className="uni-side-head">
+                <span>
+                  You
+                  <AimCompass />
+                </span>
+                {playing && !paused ? (
+                  <small>
+                    {lineupTotal(liveHome)} / {modeLineupCap(clockMode)}
+                  </small>
+                ) : null}
+              </div>
+              <div className="uni-row">
+                {UNIFORMS.map((u) => (
+                  <Swatch
+                    key={u.id}
+                    id={u.id}
+                    selected={homeKit === u.id}
+                    disabled={awayKit === u.id}
+                    onPick={setHomeKit}
+                  />
+                ))}
+              </div>
             </div>
-            <div className="uni-row">
-              {UNIFORMS.map((u) => (
-                <Swatch
-                  key={u.id}
-                  id={u.id}
-                  selected={homeKit === u.id}
-                  disabled={awayKit === u.id}
-                  onPick={setHomeKit}
-                />
-              ))}
-            </div>
+            {!playing || paused ? (
+              <LineupStrip lineup={playing ? liveHome : homeLineup} onChange={applyHome} disabled={false} />
+            ) : null}
+            {!playing || paused ? <SideSliders who="user" /> : null}
           </div>
-          <div className="uni-side">
-            <div className="uni-side-head">
-              <span>Away</span>
-              {!playing || paused ? (
-                <LineupStrip lineup={playing ? liveAway : awayLineup} onChange={applyAway} disabled={false} />
-              ) : (
-                <small>
-                  {lineupTotal(liveAway)} / {LINEUP_CAP}
-                </small>
-              )}
+          <div className="uni-cluster">
+            <div className="uni-side">
+              <div className="uni-side-head">
+                <span>
+                  CPU
+                  <AimCompass flip />
+                </span>
+                {playing && !paused ? (
+                  <small>
+                    {lineupTotal(liveAway)} / {modeLineupCap(clockMode)}
+                  </small>
+                ) : null}
+              </div>
+              <div className="uni-row">
+                {UNIFORMS.map((u) => (
+                  <Swatch
+                    key={u.id}
+                    id={u.id}
+                    selected={awayKit === u.id}
+                    disabled={homeKit === u.id}
+                    onPick={setAwayKit}
+                  />
+                ))}
+              </div>
             </div>
-            <div className="uni-row">
-              {UNIFORMS.map((u) => (
-                <Swatch
-                  key={u.id}
-                  id={u.id}
-                  selected={awayKit === u.id}
-                  disabled={homeKit === u.id}
-                  onPick={setAwayKit}
-                />
-              ))}
-            </div>
+            {!playing || paused ? (
+              <LineupStrip lineup={playing ? liveAway : awayLineup} onChange={applyAway} disabled={false} />
+            ) : null}
+            {!playing || paused ? <SideSliders who="cpu" /> : null}
           </div>
         </div>
 
         <header className="hud-top">
           <div>
-            <p className="eyebrow">Elevation Edge · v0</p>
+            <p className="eyebrow">Elevation Edge · v1</p>
             <h1>Hockey Fast Break</h1>
+            <AbilitySliders />
           </div>
           <div className="hud-stats">
             <span className="scoreline">
-              <span className="who">
-                <UniStripe kit={homeUni} />
-                YOU
-              </span>
-              <b>{homeScore}</b>
-              <span>—</span>
-              <b>{awayScore}</b>
-              <span className="who">
-                CPU
-                <UniStripe kit={awayUni} />
-              </span>
-              {clockMode === "game" ? <span className="period-clock">{fmtClock(periodClock)}</span> : null}
+              {clockMode === "drill" ? (
+                <>
+                  <span className="who">DRILL</span>
+                  <b>{drillScore}</b>
+                  <span key={drillTargets}>/ {drillMaxScore()}</span>
+                  <span className="period-clock">{fmtClock(periodClock)}</span>
+                </>
+              ) : (
+                <>
+                  <span className="who">
+                    <UniStripe kit={homeUni} />
+                    YOU
+                  </span>
+                  <b>{homeScore}</b>
+                  <span>—</span>
+                  <b>{awayScore}</b>
+                  <span className="who">
+                    CPU
+                    <UniStripe kit={awayUni} />
+                  </span>
+                  {clockMode === "game" ? <span className="period-clock">{fmtClock(periodClock)}</span> : null}
+                </>
+              )}
             </span>
             <span>
               Shot <b>{speed.toFixed(0)}</b>
@@ -688,14 +1005,16 @@ export function Overlay() {
               <span>Drag to look · X zoom in · B zoom out · A resume</span>
             </p>
             <ClockSetup />
+            <p className="hint">
+              {controlProfile === "wings"
+                ? "Wings: LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB takes goalie; RB dives."
+                : "Classic: current map, LT goalie."}
+            </p>
             <div className="btn-row cam-adjust-btns">
               <button
                 type="button"
                 className="btn-primary"
-                onClick={() => {
-                  finishPauseCam();
-                  setPaused(false);
-                }}
+                onClick={() => resumePausedGame()}
               >
                 Resume
               </button>
@@ -714,45 +1033,14 @@ export function Overlay() {
                 onKeyDown={(e) => {
                   if (e.code === "Space") e.preventDefault();
                 }}
-                onClick={() => {
-                  resetWorld();
-                  setPaused(false);
-                }}
+                onClick={() => resetPausedGame()}
               >
                 Reset
               </button>
             </div>
           </div>
         ) : null}
-        <div className="cam-row">
-          <button
-            type="button"
-            className={powerPlay ? "is-on" : ""}
-            title="Scored-on team gets a player out of the box on the next faceoff"
-            onClick={() => setPowerPlay(!powerPlay)}
-          >
-            Power Play
-          </button>
-          {CAMS.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              className={camMode === c.id ? "is-on" : ""}
-              title={c.blurb}
-              onClick={() => setCamMode(c.id)}
-            >
-              {c.label}
-            </button>
-          ))}
-          <button
-            type="button"
-            className={arenaLook === "dark" ? "is-on" : ""}
-            onClick={() => setArenaLook(arenaLook === "dark" ? "light" : "dark")}
-          >
-            {arenaLook === "dark" ? "Rink Dark" : "Rink Light"}
-          </button>
-          <CamTools />
-        </div>
+        <MainMenus />
         <div className="hud-actions">
           {playing ? (
             <button
@@ -760,8 +1048,7 @@ export function Overlay() {
               aria-label={paused ? "Resume" : "Pause"}
               onClick={() => {
                 if (paused) {
-                  finishPauseCam();
-                  setPaused(false);
+                  resumePausedGame();
                 } else {
                   beginPauseCam(camMode);
                   setPaused(true);
@@ -779,6 +1066,12 @@ export function Overlay() {
               if (paused && e.code === "Space") e.preventDefault();
             }}
             onClick={() => {
+              useGame.getState().rerollAwayKit();
+              useGame.getState().rerollClockMode();
+              if (playing && paused) {
+                resetPausedGame();
+                return;
+              }
               resetWorld();
               if (!playing) setPlaying(true);
             }}
@@ -800,9 +1093,15 @@ export function Overlay() {
                 ? " · A switch · B skip celebration · stick skates · Y hit"
                 : hasPuck
                 ? world.skaters[world.userId]?.kind === "goalie"
-                  ? " · A outlet pass · X dump · stick aims · hold G / LT net"
-                  : " · Stick aims · A pass · X shot · Y deke · B burst · hold G / LT net"
-                : " · Stick skates · A switch · X poke · Y hit · B burst · RT / Shift dive · hold G / LT net"}
+                  ? controlProfile === "wings"
+                    ? " · A outlet pass · X dump · stick aims · hold LB / N goalie"
+                    : " · A outlet pass · X dump · stick aims · hold G / LT net"
+                  : controlProfile === "wings"
+                    ? " · Stick aims · A pass · X shot · Y deke · B burst · G/LT left · Shift/RT right · LB goalie"
+                    : " · Stick aims · A pass · X shot · Y deke · B burst · hold G / LT net"
+                : controlProfile === "wings"
+                  ? " · Stick skates · A switch · X poke · Y hit · B burst · G/LT left · Shift/RT right · LB goalie · RB/M dive"
+                  : " · Stick skates · A switch · X poke · Y hit · B burst · RT / Shift dive · hold G / LT net"}
         </p>
       </footer>
 
@@ -812,20 +1111,37 @@ export function Overlay() {
             ? "A pause · X/B zoom · LB/RB slow · LT/RT fast · Y+stick orbit · R exit"
             : "A/B/X/Y skip"}
         </div>
-      ) : periodOver ? (
+      ) : periodOver || world.drillWon ? (
         <div className="whistle">
-          {homeScore === awayScore ? "Final" : homeScore > awayScore ? "YOU WIN" : "CPU WINS"}
+          {clockMode === "drill"
+            ? world.drillWon
+              ? (
+                  <>
+                    {drillScore}
+                    <small>{fmtClock(world.drillElapsed)}</small>
+                  </>
+                )
+              : `DRILL ${drillScore}`
+            : homeScore === awayScore
+              ? "Final"
+              : homeScore > awayScore
+                ? "YOU WIN"
+                : "CPU WINS"}
         </div>
       ) : whistle ? (
         <div className={`whistle ${whistle}`}>
-          {whistle === "goal" ? "GOAL" : "Goalie Covered"}
+          {whistle === "goal" ? "GOAL" : whistle === "offside" ? "Offsides" : "Goalie Covered"}
         </div>
       ) : null}
 
       {playing && periodOver && !paused ? (
         <div className="start-card">
           <p className="hint">
-            Final {homeScore}–{awayScore}
+            {clockMode === "drill"
+              ? world.drillWon
+                ? `${drillScore} / ${drillMaxScore()} · ${fmtClock(world.drillElapsed)}`
+                : `Score ${drillScore} / ${drillMaxScore()}`
+              : `Final ${homeScore}–${awayScore}`}
           </p>
           <button type="button" className="btn-primary" onClick={skate}>
             Skate
@@ -885,7 +1201,7 @@ export function Overlay() {
                 onPointerCancel={() => setTouchLt(false)}
               >
                 <small>LT</small>
-                Net
+                {controlProfile === "wings" ? "Left" : "Net"}
               </button>
             </div>
           )}
