@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNumberTexture } from "./iceTexture";
-import { defendDir, world, type Skater } from "./sim";
+import { cheerFor, defendDir, drillFade, rageDraw, world, type Skater } from "./sim";
 import { kitById, type UniformKit } from "./uniforms";
 import { useGame } from "./store";
 import { BLUE_X, GOAL_H } from "./rink";
@@ -23,6 +23,12 @@ const thighGeo = new THREE.BoxGeometry(0.16, 0.34, 0.18);
 const shinGeo = new THREE.BoxGeometry(0.14, 0.3, 0.16);
 const bootGeo = new THREE.BoxGeometry(0.14, 0.1, 0.32);
 const bladeGeo = new THREE.BoxGeometry(0.03, 0.035, 0.32);
+const skateFrameGeo = new THREE.BoxGeometry(0.046, 0.014, 0.26);
+const goalieFrameGeo = new THREE.BoxGeometry(0.055, 0.014, 0.2);
+const wheelTireGeo = new THREE.CylinderGeometry(0.022, 0.022, 0.034, 12);
+const wheelHubGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.048, 8);
+const SKATE_WHEEL_Z = [-0.108, -0.036, 0.036, 0.108] as const;
+const GOALIE_WHEEL_Z = [-0.078, -0.026, 0.026, 0.078] as const;
 const upperArmGeo = new THREE.BoxGeometry(0.12, 0.28, 0.14);
 const armStripeGeo = new THREE.BoxGeometry(0.135, 0.055, 0.155);
 const forearmGeo = new THREE.BoxGeometry(0.11, 0.26, 0.13);
@@ -72,6 +78,16 @@ const _ikInv = new THREE.Quaternion();
 const _handTop = new THREE.Vector3();
 const _handBot = new THREE.Vector3();
 const _stickM = new THREE.Matrix4();
+const _stickQ = new THREE.Quaternion();
+const _parentQ = new THREE.Quaternion();
+const _liftAxis = new THREE.Vector3();
+const _liftPt = new THREE.Vector3();
+const _corner = new THREE.Vector3();
+const _euler = new THREE.Euler();
+const STICK_ICE_Y = 0.03;
+const RAGE_HX = 0.14;
+const RAGE_HY = 1.2;
+const RAGE_HZ = 0.34;
 
 function mat(color: string, extras: THREE.MeshStandardMaterialParameters = {}) {
   return new THREE.MeshStandardMaterial({
@@ -310,13 +326,14 @@ function poseArmIk(
   tz: number,
   poleSign: number,
   allowFront = false,
+  fitGlove = false,
 ) {
-  const clamped = clampHandOutsideTorso(tx, ty, tz, poleSign, allowFront);
+  const clamped = clampHandOutsideTorso(tx, ty, tz, poleSign, allowFront || fitGlove);
   tx = clamped.x;
   ty = clamped.y;
   tz = clamped.z;
-  const UPPER = allowFront ? 0.3 : 0.28;
-  const LOWER = allowFront ? 0.44 : 0.4;
+  const UPPER = fitGlove ? 0.281 : allowFront ? 0.3 : 0.28;
+  const LOWER = fitGlove ? 0.287 : allowFront ? 0.44 : 0.4;
   _ikTo.set(tx - sx, ty - sy, tz - sz);
   let dist = _ikTo.length();
   const maxR = UPPER + LOWER - 0.02;
@@ -331,18 +348,21 @@ function poseArmIk(
   _ikTo.normalize();
   const a = (UPPER * UPPER - LOWER * LOWER + dist * dist) / (2 * dist);
   const h = Math.sqrt(Math.max(0, UPPER * UPPER - a * a));
-  if (allowFront) _ikPole.set(-poleSign * 0.08, -0.42, 0.4);
+  if (fitGlove) _ikPole.set(poleSign * (ty > sy ? 0.85 : 0.35), ty > sy ? 0.2 : -0.9, 0.28);
+  else if (allowFront) _ikPole.set(-poleSign * 0.08, -0.42, 0.4);
   else _ikPole.set(poleSign * 0.28, -0.48, 0.32);
   _ikN.copy(_ikTo).cross(_ikPole);
   _ikN.cross(_ikTo);
   if (_ikN.lengthSq() < 1e-6) _ikN.set(poleSign, 0, 0);
   _ikN.normalize();
   _ikElbow.set(sx, sy, sz).addScaledVector(_ikTo, a).addScaledVector(_ikN, h);
-  _ikElbow.y = Math.min(_ikElbow.y, sy - (poleSign < 0 ? 0.22 : 0.14));
-  _ikElbow.z = Math.max(_ikElbow.z, sz + 0.08);
-  if (allowFront) {
+  if (!fitGlove) {
+    _ikElbow.y = Math.min(_ikElbow.y, sy - (poleSign < 0 ? 0.22 : 0.14));
+    _ikElbow.z = Math.max(_ikElbow.z, sz + 0.08);
+  }
+  if (!fitGlove && allowFront) {
     if (poleSign < 0) _ikElbow.x = Math.min(_ikElbow.x, sx + 0.12);
-  } else {
+  } else if (!fitGlove) {
     const elbow = clampHandOutsideTorso(_ikElbow.x, _ikElbow.y, _ikElbow.z, poleSign, allowFront);
     _ikElbow.set(elbow.x, Math.min(elbow.y, sy - 0.18), elbow.z);
   }
@@ -470,7 +490,7 @@ function poseStickToPuck(
   stick.position.set(bx, by, bz);
 }
 
-function poseStickRaised(
+function poseStickOneHand(
   stick: THREE.Group,
   parent: THREE.Group,
   hand: THREE.Group,
@@ -478,14 +498,423 @@ function poseStickRaised(
 ) {
   parent.updateWorldMatrix(true, false);
   hand.updateWorldMatrix(true, false);
-  _handTop.set(0.02, -0.28, 0.06);
+  _handTop.set(-0.01, -0.28, 0.07);
   hand.localToWorld(_handTop);
   parent.worldToLocal(_handTop);
-  _ikD1.set(0.1, -0.93, 0.28).normalize();
+  const grip = layout.len * 0.86;
+  const drop = _handTop.y - 0.05;
+  const horiz = drop < grip ? Math.sqrt(Math.max(0.04, grip * grip - drop * drop)) : 0.22;
+  const bx = _handTop.x + horiz * 0.92;
+  const by = drop < grip ? 0.05 : _handTop.y - grip * 0.92;
+  const bz = _handTop.z + horiz * 0.28;
+  _ikD1.set(_handTop.x - bx, _handTop.y - by, _handTop.z - bz);
+  if (_ikD1.lengthSq() < 1e-8) _ikD1.set(0.2, 1, 0.1);
+  else _ikD1.normalize();
   stick.quaternion.setFromUnitVectors(_fromY, _ikD1);
-  const grip = layout.len * 0.88;
   _ikD2.set(0, grip, 0).applyQuaternion(stick.quaternion);
   stick.position.set(_handTop.x - _ikD2.x, _handTop.y - _ikD2.y, _handTop.z - _ikD2.z);
+}
+
+function skaterPoint(s: Skater, lx: number, ly: number, lz: number, out: THREE.Vector3): void {
+  const ry = s.yaw + Math.PI;
+  const c = Math.cos(ry);
+  const sn = Math.sin(ry);
+  out.set(s.x + lx * c + lz * sn, ly, s.z - lx * sn + lz * c);
+}
+
+function poseGloveAt(
+  body: THREE.Group,
+  arm: THREE.Group,
+  fore: THREE.Group,
+  sx: number,
+  sy: number,
+  sz: number,
+  gx: number,
+  gy: number,
+  gz: number,
+  poleSign: number,
+): void {
+  const ox = poleSign < 0 ? 0.02 : -0.01;
+  const oz = poleSign < 0 ? 0.06 : 0.07;
+  let tx = gx;
+  let ty = gy;
+  let tz = gz;
+  let best = Infinity;
+  for (let n = 0; n < 4; n++) {
+    poseArmIk(arm, fore, sx, sy, sz, tx, ty, tz, poleSign, true, true);
+    body.updateWorldMatrix(true, true);
+    _corner.set(ox, -0.28, oz);
+    fore.localToWorld(_corner);
+    body.worldToLocal(_corner);
+    const ex = gx - _corner.x;
+    const ey = gy - _corner.y;
+    const ez = gz - _corner.z;
+    const err = Math.hypot(ex, ey, ez);
+    if (err < best) {
+      best = err;
+      _stickQ.copy(arm.quaternion);
+      _parentQ.copy(fore.quaternion);
+    } else break;
+    if (err < 0.02) break;
+    tx += ex;
+    ty += ey;
+    tz += ez;
+  }
+  arm.quaternion.copy(_stickQ);
+  fore.quaternion.copy(_parentQ);
+}
+
+function cheerNeutral(
+  body: THREE.Group,
+  arm: THREE.Group,
+  fore: THREE.Group,
+  side: -1 | 1,
+): void {
+  const sx = side < 0 ? -0.26 : 0.24;
+  poseGloveAt(body, arm, fore, sx, 1.46, 0.06, side * 0.46, 0.98, 0.16, side);
+}
+
+function slapOpen(t: number): number {
+  const u = (t % 0.85) / 0.85;
+  if (u < 0.5) return 0.06;
+  if (u < 0.68) {
+    const c = (u - 0.5) / 0.18;
+    return 0.06 + c * c * (3 - 2 * c) * 0.94;
+  }
+  return 1;
+}
+
+function patReach(t: number): number {
+  const u = t % 0.5;
+  if (u < 0.25) return 1;
+  return 1 - ((u - 0.25) / 0.25) * 0.38;
+}
+
+function lateralMates(s: Skater): { neg: Skater | null; pos: Skater | null } {
+  const ry = s.yaw + Math.PI;
+  const c = Math.cos(ry);
+  const sn = Math.sin(ry);
+  let neg: Skater | null = null;
+  let pos: Skater | null = null;
+  let negD = 1.85;
+  let posD = 1.85;
+  for (const o of world.skaters) {
+    if (o.id === s.id || o.kind === "goalie" || o.side !== s.side || o.celebrate <= 0.05) continue;
+    const dx = o.x - s.x;
+    const dz = o.z - s.z;
+    const lx = dx * c - dz * sn;
+    const d = Math.hypot(dx, dz);
+    if (d > 1.85 || d < 0.05) continue;
+    const lz = dx * sn + dz * c;
+    if (Math.abs(lx) < Math.abs(lz) * 0.4) continue;
+    if (lx >= 0 && d < posD) {
+      pos = o;
+      posD = d;
+    } else if (lx < 0 && d < negD) {
+      neg = o;
+      negD = d;
+    }
+  }
+  return { neg, pos };
+}
+
+function nearShoulder(mate: Skater, from: Skater, out: THREE.Vector3): void {
+  skaterPoint(mate, -0.3, 1.44, -0.07, _handTop);
+  skaterPoint(mate, 0.28, 1.44, -0.07, _handBot);
+  const dl = (_handTop.x - from.x) ** 2 + (_handTop.z - from.z) ** 2;
+  const dr = (_handBot.x - from.x) ** 2 + (_handBot.z - from.z) ** 2;
+  out.copy(dl <= dr ? _handTop : _handBot);
+}
+
+function bestMeet(
+  a: Skater,
+  b: Skater,
+  yWant: number,
+): { x: number; y: number; z: number; handA: 0 | 1; handB: 0 | 1 } {
+  const preferA = cheerFor(a.id)?.hand ?? 0;
+  const preferB = cheerFor(b.id)?.hand ?? 0;
+  const reach = 0.53;
+  let bestScore = Infinity;
+  let pick = {
+    x: (a.x + b.x) * 0.5,
+    y: yWant,
+    z: (a.z + b.z) * 0.5,
+    handA: preferA,
+    handB: preferB,
+  };
+  for (const ha of [0, 1] as const) {
+    for (const hb of [0, 1] as const) {
+      skaterPoint(a, ha === 0 ? -0.26 : 0.24, 1.46, 0.06, _handTop);
+      skaterPoint(b, hb === 0 ? -0.26 : 0.24, 1.46, 0.06, _handBot);
+      const ax = _handTop.x;
+      const az = _handTop.z;
+      const bx = _handBot.x;
+      const bz = _handBot.z;
+      const mx = (ax + bx) * 0.5;
+      const mz = (az + bz) * 0.5;
+      const h = Math.max(Math.hypot(mx - ax, mz - az), Math.hypot(mx - bx, mz - bz));
+      const yMax = 1.46 + Math.sqrt(Math.max(0, reach * reach - h * h));
+      const y = Math.max(1.05, Math.min(yWant, yMax));
+      const miss = Math.max(0, Math.min(yWant, 1.8) - y);
+      const prefer = (ha === preferA ? 0 : 1) + (hb === preferB ? 0 : 1);
+      const score = miss * 30 + prefer + h * 0.02;
+      if (score < bestScore) {
+        bestScore = score;
+        pick = { x: mx, y, z: mz, handA: ha, handB: hb };
+      }
+    }
+  }
+  return pick;
+}
+
+function mountRagePiece(
+  root: THREE.Group,
+  group: THREE.Group,
+  p: { x: number; y: number; z: number; rx: number; ry: number; rz: number; dx: number; dy: number; dz: number },
+) {
+  root.updateWorldMatrix(true, false);
+  _liftPt.set(p.x, p.y, p.z);
+  root.worldToLocal(_liftPt);
+  group.position.copy(_liftPt);
+  root.getWorldQuaternion(_parentQ);
+  _ikD1.set(p.dx, p.dy, p.dz);
+  if (_ikD1.lengthSq() < 1e-8) _ikD1.set(0, 1, 0);
+  else _ikD1.normalize();
+  _ikD1.applyQuaternion(_parentQ.invert());
+  group.quaternion.setFromUnitVectors(_fromY, _ikD1);
+  _euler.set(p.rx, p.ry, p.rz);
+  _ikInv.setFromEuler(_euler);
+  group.quaternion.multiply(_ikInv);
+  group.visible = true;
+}
+
+function poseRage(
+  s: Skater,
+  root: THREE.Group,
+  body: THREE.Group | null,
+  lArm: THREE.Group,
+  rArm: THREE.Group,
+  lFore: THREE.Group | null,
+  rFore: THREE.Group | null,
+  stick: THREE.Group,
+  shaft: THREE.Group,
+  blade: THREE.Group,
+  knob: THREE.Object3D,
+  flyBlade: THREE.Group,
+  flyShaft: THREE.Group,
+  layout: { len: number },
+  view: NonNullable<ReturnType<typeof rageDraw>>,
+) {
+  const t = view.t;
+  const hit = view.hit > 0 ? view.hit : 99;
+  const toss = view.toss > 0 ? view.toss : 99;
+  const wind0 = Math.max(0.16, hit - 0.52);
+  let e = 0;
+  if (t >= hit) e = 1;
+  else if (t > wind0) {
+    const u = (t - wind0) / Math.max(0.05, hit - wind0);
+    e = u * u * (3 - 2 * u);
+  }
+  const snapped = t >= hit && view.hit > 0;
+  const thrown = t >= toss && view.toss > 0;
+  if (body) {
+    body.position.y = 0;
+    body.rotation.set(thrown ? 0.06 : 0.1 + e * 0.2, 0, 0);
+  }
+  lArm.position.set(-0.26, 1.46, 0.06);
+  rArm.position.set(0.24, 1.46, 0.06);
+  root.updateWorldMatrix(true, false);
+  _ikTo.set(view.ironX, view.ironY, view.ironZ);
+  root.worldToLocal(_ikTo);
+  _ikD2.set(0.22, 0.88, -0.42);
+  if (_ikD2.lengthSq() > 1e-8) _ikD2.normalize();
+  const cockGrip = layout.len * 0.7;
+  const cBx = 0.24 - _ikD2.x * cockGrip;
+  const cBy = 1.4 - _ikD2.y * cockGrip;
+  const cBz = -0.05 - _ikD2.z * cockGrip;
+  _ikD1.set(RAGE_HX - _ikTo.x, RAGE_HY - _ikTo.y, RAGE_HZ - _ikTo.z);
+  const reach = _ikD1.length();
+  const maxReach = layout.len * 0.9;
+  let tBx = _ikTo.x;
+  let tBy = _ikTo.y;
+  let tBz = _ikTo.z;
+  if (reach > maxReach && reach > 1e-4) {
+    const sc = maxReach / reach;
+    tBx = RAGE_HX - _ikD1.x * sc;
+    tBy = RAGE_HY - _ikD1.y * sc;
+    tBz = RAGE_HZ - _ikD1.z * sc;
+    _ikD1.multiplyScalar(sc);
+  }
+  if (_ikD1.lengthSq() < 1e-8) _ikD1.set(0, 1, 0);
+  else _ikD1.normalize();
+  const bx = cBx * (1 - e) + tBx * e;
+  const by = cBy * (1 - e) + tBy * e;
+  const bz = cBz * (1 - e) + tBz * e;
+  _handBot.set(_ikD2.x * (1 - e) + _ikD1.x * e, _ikD2.y * (1 - e) + _ikD1.y * e, _ikD2.z * (1 - e) + _ikD1.z * e);
+  if (_handBot.lengthSq() < 1e-8) _handBot.set(0, 1, 0);
+  else _handBot.normalize();
+  stick.quaternion.setFromUnitVectors(_fromY, _handBot);
+  stick.position.set(bx, by, bz);
+  stick.visible = !thrown;
+  knob.visible = !thrown;
+  blade.visible = !snapped;
+  if (snapped) {
+    shaft.position.set(0, layout.len * 0.75, 0);
+    shaft.scale.set(1, layout.len * 0.5, 1);
+  } else {
+    shaft.position.set(0, layout.len * 0.5, 0);
+    shaft.scale.set(1, layout.len, 1);
+  }
+  shaft.visible = !thrown;
+  if (thrown) {
+    const f = Math.min(1, (t - toss) / 0.24);
+    lArm.quaternion.identity();
+    rArm.quaternion.identity();
+    lArm.rotation.set(-0.5 - f * 0.25, 0.12, -0.42);
+    rArm.rotation.set(-1.25 + f * 0.7, -0.16, 0.48);
+    if (lFore) lFore.rotation.set(-0.3, 0, 0);
+    if (rFore) rFore.rotation.set(-0.62 + f * 0.4, 0, 0);
+  } else if (body) {
+    stick.updateWorldMatrix(true, false);
+    body.updateWorldMatrix(true, false);
+    const contactTop = Math.min(layout.len * 0.88, Math.max(layout.len * 0.62, Math.min(reach, maxReach)));
+    let topT = layout.len * 0.7 * (1 - e) + contactTop * e;
+    let botT = topT - (snapped ? 0.22 : 0.36);
+    if (snapped) {
+      topT = Math.max(layout.len * 0.6, topT);
+      botT = Math.max(layout.len * 0.52, Math.min(botT, topT - 0.16));
+    }
+    _handTop.set(0, topT, 0);
+    stick.localToWorld(_handTop);
+    body.worldToLocal(_handTop);
+    _handBot.set(0, botT, 0);
+    stick.localToWorld(_handBot);
+    body.worldToLocal(_handBot);
+    poseArmIk(lArm, lFore, -0.26, 1.46, 0.06, _handTop.x, _handTop.y, _handTop.z, -1, true);
+    poseArmIk(rArm, rFore, 0.24, 1.46, 0.06, _handBot.x, _handBot.y, _handBot.z, 1, true);
+  }
+  if (view.blade.on) mountRagePiece(root, flyBlade, view.blade);
+  else flyBlade.visible = false;
+  if (view.shaft.on) mountRagePiece(root, flyShaft, view.shaft);
+  else flyShaft.visible = false;
+}
+
+function poseCheer(
+  s: Skater,
+  body: THREE.Group,
+  lArm: THREE.Group,
+  rArm: THREE.Group,
+  lFore: THREE.Group | null,
+  rFore: THREE.Group | null,
+): void {
+  lArm.position.set(-0.26, 1.46, 0.06);
+  rArm.position.set(0.24, 1.46, 0.06);
+  if (!lFore || !rFore) return;
+  const plan = cheerFor(s.id);
+  const kind = plan?.kind ?? 0;
+  const hand = plan?.hand ?? 0;
+  const straight = plan?.straight ?? 1;
+  const mate = plan && plan.mate >= 0 ? world.skaters[plan.mate] : undefined;
+  const near = !!mate && Math.hypot(mate.x - s.x, mate.z - s.z) < 2.4;
+  body.updateWorldMatrix(true, false);
+  const toBody = (src: THREE.Vector3) => {
+    _liftPt.copy(src);
+    body.worldToLocal(_liftPt);
+    return { x: _liftPt.x, y: _liftPt.y, z: _liftPt.z };
+  };
+  const aim = (side: -1 | 1, gx: number, gy: number, gz: number) => {
+    const arm = side < 0 ? lArm : rArm;
+    const fore = side < 0 ? lFore : rFore;
+    const sx = side < 0 ? -0.26 : 0.24;
+    poseGloveAt(body, arm, fore, sx, 1.46, 0.06, gx, gy, gz, side);
+  };
+  const park = (active: -1 | 1 | 2) => {
+    if (active !== -1) cheerNeutral(body, lArm, lFore, -1);
+    if (active !== 1) cheerNeutral(body, rArm, rFore, 1);
+  };
+  if (kind === 2) {
+    const sides = lateralMates(s);
+    const k = patReach(world.time);
+    const patSide = (side: -1 | 1, mateS: Skater | null) => {
+      const sx = side < 0 ? -0.26 : 0.24;
+      if (!mateS) {
+        aim(side, side * 0.46, 0.98, 0.16);
+        return;
+      }
+      nearShoulder(mateS, s, _ikTo);
+      const c = toBody(_ikTo);
+      aim(side, sx + (c.x - sx) * k, 1.46 + (c.y - 1.46) * k, 0.06 + (c.z - 0.06) * k);
+    };
+    patSide(-1, sides.neg);
+    patSide(1, sides.pos);
+    return;
+  }
+  let active: 0 | 1 = hand;
+  let mx = (hand === 0 ? -1 : 1) * 0.08;
+  let my = kind === 1 ? (straight ? 1.42 : 1.36) : straight ? 1.96 : 1.8;
+  let mz = 0.42;
+  if ((kind === 0 || kind === 1) && mate && near) {
+    const yWant = kind === 0 ? (straight ? 1.96 : 1.8) : straight ? 1.42 : 1.36;
+    const meet = bestMeet(s, mate, yWant);
+    active = meet.handA;
+    _ikTo.set(meet.x, meet.y, meet.z);
+    const c = toBody(_ikTo);
+    mx = c.x;
+    my = c.y;
+    mz = c.z;
+  } else if (kind === 3 && mate && near && mate.id !== s.id) {
+    const dx = s.x - mate.x;
+    const dz = s.z - mate.z;
+    const d = Math.hypot(dx, dz) || 1;
+    skaterPoint(mate, 0, 1.68, 0.02, _ikTo);
+    _ikTo.x += (dx / d) * 0.16;
+    _ikTo.z += (dz / d) * 0.16;
+    _ikTo.y = 1.7;
+    const c = toBody(_ikTo);
+    const side: -1 | 1 = hand === 0 ? -1 : 1;
+    const sx = side < 0 ? -0.26 : 0.24;
+    const k = patReach(world.time);
+    park(side);
+    aim(side, sx + (c.x - sx) * k, 1.46 + (c.y - 1.46) * k, 0.06 + (c.z - 0.06) * k);
+    return;
+  }
+  const side: -1 | 1 = active === 0 ? -1 : 1;
+  park(side);
+  const open = kind === 3 ? patReach(world.time) : slapOpen(world.time + (kind === 1 ? 0.2 : 0));
+  const cockY = kind === 0 ? 1.64 : kind === 3 ? 1.35 : 1.18;
+  const cockX = side * 0.34;
+  const cockZ = 0.1;
+  aim(
+    side,
+    cockX + (mx - cockX) * open,
+    cockY + (my - cockY) * open,
+    cockZ + (mz - cockZ) * open,
+  );
+}
+
+function poseGoalieCheer(
+  s: Skater,
+  body: THREE.Group,
+  lArm: THREE.Group,
+  rArm: THREE.Group,
+  lFore: THREE.Group | null,
+  rFore: THREE.Group | null,
+  stick: THREE.Group | null,
+) {
+  body.position.y = 0;
+  body.rotation.set(-0.1, 0, 0);
+  const pump = (Math.sin(world.time * 5.4 + s.id) + 1) * 0.5;
+  lArm.position.set(-0.36, 1.48, 0.08);
+  rArm.position.set(0.24, 1.46, 0.1);
+  lArm.rotation.set(-1.85 - pump * 0.75, 0.1, -0.38);
+  rArm.rotation.set(-1.95, -0.12, 0.4);
+  if (lFore) lFore.rotation.set(-0.5, 0.08, 0.04);
+  if (rFore) rFore.rotation.set(-0.18, -0.04, -0.02);
+  if (!stick) return;
+  stick.visible = true;
+  stick.position.set(0.03, -0.22, 0.05);
+  stick.rotation.set(0.06, 0.04, -0.16);
+  keepGoalieStickOnIce(stick);
 }
 
 function poseGoalieStance(
@@ -517,6 +946,54 @@ function poseGoalieStance(
 function poseGoalieStick(stick: THREE.Group, cover: number) {
   stick.position.set(0.03, -0.22, 0.05);
   stick.rotation.set(0.06 + cover * 0.1, 0.04, -0.16);
+}
+
+function stickLowPoint(stick: THREE.Group, out: THREE.Vector3): number {
+  let best = Infinity;
+  stick.updateWorldMatrix(true, true);
+  stick.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.geometry) return;
+    const geo = mesh.geometry;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    const bb = geo.boundingBox;
+    if (!bb) return;
+    for (let i = 0; i < 8; i++) {
+      _corner.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z);
+      mesh.localToWorld(_corner);
+      if (_corner.y < best) {
+        best = _corner.y;
+        out.copy(_corner);
+      }
+    }
+  });
+  return best;
+}
+
+function keepGoalieStickOnIce(stick: THREE.Group) {
+  const parent = stick.parent;
+  if (!parent) return;
+  for (let n = 0; n < 4; n++) {
+    const low = stickLowPoint(stick, _liftPt);
+    if (low >= STICK_ICE_Y) return;
+    stick.getWorldPosition(_handTop);
+    _ikD1.copy(_liftPt).sub(_handTop);
+    const horiz = Math.hypot(_ikD1.x, _ikD1.z);
+    if (horiz < 0.05) break;
+    const ang = Math.min(0.5, (STICK_ICE_Y - low) / horiz);
+    _liftAxis.set(-_ikD1.z, 0, _ikD1.x).normalize();
+    _stickQ.setFromAxisAngle(_liftAxis, ang);
+    stick.getWorldQuaternion(_parentQ);
+    _parentQ.premultiply(_stickQ);
+    parent.getWorldQuaternion(_stickQ);
+    stick.quaternion.copy(_stickQ.invert()).multiply(_parentQ);
+  }
+  const low = stickLowPoint(stick, _liftPt);
+  if (low >= STICK_ICE_Y) return;
+  stick.getWorldPosition(_liftPt);
+  _liftPt.y += STICK_ICE_Y - low;
+  parent.worldToLocal(_liftPt);
+  stick.position.copy(_liftPt);
 }
 
 function poseGoaliePads(
@@ -586,7 +1063,10 @@ function poseGoalieCover(
     if (lFore) lFore.rotation.set(-0.2 - (1 - high) * 0.85 - cover * 0.08, 0.16, 0.08);
     if (rFore) rFore.rotation.set(-0.42 - cover * 0.08, -0.12, -0.06);
   }
-  if (stick) poseGoalieStick(stick, cover);
+  if (stick) {
+    poseGoalieStick(stick, cover);
+    keepGoalieStickOnIce(stick);
+  }
   return true;
 }
 
@@ -597,6 +1077,270 @@ function tumbleRoot(struck: number, tumble: number, yaw: number) {
   const roll = Math.sin(spin) * 0.48;
   const y = 0.1 + Math.sin(pitch) * 0.36 + Math.abs(roll) * 0.22;
   return { y, rx: pitch, ry: yaw + Math.PI + spin * 0.45, rz: roll };
+}
+
+type GetUpFrame = {
+  brx: number;
+  brz: number;
+  lx: number;
+  ly: number;
+  lz: number;
+  lrx: number;
+  lrz: number;
+  ls: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  rrx: number;
+  rrz: number;
+  rs: number;
+  lpx: number;
+  lpy: number;
+  lpz: number;
+  larx: number;
+  lary: number;
+  larz: number;
+  lfr: number;
+  rpx: number;
+  rpy: number;
+  rpz: number;
+  rarx: number;
+  rary: number;
+  rarz: number;
+  rfr: number;
+};
+
+const GOALIE_DOWN: GetUpFrame = {
+  brx: 1.15,
+  brz: 0.18,
+  lx: -0.18,
+  ly: 0.55,
+  lz: 0.12,
+  lrx: 0.9,
+  lrz: -0.55,
+  ls: 1.8,
+  rx: 0.16,
+  ry: 0.55,
+  rz: 0.12,
+  rrx: 1.05,
+  rrz: 0.44,
+  rs: 1.9,
+  lpx: -0.26,
+  lpy: 1.46,
+  lpz: 0.06,
+  larx: -1.4,
+  lary: 0,
+  larz: 0.2,
+  lfr: -1.2,
+  rpx: 0.24,
+  rpy: 1.46,
+  rpz: 0.06,
+  rarx: -0.4,
+  rary: 0,
+  rarz: -1.1,
+  rfr: 0,
+};
+
+const GOALIE_ONE: GetUpFrame = {
+  brx: 1.05,
+  brz: 0.08,
+  lx: -0.2,
+  ly: 0.58,
+  lz: 0.16,
+  lrx: 0.7,
+  lrz: -0.4,
+  ls: 1.2,
+  rx: 0.16,
+  ry: 0.78,
+  rz: 0.08,
+  rrx: -0.45,
+  rrz: 0.12,
+  rs: 0.85,
+  lpx: -0.34,
+  lpy: 1.42,
+  lpz: 0.1,
+  larx: -1.25,
+  lary: 0.08,
+  larz: 0.32,
+  lfr: -0.85,
+  rpx: 0.22,
+  rpy: 1.4,
+  rpz: 0.1,
+  rarx: -0.65,
+  rary: -0.08,
+  rarz: -0.22,
+  rfr: -0.35,
+};
+
+const GOALIE_BOTH: GetUpFrame = {
+  brx: 0.14,
+  brz: 0,
+  lx: -0.12,
+  ly: 0.82,
+  lz: 0.04,
+  lrx: 0.14,
+  lrz: -0.08,
+  ls: 0.2,
+  rx: 0.12,
+  ry: 0.82,
+  rz: 0.04,
+  rrx: 0.14,
+  rrz: 0.08,
+  rs: 0.2,
+  lpx: -0.36,
+  lpy: 1.44,
+  lpz: 0.1,
+  larx: -0.5,
+  lary: 0.16,
+  larz: -0.5,
+  lfr: -0.85,
+  rpx: 0.22,
+  rpy: 1.4,
+  rpz: 0.12,
+  rarx: -0.6,
+  rary: -0.1,
+  rarz: 0.2,
+  rfr: -0.22,
+};
+
+function mixGetUp(a: GetUpFrame, b: GetUpFrame, t: number): GetUpFrame {
+  const o = { ...a };
+  for (const k of Object.keys(a) as (keyof GetUpFrame)[]) o[k] = a[k] + (b[k] - a[k]) * t;
+  return o;
+}
+
+function poseGoalieGetUp(
+  s: Skater,
+  root: THREE.Group,
+  body: THREE.Group | null,
+  lLeg: THREE.Group | null,
+  rLeg: THREE.Group | null,
+  lShin: THREE.Group | null,
+  rShin: THREE.Group | null,
+  lArm: THREE.Group | null,
+  rArm: THREE.Group | null,
+  lFore: THREE.Group | null,
+  rFore: THREE.Group | null,
+) {
+  const p = Math.min(1, Math.max(0, (1.68 - s.struck) / 1.52));
+  const smooth = p < 0.42 ? (p / 0.42) : (p - 0.42) / 0.58;
+  const u = smooth * smooth * (3 - 2 * smooth);
+  const k = p < 0.42 ? mixGetUp(GOALIE_DOWN, GOALIE_ONE, u) : mixGetUp(GOALIE_ONE, GOALIE_BOTH, u);
+  const roll = Math.sign(s.tumble || 1) * 0.22 * (1 - p) * (1 - p);
+  root.position.set(s.x, 0, s.z);
+  root.rotation.set(0, s.yaw + Math.PI, roll);
+  if (body) {
+    body.position.set(0, 0, 0);
+    body.rotation.set(k.brx, 0, k.brz);
+  }
+  if (lLeg) {
+    lLeg.position.set(k.lx, k.ly, k.lz);
+    lLeg.rotation.set(k.lrx, 0, k.lrz);
+  }
+  if (rLeg) {
+    rLeg.position.set(k.rx, k.ry, k.rz);
+    rLeg.rotation.set(k.rrx, 0, k.rrz);
+  }
+  if (lShin) lShin.rotation.set(k.ls, 0, 0);
+  if (rShin) rShin.rotation.set(k.rs, 0, 0);
+  if (lArm) {
+    lArm.position.set(k.lpx, k.lpy, k.lpz);
+    lArm.rotation.set(k.larx, k.lary, k.larz);
+  }
+  if (rArm) {
+    rArm.position.set(k.rpx, k.rpy, k.rpz);
+    rArm.rotation.set(k.rarx, k.rary, k.rarz);
+  }
+  if (lFore) lFore.rotation.set(k.lfr, 0, 0);
+  if (rFore) rFore.rotation.set(k.rfr, 0, 0);
+  root.updateWorldMatrix(true, true);
+  const wy = (obj: THREE.Object3D, x: number, y: number, z: number) => {
+    _liftPt.set(x, y, z);
+    obj.localToWorld(_liftPt);
+    return _liftPt.y;
+  };
+  const lb = lShin ? wy(lShin, 0, -0.48, 0.08) : 0;
+  const rb = rShin ? wy(rShin, 0, -0.48, 0.08) : 0;
+  const knees = Math.min(lShin ? wy(lShin, 0, 0, 0) : 1, rShin ? wy(rShin, 0, 0, 0) : 1);
+  const chest = body ? wy(body, 0, 0.9, 0.12) : 0;
+  const hip = body ? wy(body, 0, 0.76, 0) : 0;
+  const bodyLow = Math.min(knees, chest, hip);
+  let lift: number;
+  if (p < 0.42) lift = 0.04 - Math.min(bodyLow, lb, rb);
+  else if (p < 0.78) lift = 0.03 - Math.min(rb, bodyLow, lb);
+  else {
+    const gnd = 0.03 - Math.min(lb, rb, bodyLow);
+    const settle = (p - 0.78) / 0.22;
+    lift = gnd * (1 - settle) + -0.12 * settle;
+  }
+  root.position.y = lift;
+}
+
+function SkateSole({
+  mats,
+  position,
+  goalie = false,
+}: {
+  mats: Pick<KitMats, "blade" | "skates" | "mask">;
+  position: [number, number, number];
+  goalie?: boolean;
+}) {
+  const roller = useGame((s) => s.clockMode) === "scrimmage";
+  if (!roller) {
+    return <mesh geometry={bladeGeo} material={mats.blade} position={position} />;
+  }
+  const zs = goalie ? GOALIE_WHEEL_Z : SKATE_WHEEL_Z;
+  return (
+    <group position={position}>
+      <mesh geometry={goalie ? goalieFrameGeo : skateFrameGeo} material={mats.skates} position={[0, 0.016, 0]} />
+      {zs.map((z) => (
+        <group key={z} position={[0, 0, z]} rotation={[0, 0, Math.PI / 2]}>
+          <mesh geometry={wheelTireGeo} material={mats.mask} />
+          <mesh geometry={wheelHubGeo} material={mats.blade} />
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function brawlPoseFor(id: number): { kind: 0 | 1; swing: number; celeb: boolean; ko: boolean } | null {
+  const b = world.lineBrawl;
+  if (!b) return null;
+  for (const p of b.pairs) {
+    if (p.home === id) return { kind: p.homeKind, swing: p.homeSwing, celeb: p.celeb > 0, ko: false };
+    if (p.away === id) return { kind: p.awayKind, swing: p.awaySwing, celeb: false, ko: p.ko };
+  }
+  return null;
+}
+
+function poseBrawl(
+  kind: 0 | 1,
+  swing: number,
+  body: THREE.Group,
+  lArm: THREE.Group,
+  rArm: THREE.Group,
+  lFore: THREE.Group,
+  rFore: THREE.Group,
+  stick: THREE.Group | null,
+  root: THREE.Group,
+  layout: { len: number },
+  goalie: boolean,
+) {
+  const jab = Math.sin(Math.min(1, Math.max(0, swing)) * Math.PI);
+  lArm.position.set(-0.26, 1.46, 0.06);
+  rArm.position.set(0.24, 1.46, 0.06);
+  if (swing < 0.04) {
+    poseGloveAt(body, lArm, lFore, -0.26, 1.46, 0.06, -0.22, 1.25, 0.38, -1);
+    poseGloveAt(body, rArm, rFore, 0.24, 1.46, 0.06, 0.18, 1.22, 0.36, 1);
+  } else if (kind === 0) {
+    poseGloveAt(body, lArm, lFore, -0.26, 1.46, 0.06, -0.28, 1.28, 0.26, -1);
+    poseGloveAt(body, rArm, rFore, 0.24, 1.46, 0.06, 0.06, 1.32, 0.16 + jab * 0.78, 1);
+  } else {
+    const up = swing < 0.55 ? swing / 0.55 : 1;
+    poseGloveAt(body, lArm, lFore, -0.26, 1.46, 0.06, -0.28, 1.22, 0.24, -1);
+    poseGloveAt(body, rArm, rFore, 0.24, 1.46, 0.06, 0.1, 0.7 + up * 1.2, 0.18 + up * 0.32, 1);
+  }
+  if (!goalie && stick) poseStickOneHand(stick, root, rFore, layout);
 }
 
 export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
@@ -618,6 +1362,11 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
   const rFore = useRef<THREE.Group>(null);
   const blocker = useRef<THREE.Group>(null);
   const stick = useRef<THREE.Group>(null);
+  const shaftHold = useRef<THREE.Group>(null);
+  const bladeGrp = useRef<THREE.Group>(null);
+  const knobRef = useRef<THREE.Mesh>(null);
+  const flyBlade = useRef<THREE.Group>(null);
+  const flyShaft = useRef<THREE.Group>(null);
   const ring = useRef<THREE.Group>(null);
   const skater = world.skaters[index]!;
   const kit = kitById(liveKitId);
@@ -627,17 +1376,25 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
 
   useLayoutEffect(() => () => disposeKit(mats), [mats]);
 
+  useLayoutEffect(() => {
+    root.current?.traverse((obj) => {
+      obj.frustumCulled = false;
+    });
+  }, []);
+
   useFrame(() => {
     const s: Skater | undefined = world.skaters[index];
     const g = root.current;
     if (!s || !g) return;
+    g.visible = true;
     const diving = !goalie && s.dive > 0.04;
     const tumbling = s.tumble !== 0 && s.struck > 0.1;
-    if (tumbling) {
+    const goalieUp = goalie && tumbling;
+    if (tumbling && !goalieUp) {
       const t = tumbleRoot(s.struck, s.tumble, s.yaw);
       g.position.set(s.x, t.y, s.z);
       g.rotation.set(t.rx, t.ry, t.rz);
-    } else {
+    } else if (!goalieUp) {
       g.position.set(
         s.x,
         diving ? 0.12 : s.struck > 0.2 ? Math.max(0, 0.04 - 0.04 * Math.min(1, s.struck)) : 0,
@@ -651,8 +1408,9 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     const wind = s.windup;
     const follow = s.follow;
     const dekeA = s.deke > 0.02 ? Math.sin(s.deke * 12) : 0;
-    const cheer = s.celebrate > 0.05;
-    const scorer = cheer && world.lastShooter === index && world.whistle === "goal";
+    const cheer = !goalie && s.celebrate > 0.05;
+    const goalieCheer = goalie && !tumbling && s.celebrate > 0.05;
+    const rage = !goalie ? rageDraw(s.id) : null;
     let swingT = 0;
     let slapping = false;
     if (follow > 0.02) {
@@ -678,6 +1436,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     const butterflied =
       goalie &&
       !tumbling &&
+      !goalieCheer &&
       poseGoalieCover(
         s,
         g,
@@ -690,15 +1449,20 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         rFore.current,
         stick.current,
       );
-    if (body.current && !butterflied && !goalie) {
-      const down = tumbling ? 0 : s.struck > 0.2 ? Math.min(1.15, s.struck * 0.95) : 0;
-      let pitch = s.lean + (s.hit > 0 ? 0.45 : 0) + down;
-      if (diving) pitch = 1.08;
-      if (slapping) pitch += swingT * 0.28;
-      body.current.position.y = diving ? -0.12 : 0;
-      body.current.rotation.x = pitch;
-      body.current.rotation.z = diving ? 0 : s.deke > 0.02 ? dekeA * 0.16 : s.bank;
-      body.current.rotation.y = slapping ? swingT * 0.4 : 0;
+    if (body.current && !butterflied && !goalie && !rage) {
+      if (cheer && s.hit <= 0) {
+        body.current.position.y = 0;
+        body.current.rotation.set(0, 0, 0);
+      } else {
+        const down = tumbling ? 0 : s.struck > 0.2 ? Math.min(1.15, s.struck * 0.95) : 0;
+        let pitch = s.lean + (s.hit > 0 ? 0.45 : 0) + down;
+        if (diving) pitch = 1.08;
+        if (slapping) pitch += swingT * 0.28;
+        body.current.position.y = diving ? -0.12 : 0;
+        body.current.rotation.x = pitch;
+        body.current.rotation.z = diving ? 0 : s.deke > 0.02 ? dekeA * 0.16 : s.bank;
+        body.current.rotation.y = slapping ? swingT * 0.4 : 0;
+      }
     }
     if (slapping && stick.current && !goalie) poseSlapStick(stick.current, swingT);
     const amp = s.kind === "goalie" ? 0.08 : 0.52;
@@ -717,6 +1481,20 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       if (rShin.current) rShin.current.rotation.set(0.16, 0, 0);
       if (lBoot.current) lBoot.current.rotation.set(0.08, 0, 0);
       if (rBoot.current) rBoot.current.rotation.set(0.08, 0, 0);
+    } else if (tumbling && goalie) {
+      poseGoalieGetUp(
+        s,
+        g,
+        body.current,
+        lLeg.current,
+        rLeg.current,
+        lShin.current,
+        rShin.current,
+        lArm.current,
+        rArm.current,
+        lFore.current,
+        rFore.current,
+      );
     } else if (tumbling) {
       if (lLeg.current) {
         lLeg.current.position.set(-0.14, 0.55, 0.04);
@@ -746,29 +1524,27 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       if (lBoot.current) lBoot.current.rotation.set(-0.1 - kneeL * 0.32 + Math.max(0, a) * 0.18, 0, 0);
       if (rBoot.current) rBoot.current.rotation.set(-0.1 - kneeR * 0.32 + Math.max(0, b) * 0.18, 0, 0);
     }
-    if (lArm.current && rArm.current && !butterflied) {
-      if ((scorer || cheer) && s.hit <= 0) {
-        const pump = Math.sin(world.time * 7.2 + s.id * 1.3) * 0.1;
-        lArm.current.quaternion.identity();
-        rArm.current.quaternion.identity();
-        lArm.current.rotation.set(-Math.PI + pump * 0.04, 0, 0.22);
-        rArm.current.rotation.set(-Math.PI - pump * 0.03, 0, -0.24);
-        if (lFore.current) {
-          lFore.current.quaternion.identity();
-          lFore.current.rotation.set(0, 0, 0);
-        }
-        if (rFore.current) {
-          rFore.current.quaternion.identity();
-          rFore.current.rotation.set(0, 0, 0);
-        }
-      } else if (s.dive > 0.04) {
+    if (lArm.current && rArm.current && !butterflied && !rage) {
+      if (goalieCheer && body.current) {
+        poseGoalieCheer(
+          s,
+          body.current,
+          lArm.current,
+          rArm.current,
+          lFore.current,
+          rFore.current,
+          stick.current,
+        );
+      } else if (cheer && s.hit <= 0 && body.current) {
+        poseCheer(s, body.current, lArm.current, rArm.current, lFore.current, rFore.current);
+      } else if (s.dive > 0.04 && !goalie) {
         lArm.current.rotation.set(-0.15, 0.4, 1.15);
         rArm.current.rotation.set(-0.15, -0.4, -1.15);
         if (lFore.current) lFore.current.rotation.set(-0.2, 0, 0);
         if (rFore.current) rFore.current.rotation.set(-0.2, 0, 0);
-      } else if (goalie) {
+      } else if (goalie && !tumbling) {
         poseGoalieStance(s, lArm.current, rArm.current, lFore.current, rFore.current);
-      } else if (stick.current && body.current && (slapping || s.dive <= 0.04)) {
+      } else if (!goalie && stick.current && body.current && (slapping || s.dive <= 0.04)) {
         const hasPuck = world.puck.owner === index;
         if (!slapping) {
           poseStickToPuck(stick.current, g, hasPuck || poke, dekeA);
@@ -812,14 +1588,95 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         }
       }
     }
-    if (stick.current && !butterflied) {
+    if (stick.current && !butterflied && !rage && !goalieCheer) {
       if (goalie) {
         poseGoalieStick(stick.current, s.coverPose);
-      } else if ((scorer || cheer) && s.hit <= 0) {
-        if (rFore.current) poseStickRaised(stick.current, g, rFore.current, layout);
+        if (s.dive > 0.04 && body.current) {
+          body.current.position.y = 0;
+          body.current.rotation.x = Math.max(body.current.rotation.x, 0.42);
+        }
+        keepGoalieStickOnIce(stick.current);
+      } else if (cheer && s.hit <= 0 && !rage) {
+        if (rFore.current) poseStickOneHand(stick.current, g, rFore.current, layout);
       } else if (s.dive > 0.04) {
         if (lFore.current && g) {
           poseStickFromHands(stick.current, g, lFore.current, rFore.current, layout, true);
+        }
+      }
+    }
+    if (
+      rage &&
+      stick.current &&
+      shaftHold.current &&
+      bladeGrp.current &&
+      knobRef.current &&
+      flyBlade.current &&
+      flyShaft.current &&
+      lArm.current &&
+      rArm.current
+    ) {
+      poseRage(
+        s,
+        g,
+        body.current,
+        lArm.current,
+        rArm.current,
+        lFore.current,
+        rFore.current,
+        stick.current,
+        shaftHold.current,
+        bladeGrp.current,
+        knobRef.current,
+        flyBlade.current,
+        flyShaft.current,
+        layout,
+        rage,
+      );
+    } else if (!goalie && shaftHold.current && bladeGrp.current && knobRef.current && stick.current) {
+      stick.current.visible = true;
+      shaftHold.current.visible = true;
+      shaftHold.current.position.set(0, layout.len * 0.5, 0);
+      shaftHold.current.scale.set(1, layout.len, 1);
+      bladeGrp.current.visible = true;
+      knobRef.current.visible = true;
+      if (flyBlade.current) flyBlade.current.visible = false;
+      if (flyShaft.current) flyShaft.current.visible = false;
+    }
+    const dump = world.benchDump;
+    if (dump && s.id === dump.id) {
+      const t = tumbleRoot(s.struck, s.tumble || 1, s.yaw);
+      g.position.set(s.x, t.y + dump.y, s.z);
+      g.rotation.set(t.rx, t.ry, t.rz);
+    }
+    const bp = brawlPoseFor(s.id);
+    if (bp && !bp.ko && body.current && lArm.current && rArm.current && lFore.current && rFore.current) {
+      body.current.rotation.set(0, 0, 0);
+      body.current.position.y = 0;
+      if (bp.celeb) {
+        poseGloveAt(body.current, lArm.current, lFore.current, -0.26, 1.46, 0.06, -0.32, 1.94, 0.16, -1);
+        poseGloveAt(body.current, rArm.current, rFore.current, 0.24, 1.46, 0.06, 0.28, 1.9, 0.18, 1);
+        if (!goalie && stick.current) poseStickOneHand(stick.current, g, rFore.current, layout);
+      } else {
+        poseBrawl(
+          bp.kind,
+          bp.swing,
+          body.current,
+          lArm.current,
+          rArm.current,
+          lFore.current,
+          rFore.current,
+          stick.current,
+          g,
+          layout,
+          goalie,
+        );
+        if (!goalie && lLeg.current && rLeg.current) {
+          lLeg.current.position.set(-0.18, 0.82, 0.04);
+          rLeg.current.position.set(0.18, 0.82, 0.04);
+          lLeg.current.rotation.set(0.32, 0, -0.04);
+          rLeg.current.rotation.set(0.32, 0, 0.04);
+          if (lShin.current) lShin.current.rotation.set(0.4, 0, 0);
+          if (rShin.current) rShin.current.rotation.set(0.4, 0, 0);
         }
       }
     }
@@ -1034,7 +1891,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
               <group ref={lShin} position={[0, -0.36, 0]}>
                 <mesh geometry={goaliePadShinGeo} material={mats.pads} position={[0, -0.2, 0.05]} scale={[1.48, 1.12, 1.58]} castShadow />
                 <mesh geometry={goalieBootGeo} material={mats.skates} position={[0, -0.42, 0.08]} />
-                <mesh geometry={bladeGeo} material={mats.blade} position={[0, -0.48, 0.08]} />
+                <SkateSole mats={mats} goalie position={[0, -0.48, 0.08]} />
               </group>
             </>
           ) : (
@@ -1047,7 +1904,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
                 <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, 0]} />
                 <group ref={lBoot} position={[0, -0.3, 0.04]}>
                   <mesh geometry={bootGeo} material={mats.skates} position={[0, -0.05, 0.02]} />
-                  <mesh geometry={bladeGeo} material={mats.blade} position={[0, -0.12, 0.02]} />
+                  <SkateSole mats={mats} position={[0, -0.12, 0.02]} />
                 </group>
               </group>
             </>
@@ -1061,7 +1918,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
               <group ref={rShin} position={[0, -0.36, 0]}>
                 <mesh geometry={goaliePadShinGeo} material={mats.pads} position={[0, -0.2, 0.05]} scale={[1.48, 1.12, 1.58]} castShadow />
                 <mesh geometry={goalieBootGeo} material={mats.skates} position={[0, -0.42, 0.08]} />
-                <mesh geometry={bladeGeo} material={mats.blade} position={[0, -0.48, 0.08]} />
+                <SkateSole mats={mats} goalie position={[0, -0.48, 0.08]} />
               </group>
             </>
           ) : (
@@ -1074,7 +1931,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
                 <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, 0]} />
                 <group ref={rBoot} position={[0, -0.3, 0.04]}>
                   <mesh geometry={bootGeo} material={mats.skates} position={[0, -0.05, 0.02]} />
-                  <mesh geometry={bladeGeo} material={mats.blade} position={[0, -0.12, 0.02]} />
+                  <SkateSole mats={mats} position={[0, -0.12, 0.02]} />
                 </group>
               </group>
             </>
@@ -1082,17 +1939,34 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         </group>
       </group>
       {goalie ? null : (
-        <group ref={stick}>
-          <group position={layout.mid} scale={[1, layout.len, 1]}>
-            <mesh geometry={stickShaftGeo} material={mats.stick} castShadow />
+        <>
+          <group ref={stick}>
+            <group ref={shaftHold} position={layout.mid} scale={[1, layout.len, 1]}>
+              <mesh geometry={stickShaftGeo} material={mats.stick} castShadow />
+            </group>
+            <mesh ref={knobRef} geometry={knobGeo} material={mats.tape} position={layout.top} />
+            <group ref={bladeGrp}>
+              <mesh geometry={heelJoinGeo} material={mats.tape} position={[0, 0.022, 0.03]} />
+              <mesh geometry={bladePlateGeo} material={mats.tape} position={[0, 0.026, 0.19]} castShadow />
+              <mesh geometry={bladeToeGeo} material={mats.tape} position={[0, 0.024, 0.4]} />
+            </group>
           </group>
-          <mesh geometry={knobGeo} material={mats.tape} position={layout.top} />
-          <mesh geometry={heelJoinGeo} material={mats.tape} position={[0, 0.022, 0.03]} />
-          <group>
-            <mesh geometry={bladePlateGeo} material={mats.tape} position={[0, 0.026, 0.19]} castShadow />
+          <group ref={flyBlade} visible={false}>
+            <mesh
+              geometry={stickShaftGeo}
+              material={mats.stick}
+              position={[0, layout.len * 0.25, 0]}
+              scale={[1, layout.len * 0.5, 1]}
+            />
+            <mesh geometry={heelJoinGeo} material={mats.tape} position={[0, 0.022, 0.03]} />
+            <mesh geometry={bladePlateGeo} material={mats.tape} position={[0, 0.026, 0.19]} />
             <mesh geometry={bladeToeGeo} material={mats.tape} position={[0, 0.024, 0.4]} />
           </group>
-        </group>
+          <group ref={flyShaft} visible={false}>
+            <mesh geometry={stickShaftGeo} material={mats.stick} scale={[1, layout.len * 0.5, 1]} />
+            <mesh geometry={knobGeo} material={mats.tape} position={[0, layout.len * 0.25, 0]} />
+          </group>
+        </>
       )}
     </group>
   );
@@ -1115,7 +1989,7 @@ function SeatedLeg({
         <group position={[0, -0.36, 0]} rotation={[Math.PI / 2, 0, 0]}>
           <mesh geometry={goaliePadShinGeo} material={mats.pads} position={[0, -0.2, 0.04]} scale={[1.48, 1.08, 1.5]} castShadow />
           <mesh geometry={goalieBootGeo} material={mats.skates} position={[0, -0.42, 0.06]} />
-          <mesh geometry={bladeGeo} material={mats.blade} position={[0, -0.48, 0.06]} />
+          <SkateSole mats={mats} goalie position={[0, -0.48, 0.06]} />
         </group>
       </group>
     );
@@ -1130,7 +2004,7 @@ function SeatedLeg({
         <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, 0]} scale={[1.45, 1, 1.45]} />
         <group position={[0, -0.3, 0.05]}>
           <mesh geometry={bootGeo} material={mats.skates} position={[0, -0.05, 0.02]} scale={[1.28, 1, 1.12]} />
-          <mesh geometry={bladeGeo} material={mats.blade} position={[0, -0.12, 0.02]} />
+          <SkateSole mats={mats} position={[0, -0.12, 0.02]} />
         </group>
       </group>
     </group>
@@ -1142,14 +2016,41 @@ export function SeatedPlayer({
   number,
   holdStick = false,
   goalie = false,
+  seatX,
 }: {
   kit: UniformKit;
   number: number;
   holdStick?: boolean;
   goalie?: boolean;
+  seatX?: number;
 }) {
   const mats = useMemo(() => makeKitMats(kit, number, goalie), [kit, kit.id, number, goalie]);
+  const lean = useRef<THREE.Group>(null);
   useLayoutEffect(() => () => disposeKit(mats), [mats]);
+  useFrame(() => {
+    const g = lean.current;
+    if (!g) return;
+    const d = world.benchDump;
+    const near =
+      seatX !== undefined &&
+      !!d &&
+      (d.phase !== "fly" || d.t > d.dur * 0.45) &&
+      ((d.kind === "help" && seatX > 0.4) || (d.kind === "shove" && seatX < -0.4)) &&
+      Math.abs(seatX - d.x1) < 2.8;
+    if (!near || !d) {
+      g.rotation.x = 0.08;
+      g.rotation.z = 0;
+      return;
+    }
+    if (d.kind === "help") {
+      g.rotation.x = 0.08 + 0.38 + Math.sin(world.time * 5.2) * 0.12;
+      g.rotation.z = Math.sin(world.time * 3.4) * 0.05;
+    } else {
+      const jab = Math.max(0, Math.sin(world.time * 11));
+      g.rotation.x = 0.08 + jab * 0.62;
+      g.rotation.z = Math.sin(world.time * 11) * 0.16;
+    }
+  });
   return (
     <group>
       <mesh
@@ -1159,7 +2060,7 @@ export function SeatedPlayer({
         position={[0, 0.02, 0.18]}
         scale={[0.9, 1.15, 0.7]}
       />
-      <group rotation={[0.08, 0, 0]}>
+      <group ref={lean} rotation={[0.08, 0, 0]}>
         <mesh geometry={neckGeo} material={mats.jersey} position={[0, 0.86, 0.04]} />
         <group position={[0, 0.88, 0.04]}>
           <mesh
@@ -1335,6 +2236,8 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
       black: mat("#161616", { roughness: 0.62 }),
       orange: mat("#e85d04", { roughness: 0.55 }),
       pants: mat("#111111", { roughness: 0.7 }),
+      blade: mat("#c5ccd4", { roughness: 0.38, metalness: 0.28, emissive: "#9aa3ab", emissiveIntensity: 0.22 }),
+      mask: mat("#121212", { roughness: 0.42, metalness: 0.18 }),
     }),
     [],
   );
@@ -1467,9 +2370,72 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
       <mesh geometry={refLeg} material={mats.pants} position={[-0.13, 0.55, 0]} />
       <mesh geometry={refLeg} material={mats.pants} position={[0.13, 0.55, 0]} />
       <mesh geometry={refBoot} material={mats.helm} position={[-0.13, 0.22, 0.04]} />
+      <SkateSole mats={{ blade: mats.blade, skates: mats.helm, mask: mats.mask }} position={[-0.13, 0.15, 0.04]} />
       <mesh geometry={refBoot} material={mats.helm} position={[0.13, 0.22, 0.04]} />
+      <SkateSole mats={{ blade: mats.blade, skates: mats.helm, mask: mats.mask }} position={[0.13, 0.15, 0.04]} />
     </group>
   );
+}
+
+const ghostPuckGeo = new THREE.CylinderGeometry(0.052, 0.052, 0.032, 16);
+const ghostBandGeo = new THREE.TorusGeometry(0.04, 0.006, 6, 14);
+
+function DrillGhostPucks() {
+  const root = useRef<THREE.Group>(null);
+  const pool = useRef<
+    { mesh: THREE.Mesh; mat: THREE.MeshStandardMaterial; bandMat: THREE.MeshStandardMaterial }[]
+  >([]);
+  useLayoutEffect(
+    () => () => {
+      for (const slot of pool.current) {
+        slot.mat.dispose();
+        slot.bandMat.dispose();
+      }
+    },
+    [],
+  );
+  useFrame(() => {
+    const parent = root.current;
+    if (!parent) return;
+    const ghosts = world.drillGhosts;
+    while (pool.current.length < ghosts.length) {
+      const mat = new THREE.MeshStandardMaterial({
+        color: "#141414",
+        roughness: 0.38,
+        metalness: 0.12,
+        transparent: true,
+      });
+      const bandMat = new THREE.MeshStandardMaterial({
+        color: "#2a2a2a",
+        roughness: 0.5,
+        metalness: 0.08,
+        transparent: true,
+      });
+      const mesh = new THREE.Mesh(ghostPuckGeo, mat);
+      const band = new THREE.Mesh(ghostBandGeo, bandMat);
+      mesh.add(band);
+      parent.add(mesh);
+      pool.current.push({ mesh, mat, bandMat });
+    }
+    for (let i = 0; i < pool.current.length; i++) {
+      const slot = pool.current[i]!;
+      const g = ghosts[i];
+      if (!g) {
+        slot.mesh.visible = false;
+        continue;
+      }
+      const fade = drillFade(g.age);
+      slot.mesh.visible = fade > 0.02;
+      slot.mesh.position.set(g.x, g.y, g.z);
+      slot.mesh.rotation.y += 0.05 + Math.hypot(g.vx, g.vz) * 0.08;
+      slot.mat.opacity = fade;
+      slot.bandMat.opacity = fade;
+      const solid = fade > 0.92;
+      slot.mat.depthWrite = solid;
+      slot.bandMat.depthWrite = solid;
+    }
+  });
+  return <group ref={root} />;
 }
 
 export function PuckMesh() {
@@ -1532,7 +2498,9 @@ export function PuckMesh() {
       g.rotation.y += 0.05 + spin;
     }
     if (mark.current) {
-      mark.current.position.set(world.puck.x, 0.018, world.puck.z);
+      const owner = world.puck.owner !== null ? world.skaters[world.puck.owner] : undefined;
+      if (owner?.kind === "goalie") mark.current.position.set(owner.x, 0.021, owner.z);
+      else mark.current.position.set(world.puck.x, 0.018, world.puck.z);
     }
   });
   return (
@@ -1549,6 +2517,7 @@ export function PuckMesh() {
           <torusGeometry args={[0.04, 0.006, 6, 18]} />
         </mesh>
       </group>
+      <DrillGhostPucks />
     </>
   );
 }

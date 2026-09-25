@@ -6,14 +6,15 @@ export type ArenaLook = "light" | "dark";
 
 export type Lineup = { g: number; d: number; o: number };
 export type PlayMode = "practice" | "scrimmage" | "game" | "drill";
-export type DrillTargets = 8 | 12;
+export type DrillTargets = 4 | 8 | 12 | 16;
 export type ControlProfile = "classic" | "wings";
 
 export const LINEUP_CAP = 6;
+export const CHAOS_CAP = 11;
 
 export const MODE_LINEUPS: Record<PlayMode, { home: Lineup; away: Lineup }> = {
   practice: { home: { g: 0, d: 0, o: 1 }, away: { g: 1, d: 0, o: 0 } },
-  scrimmage: { home: { g: 1, d: 1, o: 2 }, away: { g: 1, d: 1, o: 2 } },
+  scrimmage: { home: { g: 1, d: 1, o: 3 }, away: { g: 1, d: 1, o: 3 } },
   game: { home: { g: 1, d: 2, o: 3 }, away: { g: 1, d: 2, o: 3 } },
   drill: { home: { g: 0, d: 0, o: 1 }, away: { g: 0, d: 0, o: 0 } },
 };
@@ -42,12 +43,15 @@ export function patchLineup(l: Lineup, slot: keyof Lineup, v: number, cap = LINE
   return next;
 }
 
-export function releaseFromBox(l: Lineup): Lineup {
-  if (lineupTotal(l) >= LINEUP_CAP) return l;
+export function releaseFromBox(l: Lineup, cap = LINEUP_CAP): Lineup {
+  if (lineupTotal(l) >= cap) return l;
   if (l.o < 3) return { ...l, o: l.o + 1 };
   if (l.d < 2) return { ...l, d: l.d + 1 };
   if (l.g < 1) return { ...l, g: 1 };
   if (l.o < 4) return { ...l, o: l.o + 1 };
+  if (cap <= LINEUP_CAP) return l;
+  if (l.o < 6) return { ...l, o: l.o + 1 };
+  if (l.d < 4) return { ...l, d: l.d + 1 };
   return l;
 }
 
@@ -65,6 +69,7 @@ type GameUi = {
   liveAway: Lineup;
   lineupRev: number;
   powerPlay: boolean;
+  chaos: boolean;
   speed: number;
   quality: "high" | "low";
   arenaLook: ArenaLook;
@@ -74,7 +79,8 @@ type GameUi = {
   chargeKind: "pass" | "shot" | null;
   homeScore: number;
   awayScore: number;
-  whistle: "goal" | "cover" | "offside" | null;
+  whistle: "goal" | "cover" | "offside" | "brawl" | null;
+  delayedOffside: boolean;
   goalSide: "home" | "away" | null;
   replay: boolean;
   clockMode: PlayMode;
@@ -86,6 +92,7 @@ type GameUi = {
   drillTargets: DrillTargets;
   checkRefs: boolean;
   checkGoalies: boolean;
+  lineBrawl: boolean;
   offsides: boolean;
   gameSpeed: number;
   cpuOffense: number;
@@ -109,6 +116,7 @@ type GameUi = {
   setLiveAway: (l: Lineup) => void;
   bumpLineup: () => void;
   setPowerPlay: (v: boolean) => void;
+  setChaos: (v: boolean) => void;
   setSpeed: (n: number) => void;
   setQuality: (q: "high" | "low") => void;
   setArenaLook: (v: ArenaLook) => void;
@@ -117,7 +125,8 @@ type GameUi = {
   setCharge: (n: number, kind: "pass" | "shot" | null) => void;
   setHomeScore: (n: number) => void;
   setAwayScore: (n: number) => void;
-  setWhistle: (w: "goal" | "cover" | "offside" | null) => void;
+  setWhistle: (w: "goal" | "cover" | "offside" | "brawl" | null) => void;
+  setDelayedOffside: (v: boolean) => void;
   setGoalSide: (s: "home" | "away" | null) => void;
   setReplay: (v: boolean) => void;
   setClockMode: (m: PlayMode) => void;
@@ -129,6 +138,7 @@ type GameUi = {
   setDrillTargets: (n: DrillTargets) => void;
   setCheckRefs: (v: boolean) => void;
   setCheckGoalies: (v: boolean) => void;
+  setLineBrawl: (v: boolean) => void;
   setOffsides: (v: boolean) => void;
   setGameSpeed: (n: number) => void;
   setCpuOffense: (n: number) => void;
@@ -172,11 +182,14 @@ function loadClockMode(): PlayMode {
 function loadDrillTargets(): DrillTargets {
   try {
     const raw = localStorage.getItem("hfb-drill-targets");
+    if (raw === "4") return 4;
+    if (raw === "8") return 8;
     if (raw === "12") return 12;
+    if (raw === "16") return 16;
   } catch {
     /* ignore */
   }
-  return 8;
+  return 4;
 }
 
 function saveDrillTargets(n: DrillTargets): void {
@@ -282,6 +295,7 @@ export const useGame = create<GameUi>((set, get) => ({
   liveAway: { ...MODE_LINEUPS[INITIAL_MODE].away },
   lineupRev: 0,
   powerPlay: loadFlag("hfb-power-play", true),
+  chaos: loadFlag("hfb-chaos", false),
   speed: 0,
   quality: "high",
   arenaLook: loadLook(),
@@ -292,6 +306,7 @@ export const useGame = create<GameUi>((set, get) => ({
   homeScore: 0,
   awayScore: 0,
   whistle: null,
+  delayedOffside: false,
   goalSide: null,
   replay: false,
   clockMode: INITIAL_MODE,
@@ -303,6 +318,7 @@ export const useGame = create<GameUi>((set, get) => ({
   drillTargets: loadDrillTargets(),
   checkRefs: loadFlag("hfb-check-refs", true),
   checkGoalies: loadFlag("hfb-check-goalies", true),
+  lineBrawl: loadFlag("hfb-line-brawl", false),
   offsides: INITIAL_MODE === "game",
   gameSpeed: 1,
   cpuOffense: 1,
@@ -353,6 +369,10 @@ export const useGame = create<GameUi>((set, get) => ({
     saveFlag("hfb-power-play", v);
     set({ powerPlay: v });
   },
+  setChaos: (v) => {
+    saveFlag("hfb-chaos", v);
+    set({ chaos: v });
+  },
   setSpeed: (n) => set({ speed: n }),
   setQuality: (q) => set({ quality: q }),
   setArenaLook: (v) => {
@@ -365,6 +385,7 @@ export const useGame = create<GameUi>((set, get) => ({
   setHomeScore: (n) => set({ homeScore: n }),
   setAwayScore: (n) => set({ awayScore: n }),
   setWhistle: (w) => set({ whistle: w }),
+  setDelayedOffside: (v) => set({ delayedOffside: v }),
   setGoalSide: (s) => set({ goalSide: s }),
   setReplay: (v) => set({ replay: v }),
   setControlProfile: (v) => {
@@ -396,7 +417,7 @@ export const useGame = create<GameUi>((set, get) => ({
   setPeriodOver: (v) => set({ periodOver: v }),
   setDrillScore: (n) => set({ drillScore: n }),
   setDrillTargets: (n) => {
-    const v: DrillTargets = n === 12 ? 12 : 8;
+    const v: DrillTargets = n === 16 ? 16 : n === 12 ? 12 : n === 8 ? 8 : 4;
     saveDrillTargets(v);
     set({ drillTargets: v });
   },
@@ -407,6 +428,10 @@ export const useGame = create<GameUi>((set, get) => ({
   setCheckGoalies: (v) => {
     saveFlag("hfb-check-goalies", v);
     set({ checkGoalies: v });
+  },
+  setLineBrawl: (v) => {
+    saveFlag("hfb-line-brawl", v);
+    set({ lineBrawl: v });
   },
   setOffsides: (v) => {
     saveFlag("hfb-offsides", v);

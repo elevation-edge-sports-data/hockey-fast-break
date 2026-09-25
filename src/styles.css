@@ -1,5 +1,57 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "Barlow Condensed";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/barlowcondensed/v13/HTxwL3I-JCGChYJ8VI-L6OO_au7B4-Lwz3bWuQ.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/barlowcondensed/v13/HTxwL3I-JCGChYJ8VI-L6OO_au7B4873z3bWuQ.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/barlowcondensed/v13/HTxwL3I-JCGChYJ8VI-L6OO_au7B46r2z3bWuQ.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxeKYY.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxeKYY.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxeKYY.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 @theme {
   --color-bg: #070b12;
   --color-surface: #10161f;
@@ -49,6 +101,7 @@
   position: absolute;
   inset: 0;
   display: block;
+  touch-action: none;
 }
 
 .boot {
@@ -71,17 +124,17 @@
   flex-direction: column;
   justify-content: flex-start;
   gap: 8px;
-  padding: 6px 12px 16px;
-  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  min-width: 0;
+  padding-top: max(6px, env(safe-area-inset-top, 0px));
+  padding-right: max(12px, env(safe-area-inset-right, 0px));
+  padding-bottom: max(16px, calc(16px + env(safe-area-inset-bottom, 0px)));
+  padding-left: max(12px, env(safe-area-inset-left, 0px));
 }
 
-.hud header,
-.hud footer,
-.hud .uni-banner,
-.hud .start-card,
 .hud .cam-pop,
 .hud .cam-adjust,
 .hud button,
+.hud input,
 .hud .stick,
 .hud .burst,
 .hud .dump,
@@ -296,11 +349,14 @@ h2 {
 .start-card {
   position: relative;
   z-index: 2;
-  width: min(780px, calc(100vw - 24px));
+  width: min(780px, 100%);
+  max-width: 100%;
   max-height: none;
   overflow: visible;
   align-self: center;
   flex: 0 0 auto;
+  box-sizing: border-box;
+  min-width: 0;
   min-height: 0;
   background: color-mix(in oklab, var(--color-surface) 92%, transparent);
   border: 1px solid var(--color-line);
@@ -728,9 +784,12 @@ h2 {
 
 .clock-setup {
   display: grid;
-  grid-template-columns: repeat(4, max-content);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px 8px;
-  pointer-events: auto;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  pointer-events: none;
 }
 
 .clock-col {
@@ -738,12 +797,16 @@ h2 {
   flex-direction: column;
   align-items: stretch;
   gap: 4px;
-  min-width: 11rem;
+  min-width: 0;
 }
 
 .clock-col > button {
   width: 100%;
+  min-width: 0;
   white-space: nowrap;
+  padding: 0 6px;
+  font-size: clamp(0.78rem, 2.4vw, 1.05rem);
+  letter-spacing: 0.04em;
 }
 
 .clock-setup button.is-on {
@@ -762,19 +825,15 @@ h2 {
   color: var(--color-muted);
 }
 
-.clock-untimed.drop-hint {
-  font-size: 0.58rem;
-  letter-spacing: 0.04em;
-  line-height: 1.2;
-}
-
 .clock-mins {
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 4px;
   min-width: 0;
+  max-width: 100%;
+  pointer-events: none;
 }
 
 .clock-mins span {
@@ -787,10 +846,11 @@ h2 {
 }
 
 .clock-mins button {
-  min-width: 22px;
+  flex: 1 1 0;
+  min-width: 0;
   min-height: 24px;
-  padding: 0;
-  font-size: 0.95rem;
+  padding: 0 1px;
+  font-size: 0.85rem;
 }
 
 .clock-mins button:disabled {
@@ -1140,6 +1200,39 @@ h2 {
   }
   .legend div {
     grid-template-columns: 4.6rem 1fr;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 520px) {
+  .hud {
+    gap: 4px;
+    padding-top: max(4px, env(safe-area-inset-top, 0px));
+    padding-bottom: max(8px, calc(8px + env(safe-area-inset-bottom, 0px)));
+  }
+  .hud.is-title {
+    overflow: hidden;
+    min-height: 0;
+  }
+  .hud.is-title .hud-top-stack {
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .hud.is-title .start-card {
+    flex-shrink: 0;
+    padding: 8px 10px;
+    gap: 6px;
+  }
+  .hud.is-title .hud-bot {
+    margin-top: 0;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+  .hud.is-title .clock-col > button,
+  .hud.is-title .start-card .btn-primary {
+    min-height: 40px;
   }
 }
 

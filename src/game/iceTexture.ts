@@ -10,6 +10,9 @@ import {
   FACEOFF_R,
   FACEOFF_SPOT_Z,
   FT,
+  BLUE_LINE_W,
+  CENTER_LINE_W,
+  GOAL_LINE_W,
   GOAL_LINE_X,
   GOAL_W,
   HASH_MARK_INSIDE,
@@ -131,7 +134,6 @@ export function createIceCanvases(w = 2048, h = 872, blueLines = true, nzDots = 
   }
 
   const thinW = mx(0.055);
-  const goalW = mx(0.08);
 
   const strokeV = (x: number, color: string, width: number) => {
     ctx.strokeStyle = color;
@@ -243,13 +245,13 @@ export function createIceCanvases(w = 2048, h = 872, blueLines = true, nzDots = 
   ctx.beginPath();
   ctx.ellipse(wx(0), wz(0), mx(FACEOFF_MARK_R), mz(FACEOFF_MARK_R), 0, 0, Math.PI * 2);
   ctx.fill();
-  strokeV(0, LINE_RED, goalW);
+  strokeV(0, LINE_RED, mx(CENTER_LINE_W));
   if (blueLines) {
-    strokeV(BLUE_X, LINE_BLUE, goalW);
-    strokeV(-BLUE_X, LINE_BLUE, goalW);
+    strokeV(BLUE_X, LINE_BLUE, mx(BLUE_LINE_W));
+    strokeV(-BLUE_X, LINE_BLUE, mx(BLUE_LINE_W));
   }
-  strokeV(GOAL_LINE_X, LINE_RED, goalW);
-  strokeV(-GOAL_LINE_X, LINE_RED, goalW);
+  strokeV(GOAL_LINE_X, LINE_RED, mx(GOAL_LINE_W));
+  strokeV(-GOAL_LINE_X, LINE_RED, mx(GOAL_LINE_W));
   ctx.strokeStyle = LINE_RED;
   ctx.lineWidth = thinW;
   ctx.beginPath();

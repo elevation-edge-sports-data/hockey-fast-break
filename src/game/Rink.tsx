@@ -12,6 +12,7 @@ import {
   BLUE_LINE_W,
   BLUE_X,
   BOARD_H,
+  boardLineFaces,
   CENTER_LINE_W,
   CORNER_R,
   CREASE_R,
@@ -29,6 +30,7 @@ import {
   L_STEM,
   MARK_W,
   GLASS_H,
+  benchGlassOpen,
   GOAL_D,
   GOAL_D_TOP,
   GOAL_H,
@@ -46,7 +48,7 @@ import {
 import { roundedRectShape, rinkPerimeter } from "./rinkGeom";
 import { kitById } from "./uniforms";
 import { useGame } from "./store";
-import { drillGrid, drillTargetList, resetWorld, setPracticeDrop, world } from "./sim";
+import { drillFade, drillGrid, drillTargetList, world } from "./sim";
 
 function extrudeRing(outerInset: number, innerInset: number, depth: number) {
   const outer = roundedRectShape(RINK_L, RINK_W, CORNER_R, outerInset);
@@ -297,6 +299,55 @@ function IceLines({ blue }: { blue: boolean }) {
   );
 }
 
+const STRIPE_T = 0.05;
+const STRIPE_PROUD = 0.016;
+const BOARD_FACE_IN = 0.02;
+const KICK_FACE_IN = 0.01;
+
+function BoardPaint({ x, color, width }: { x: number; color: string; width: number }) {
+  const proud = STRIPE_PROUD + STRIPE_T / 2;
+  const kick = boardLineFaces(x, KICK_FACE_IN, proud);
+  const boards = boardLineFaces(x, BOARD_FACE_IN, proud);
+  const kickH = Math.max(0.08, KICK_H - 0.012);
+  const boardTop = BOARD_H - 0.006;
+  const boardH = Math.max(0.2, boardTop - (KICK_H - 0.01));
+  const band = (faces: { x: number; z: number; rot: number }[], y: number, h: number, key: string) =>
+    faces.map((face, i) => (
+      <group key={`${key}${i}`} position={[face.x, y, face.z]} rotation={[0, face.rot, 0]}>
+        <mesh position={[0, 0, 0.01]}>
+          <boxGeometry args={[width, h + 0.012, STRIPE_T * 0.62]} />
+          <meshBasicMaterial color="#121212" toneMapped={false} />
+        </mesh>
+        <mesh>
+          <boxGeometry args={[width, h, STRIPE_T]} />
+          <meshBasicMaterial color={color} toneMapped={false} />
+        </mesh>
+      </group>
+    ));
+  return (
+    <group>
+      {band(kick, 0.006 + kickH / 2, kickH, "k")}
+      {band(boards, KICK_H - 0.01 + boardH / 2, boardH, "b")}
+    </group>
+  );
+}
+
+function BoardLines({ blue }: { blue: boolean }) {
+  return (
+    <group>
+      <BoardPaint x={-GOAL_LINE_X} color={LINE_RED} width={GOAL_LINE_W} />
+      <BoardPaint x={GOAL_LINE_X} color={LINE_RED} width={GOAL_LINE_W} />
+      {blue ? (
+        <>
+          <BoardPaint x={-BLUE_X} color={LINE_BLUE} width={BLUE_LINE_W} />
+          <BoardPaint x={BLUE_X} color={LINE_BLUE} width={BLUE_LINE_W} />
+        </>
+      ) : null}
+      <BoardPaint x={0} color={LINE_RED} width={CENTER_LINE_W} />
+    </group>
+  );
+}
+
 function cagePoint(dir: 1 | -1, t: number, y: number, depth: number, hw: number) {
   return new THREE.Vector3(dir * depth * Math.sin(t), y, hw * Math.cos(t));
 }
@@ -470,6 +521,53 @@ function Goal({ side }: { side: 1 | -1 }) {
   );
 }
 
+const drillCardGeo = new THREE.BoxGeometry(1, 0.012, 1);
+
+function DrillCards() {
+  const mode = useGame((s) => s.clockMode);
+  const root = useRef<THREE.Group>(null);
+  const pool = useRef<{ mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial }[]>([]);
+  useLayoutEffect(
+    () => () => {
+      for (const slot of pool.current) slot.mat.dispose();
+    },
+    [],
+  );
+  useFrame(() => {
+    const parent = root.current;
+    if (!parent) return;
+    const cards = mode === "drill" ? world.drillCards : [];
+    while (pool.current.length < cards.length) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: "#236192",
+        transparent: true,
+        side: THREE.DoubleSide,
+        depthWrite: true,
+      });
+      const mesh = new THREE.Mesh(drillCardGeo, mat);
+      parent.add(mesh);
+      pool.current.push({ mesh, mat });
+    }
+    for (let i = 0; i < pool.current.length; i++) {
+      const slot = pool.current[i]!;
+      const c = cards[i];
+      if (!c) {
+        slot.mesh.visible = false;
+        continue;
+      }
+      const fade = drillFade(c.age);
+      slot.mesh.visible = fade > 0.02;
+      slot.mesh.position.set(c.x, c.y, c.z);
+      slot.mesh.rotation.set(c.rx, c.ry, c.rz);
+      slot.mesh.scale.set(c.w, 1, c.h);
+      slot.mat.color.set(c.pts === 20 ? "#5a1021" : "#236192");
+      slot.mat.opacity = fade;
+      slot.mat.depthWrite = fade > 0.92;
+    }
+  });
+  return <group ref={root} />;
+}
+
 function DrillTargets() {
   const mode = useGame((s) => s.clockMode);
   const count = useGame((s) => s.drillTargets);
@@ -480,13 +578,7 @@ function DrillTargets() {
     for (let i = 0; i < targets.length; i++) {
       const g = mesh.current[i];
       if (!g) continue;
-      const flash = world.drillFlash[i] ?? 0;
-      const gone = !!world.drillGone[i];
-      g.visible = !gone || flash > 0;
-      const mat = g.material as THREE.MeshBasicMaterial;
-      const t = targets[i]!;
-      const hot = flash > 0;
-      mat.color.set(t.pts === 20 ? (hot ? "#f0b8c4" : "#5a1021") : hot ? "#8ad0ff" : "#236192");
+      g.visible = !world.drillGone[i];
     }
   });
   if (mode !== "drill") return null;
@@ -520,26 +612,10 @@ function DrillTargets() {
   );
 }
 
-function PracticeDropMark() {
-  const mode = useGame((s) => s.clockMode);
-  const playing = useGame((s) => s.playing);
-  const paused = useGame((s) => s.paused);
-  useGame((s) => s.lineupRev);
-  if (mode !== "practice" || (playing && !paused)) return null;
-  return (
-    <mesh position={[world.practiceDropX, 0.04, world.practiceDropZ]} rotation={[-Math.PI / 2, 0, 0]}>
-      <ringGeometry args={[0.22, 0.34, 28]} />
-      <meshBasicMaterial color="#c8102e" toneMapped={false} />
-    </mesh>
-  );
-}
-
 export function Rink() {
   const homeKit = useGame((s) => s.homeKit);
   const awayKit = useGame((s) => s.awayKit);
   const clockMode = useGame((s) => s.clockMode);
-  const playing = useGame((s) => s.playing);
-  const paused = useGame((s) => s.paused);
   const home = kitById(homeKit);
   const away = kitById(awayKit);
   const showBlue = clockMode !== "scrimmage";
@@ -570,8 +646,27 @@ export function Rink() {
   const kickGeo = useMemo(() => extrudeRing(-0.22, 0.01, KICK_H), []);
   const boardGeo = useMemo(() => extrudeRing(-0.2, 0.02, BOARD_H - KICK_H), []);
   const ribbonGeo = useMemo(() => extrudeRing(-0.21, 0.0, RIBBON_H), []);
+  const homeRibbon = home.ribbon || kitById(0).ribbon;
+  const capMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: homeRibbon,
+        roughness: 0.55,
+        metalness: 0,
+        emissive: 0x000000,
+        emissiveIntensity: 0,
+      }),
+    [homeRibbon],
+  );
+  useLayoutEffect(() => {
+    capMat.color.set(homeRibbon);
+    capMat.emissive.setHex(0x000000);
+    capMat.emissiveIntensity = 0;
+    capMat.needsUpdate = true;
+    return () => capMat.dispose();
+  }, [capMat, homeRibbon]);
   const posts = useMemo(
-    () => rinkPerimeter(0.06, 64).filter((p) => !(p.z < -RINK_W / 2 + 0.85 && Math.abs(p.x) < 9.95)),
+    () => rinkPerimeter(0.06, 64).filter((p) => !benchGlassOpen(p.x, p.z)),
     [],
   );
   const glassWalls = useMemo(() => {
@@ -582,7 +677,7 @@ export function Rink() {
       const b = ring[(i + 1) % ring.length]!;
       const mx = (a.x + b.x) / 2;
       const mz = (a.z + b.z) / 2;
-      if (mz < -RINK_W / 2 + 0.85 && Math.abs(mx) < 9.95) continue;
+      if (benchGlassOpen(mx, mz)) continue;
       const dx = b.x - a.x;
       const dz = b.z - a.z;
       const len = Math.hypot(dx, dz);
@@ -607,30 +702,17 @@ export function Rink() {
 
   return (
     <group>
-      <group
-        onPointerDown={(e) => {
-          if (clockMode !== "practice") return;
-          if (playing && !paused) return;
-          e.stopPropagation();
-          setPracticeDrop(e.point.x, e.point.z);
-          if (playing && paused) resetWorld({ keepScore: true });
-          else useGame.getState().bumpLineup();
-        }}
-      >
-        <mesh geometry={iceGeo} material={iceMat} position={[0, 0.012, 0]} />
-        <IceLines blue={showBlue} />
-        <FaceoffCircles />
-        <PracticeDropMark />
-      </group>
+      <mesh geometry={iceGeo} material={iceMat} position={[0, 0.012, 0]} />
+      <IceLines blue={showBlue} />
+      <FaceoffCircles />
       <mesh geometry={kickGeo}>
         <meshStandardMaterial color="#e7b416" roughness={0.45} metalness={0.08} />
       </mesh>
       <mesh geometry={boardGeo} position={[0, KICK_H, 0]}>
         <meshStandardMaterial color="#f2f4f6" roughness={0.55} />
       </mesh>
-      <mesh geometry={ribbonGeo} position={[0, BOARD_H - RIBBON_H, 0]}>
-        <meshStandardMaterial color={home.ribbon} roughness={0.5} />
-      </mesh>
+      <mesh geometry={ribbonGeo} position={[0, BOARD_H - RIBBON_H + 0.008, 0]} material={capMat} />
+      <BoardLines blue={showBlue} />
       {glassWalls.map((w, i) => (
         <mesh key={`gw${i}`} position={[w.x, BOARD_H + GLASS_H / 2, w.z]} rotation={[0, w.rot, 0]}>
           <boxGeometry args={[w.len + 0.04, GLASS_H, 0.07]} />
@@ -665,6 +747,7 @@ export function Rink() {
       <Goal side={1} />
       <Goal side={-1} />
       <DrillTargets />
+      <DrillCards />
     </group>
   );
 }

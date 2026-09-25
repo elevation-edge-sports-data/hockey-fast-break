@@ -8,7 +8,7 @@ import { PlayerMesh, PuckMesh, RefereeMesh } from "./PlayerMesh";
 import { attachInput } from "./input";
 import { installControlsProbe, resetWorld, stepSim, world } from "./sim";
 import { useGame, type CamMode } from "./store";
-import { BOARD_H, BLUE_X, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
+import { BOARD_H, BLUE_X, GOAL_H, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
 
 function LookSync() {
   const look = useGame((s) => s.arenaLook);
@@ -38,6 +38,8 @@ function SimLoop() {
   });
   return null;
 }
+
+const ORBIT_TOUCHES = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
 
 const _desired = new THREE.Vector3(-13.6, 9.6, 0);
 const _look = new THREE.Vector3(1.4, 0.4, 0);
@@ -213,18 +215,34 @@ function projectUser(camera: THREE.Camera) {
   world.puckVisible = onScreen && !puckBlockedByBoards(camera);
 }
 
+function finishedDrillSkater(): { x: number; y: number; z: number } | null {
+  if (useGame.getState().clockMode !== "drill") return null;
+  if (!world.drillWon && !world.periodOver) return null;
+  const s = world.skaters[world.userId];
+  if (!s) return null;
+  return { x: s.x, y: 1.2, z: s.z };
+}
+
+function drillFollow(): { x: number; y: number; z: number } | null {
+  if (useGame.getState().clockMode !== "drill") return null;
+  if (world.drillWon || world.periodOver) return finishedDrillSkater();
+  return { x: world.homeAttack * GOAL_LINE_X, y: GOAL_H * 0.5, z: 0 };
+}
+
 function seedFreestyleCam(camera: THREE.PerspectiveCamera) {
   const playing = useGame.getState().playing;
   const puck = world.puck;
-  const px = playing ? puck.x : 0;
-  const pz = playing ? puck.z : 0;
+  const drillCam = playing ? drillFollow() : null;
+  const px = drillCam ? drillCam.x : playing ? puck.x : 0;
+  const pz = drillCam ? drillCam.z : playing ? puck.z : 0;
+  const py = drillCam ? drillCam.y : 0.55;
   camera.up.set(0, 1, 0);
   camera.position.set(px - 12, 9.2, pz + 14);
-  camera.lookAt(px, 0.55, pz);
+  camera.lookAt(px, py, pz);
   _pos.copy(camera.position);
   const fc = world.freeCam;
   fc.tx = px;
-  fc.ty = 0.55;
+  fc.ty = py;
   fc.tz = pz;
   const dx = camera.position.x - fc.tx;
   const dy = camera.position.y - fc.ty;
@@ -243,9 +261,10 @@ function captureFreeCam(camera: THREE.Camera) {
   const fc = world.freeCam;
   const puck = world.puck;
   const playing = useGame.getState().playing;
-  fc.tx = playing ? puck.x : 0;
-  fc.ty = 0.55;
-  fc.tz = playing ? puck.z : 0;
+  const drillCam = playing ? drillFollow() : null;
+  fc.tx = drillCam ? drillCam.x : playing ? puck.x : 0;
+  fc.ty = drillCam ? drillCam.y : 0.55;
+  fc.tz = drillCam ? drillCam.z : playing ? puck.z : 0;
   const dx = camera.position.x - fc.tx;
   const dy = camera.position.y - fc.ty;
   const dz = camera.position.z - fc.tz;
@@ -273,6 +292,144 @@ function applyFreeCam(camera: THREE.PerspectiveCamera) {
 
 const _chaseFwd = { x: 1, z: 0 };
 let _defendZoom = 0;
+const _zoneCam = new THREE.PerspectiveCamera(50, 16 / 9, 0.15, 240);
+const _zoneNdc = new THREE.Vector3();
+const _zonePt = new THREE.Vector3();
+const _zoneFwd = new THREE.Vector3();
+
+function zoneFramed(camera: THREE.Camera, x: number, y: number, z: number, yMin = -0.84): boolean {
+  camera.updateMatrixWorld();
+  const e = camera.matrixWorld.elements;
+  _zoneFwd.set(-e[8], -e[9], -e[10]);
+  _zonePt.set(x, y, z);
+  const along =
+    (_zonePt.x - camera.position.x) * _zoneFwd.x +
+    (_zonePt.y - camera.position.y) * _zoneFwd.y +
+    (_zonePt.z - camera.position.z) * _zoneFwd.z;
+  _zoneNdc.copy(_zonePt).project(camera);
+  return along > 1.4 && _zoneNdc.z < 1 && _zoneNdc.y > yMin && _zoneNdc.y < 0.9 && Math.abs(_zoneNdc.x) < 0.92;
+}
+
+function ourZonePassReceiver(): { x: number; y: number; z: number } | null {
+  if (world.puck.owner !== null) return null;
+  if (world.lastPassTo === null) return null;
+  if (world.time - world.lastPass > 2.2) return null;
+  if (world.lastShoot > world.lastPass) return null;
+  const t = world.skaters[world.lastPassTo];
+  if (!t) return null;
+  if (t.x * world.homeAttack > -BLUE_X + 0.35) return null;
+  return { x: t.x, y: 1.15, z: t.z };
+}
+
+function placeZoneCam(
+  px: number,
+  py: number,
+  pz: number,
+  lx: number,
+  ly: number,
+  lz: number,
+  fov: number,
+  aspect: number,
+  upX: number,
+  upY: number,
+): void {
+  _zoneCam.fov = fov;
+  _zoneCam.aspect = aspect;
+  _zoneCam.updateProjectionMatrix();
+  _zoneCam.up.set(upX, upY, 0);
+  _zoneCam.position.set(px, py, pz);
+  _zoneCam.lookAt(lx, ly, lz);
+  _zoneCam.updateMatrixWorld();
+}
+
+function widenClassicForReceiver(
+  aspect: number,
+  atk: number,
+  fov0: number,
+  puckX: number,
+  puckY: number,
+  puckZ: number,
+  recvX: number,
+  recvY: number,
+  recvZ: number,
+): number | null {
+  const baseX = _desired.x;
+  const baseY = _desired.y;
+  const lookY = _look.y;
+  const baseLookX = _look.x;
+  const baseLookZ = _look.z;
+  placeZoneCam(baseX, baseY, baseLookZ, baseLookX, lookY, baseLookZ, fov0, aspect, atk, 0);
+  if (zoneFramed(_zoneCam, recvX, recvY, recvZ)) return null;
+
+  const limit = RINK_L / 2 - 1.35;
+  let camX = atk > 0 ? Math.max(-limit, recvX - 9) : Math.min(limit, recvX + 9);
+  if (atk > 0) camX = Math.min(camX, baseX);
+  else camX = Math.max(camX, baseX);
+  const zLimit = RINK_W / 2 - 3.2;
+  const heights = [baseY, baseY + 6, baseY + 14];
+  const fovs = [fov0, fov0 + 4, fov0 + 8, Math.min(66, fov0 + 14)];
+  for (const camY of heights) {
+    for (const fov of fovs) {
+      for (let blend = 0.32; blend <= 0.9; blend += 0.06) {
+        const lookX = baseLookX + (recvX - baseLookX) * blend;
+        let lookZ = baseLookZ + (recvZ - baseLookZ) * Math.min(0.62, blend);
+        lookZ = Math.max(-zLimit, Math.min(zLimit, lookZ));
+        placeZoneCam(camX, camY, lookZ, lookX, lookY, lookZ, fov, aspect, atk, 0);
+        if (!zoneFramed(_zoneCam, recvX, recvY, recvZ)) continue;
+        if (!zoneFramed(_zoneCam, puckX, puckY, puckZ, -0.9)) continue;
+        _desired.set(camX, camY, lookZ);
+        _look.set(lookX, lookY, lookZ);
+        return fov;
+      }
+    }
+  }
+  return null;
+}
+
+function widenChaseForReceiver(
+  aspect: number,
+  fov0: number,
+  back0: number,
+  height0: number,
+  hx: number,
+  hz: number,
+  puckX: number,
+  puckY: number,
+  puckZ: number,
+  recvX: number,
+  recvY: number,
+  recvZ: number,
+  lookY: number,
+): number | null {
+  const hm = Math.hypot(hx, hz) || 1;
+  const fx = hx / hm;
+  const fz = hz / hm;
+  placeZoneCam(puckX - fx * back0, height0, puckZ - fz * back0, _look.x, lookY, _look.z, fov0, aspect, 0, 1);
+  if (zoneFramed(_zoneCam, recvX, recvY, recvZ) && zoneFramed(_zoneCam, puckX, puckY, puckZ, -0.9)) return null;
+
+  const rel = (recvX - puckX) * fx + (recvZ - puckZ) * fz;
+  const need = Math.max(back0, Math.min(56, -rel + 9));
+  const backs = [need, Math.min(56, need + 4)];
+  const heights = [height0, height0 + 1.8, height0 + 4.2];
+  const fovs = [fov0, Math.min(62, fov0 + 6)];
+  for (const back of backs) {
+    for (const camY of heights) {
+      for (const fov of fovs) {
+        for (const blend of [0, 0.15, 0.35, 0.55]) {
+          const lookX = puckX + (recvX - puckX) * blend + fx * 0.9 * (1 - blend);
+          const lookZ = puckZ + (recvZ - puckZ) * blend + fz * 0.9 * (1 - blend);
+          placeZoneCam(puckX - fx * back, camY, puckZ - fz * back, lookX, lookY, lookZ, fov, aspect, 0, 1);
+          if (!zoneFramed(_zoneCam, recvX, recvY, recvZ)) continue;
+          if (!zoneFramed(_zoneCam, puckX, puckY, puckZ, -0.9)) continue;
+          _desired.set(puckX - fx * back, camY, puckZ - fz * back);
+          _look.set(lookX, lookY, lookZ);
+          return fov;
+        }
+      }
+    }
+  }
+  return null;
+}
 
 function CameraRig() {
   const playing = useGame((s) => s.playing);
@@ -281,9 +438,20 @@ function CameraRig() {
   const rawMode = useGame((s) => s.camMode);
   const mode: CamMode = rawMode === ("orbit" as CamMode) ? "classic" : rawMode;
   const prevMode = useRef(mode);
+  const wasTitle = useRef(true);
 
   useFrame((state, dt) => {
     const cam = state.camera as THREE.PerspectiveCamera;
+    if (!playing) {
+      wasTitle.current = true;
+      prevMode.current = mode;
+      cam.up.set(0, 1, 0);
+      writeCamBasis(cam);
+      projectUser(cam);
+      return;
+    }
+    const fromTitle = wasTitle.current;
+    wasTitle.current = false;
     if (world.replay) {
       const puck = world.puck;
       cam.up.set(0, 1, 0);
@@ -330,10 +498,14 @@ function CameraRig() {
     if (mode === "freestyle" && freeCamLive) {
       const fc = world.freeCam;
       const puck = world.puck;
+      const drillCam = drillFollow();
+      const tx = drillCam ? drillCam.x : puck.x;
+      const tz = drillCam ? drillCam.z : puck.z;
+      const ty = drillCam ? drillCam.y : Math.max(0.45, puck.y);
       const k = 1 - Math.exp(-3.4 * Math.min(dt, 0.1));
-      fc.tx += (puck.x - fc.tx) * k;
-      fc.tz += (puck.z - fc.tz) * k;
-      fc.ty += (Math.max(0.45, puck.y) - fc.ty) * k;
+      fc.tx += (tx - fc.tx) * k;
+      fc.tz += (tz - fc.tz) * k;
+      fc.ty += (ty - fc.ty) * k;
       applyFreeCam(cam);
       writeCamBasis(cam);
       projectUser(cam);
@@ -352,17 +524,19 @@ function CameraRig() {
     const d = Math.min(dt, 0.1);
     const puck = world.puck;
     const idle = !playing || paused;
+    const drillCam = drillFollow();
     const scoring =
       !idle && world.whistle === "goal" && (world.goalSide === "home" || world.goalSide === "away");
     const scorer = scoring && world.lastShooter !== null ? world.skaters[world.lastShooter] : undefined;
-    const px = idle ? 0 : scorer ? scorer.x : puck.x;
-    const pz = idle ? 0 : scorer ? scorer.z : puck.z;
-    const py = idle ? 0.45 : scorer ? 1.05 : Math.max(0.35, puck.y);
-    const switched = prevMode.current !== mode;
+    const px = idle ? 0 : drillCam ? drillCam.x : scorer ? scorer.x : puck.x;
+    const pz = idle ? 0 : drillCam ? drillCam.z : scorer ? scorer.z : puck.z;
+    const py = idle ? 0.45 : drillCam ? drillCam.y : scorer ? 1.05 : Math.max(0.35, puck.y);
+    const switched = prevMode.current !== mode || fromTitle;
     prevMode.current = mode;
 
     const puckJump = Math.hypot(px - _follow.x, pz - _follow.z);
-    const puckSpd = Math.hypot(puck.vx, puck.vz);
+    const skater = drillCam ? world.skaters[world.userId] : undefined;
+    const puckSpd = skater ? Math.hypot(skater.vx, skater.vz) : Math.hypot(puck.vx, puck.vz);
     const rate = puckJump > 9 ? 14 : 4.6 + Math.min(9, puckSpd * 0.42);
     const followK = idle || switched || puckJump > 16 ? 1 : 1 - Math.exp(-rate * d);
     _follow.x += (px - _follow.x) * followK;
@@ -388,7 +562,8 @@ function CameraRig() {
           : Math.min(RINK_L / 2 - 1.6, fxP + back);
       const zLimit = RINK_W / 2 - 4.8;
       const fzCam = Math.max(-zLimit, Math.min(zLimit, fzP));
-      const lookX = fxP + atk * (1.15 - zoom * 3.4) + (puck.vx * atk > 0.8 ? atk * lead * 0.3 : 0);
+      const lookX =
+        fxP + atk * (1.15 - zoom * 3.4) + (!drillCam && puck.vx * atk > 0.8 ? atk * lead * 0.3 : 0);
       _desired.set(camX, camY, fzCam);
       _look.set(lookX, fyP + 0.16 + zoom * 0.18, fzCam);
       state.camera.up.set(atk, 0, 0);
@@ -408,6 +583,9 @@ function CameraRig() {
       if (holder) {
         fx = -Math.sin(holder.yaw);
         fz = -Math.cos(holder.yaw);
+      } else if (skater) {
+        fx = -Math.sin(skater.yaw);
+        fz = -Math.cos(skater.yaw);
       } else {
         const spd = Math.hypot(puck.vx, puck.vz);
         if (spd > 0.55) {
@@ -430,8 +608,49 @@ function CameraRig() {
       state.camera.up.set(0, 1, 0);
     }
 
+    let zoneFov: number | null = null;
+    let zoneUrgent = false;
+    const zoneRecv =
+      !drillCam && !scoring && (mode === "classic" || mode === "chase") ? ourZonePassReceiver() : null;
+    if (zoneRecv && cam.aspect > 0.2) {
+      const puckY = Math.max(0.12, py);
+      const fitFov =
+        mode === "classic"
+          ? widenClassicForReceiver(
+              cam.aspect,
+              world.homeAttack,
+              50 + zoom * 9,
+              px,
+              puckY,
+              pz,
+              zoneRecv.x,
+              zoneRecv.y,
+              zoneRecv.z,
+            )
+          : widenChaseForReceiver(
+              cam.aspect,
+              44 + zoom * 5,
+              7.1 + zoom * 4.8,
+              2.7 + zoom * 2.4,
+              _chaseFwd.x,
+              _chaseFwd.z,
+              px,
+              puckY,
+              pz,
+              zoneRecv.x,
+              zoneRecv.y,
+              zoneRecv.z,
+              _look.y,
+            );
+      if (fitFov !== null) {
+        zoneFov = fitFov;
+        zoneUrgent = !zoneFramed(cam, zoneRecv.x, zoneRecv.y, zoneRecv.z);
+      }
+    }
+
     const wantFov =
-      mode === "classic" ? 50 + zoom * 9 : mode === "high" ? 48 + zoom * 4 : 44 + zoom * 5;
+      zoneFov ??
+      (mode === "classic" ? 50 + zoom * 9 : mode === "high" ? 48 + zoom * 4 : 44 + zoom * 5);
     if (Math.abs(cam.fov - wantFov) > 0.2) {
       cam.fov = wantFov;
       cam.updateProjectionMatrix();
@@ -439,10 +658,10 @@ function CameraRig() {
 
     if (mode !== "high") {
       const dist = _pos.distanceTo(_desired);
-      const k = switched || dist > 18 ? 1 : 1 - Math.exp(-2.4 * d);
+      const k = switched || dist > 18 || zoneUrgent ? 1 : 1 - Math.exp(-2.4 * d);
       _pos.lerp(_desired, k);
     }
-    const lookK = switched ? 1 : 1 - Math.exp(-3.2 * d);
+    const lookK = switched || zoneUrgent ? 1 : 1 - Math.exp(-3.2 * d);
     _lookSmooth.lerp(_look, lookK);
     if (mode === "classic") {
       _pos.z = _lookSmooth.z;
@@ -451,7 +670,7 @@ function CameraRig() {
     }
     state.camera.position.copy(_pos);
     state.camera.lookAt(_lookSmooth);
-    if (!idle) keepPuckFramed(cam, px, Math.max(0.12, py), pz, mode === "classic");
+    if (!idle && zoneFov === null) keepPuckFramed(cam, px, Math.max(0.12, py), pz, mode === "classic");
     if (mode === "classic") {
       cam.up.set(world.homeAttack, 0, 0);
       cam.position.z = _lookSmooth.z;
@@ -471,10 +690,11 @@ function FreestyleControls() {
   const freeCamLive = useGame((s) => s.freeCamLive);
   const { camera } = useThree();
   const ref = useRef<any>(null);
-  const live = mode === "freestyle" && !paused && !freeCamLive;
+  const title = !playing;
+  const live = title || (mode === "freestyle" && !paused && !freeCamLive);
 
   useLayoutEffect(() => {
-    if (!live) return;
+    if (!live || !useGame.getState().playing) return;
     seedFreestyleCam(camera as THREE.PerspectiveCamera);
   }, [live, camera]);
 
@@ -484,18 +704,24 @@ function FreestyleControls() {
     if (live) cam.up.set(0, 1, 0);
     if (!c || !live) return;
     if (playing) {
+      const drillCam = drillFollow();
       const p = world.puck;
-      c.target.x += (p.x - c.target.x) * 0.12;
-      c.target.z += (p.z - c.target.z) * 0.12;
-      c.target.y += (Math.max(0.45, p.y) - c.target.y) * 0.12;
+      const tx = drillCam ? drillCam.x : p.x;
+      const tz = drillCam ? drillCam.z : p.z;
+      const ty = drillCam ? drillCam.y : Math.max(0.45, p.y);
+      c.target.x += (tx - c.target.x) * 0.12;
+      c.target.z += (tz - c.target.z) * 0.12;
+      c.target.y += (ty - c.target.y) * 0.12;
     }
   });
 
   if (!live) return null;
 
+  const drillCam = drillFollow();
   const puck = world.puck;
-  const tx = playing ? puck.x : 0;
-  const tz = playing ? puck.z : 0;
+  const tx = !playing ? 0 : drillCam ? drillCam.x : puck.x;
+  const tz = !playing ? 0 : drillCam ? drillCam.z : puck.z;
+  const ty = !playing ? 0.55 : drillCam ? drillCam.y : 0.55;
 
   return (
     <OrbitControls
@@ -506,11 +732,12 @@ function FreestyleControls() {
       maxDistance={130}
       maxPolarAngle={Math.PI / 2 - 0.08}
       minPolarAngle={0.12}
-      target={[tx, 0.55, tz]}
+      target={[tx, ty, tz]}
       makeDefault
       zoomSpeed={1.05}
       rotateSpeed={0.72}
       panSpeed={0.7}
+      touches={ORBIT_TOUCHES}
     />
   );
 }
@@ -520,6 +747,7 @@ export function World() {
   const awayKit = useGame((s) => s.awayKit);
   const quality = useGame((s) => s.quality);
   const lineupRev = useGame((s) => s.lineupRev);
+  const clockMode = useGame((s) => s.clockMode);
   const arenaLook = useGame((s) => s.arenaLook);
   const dark = arenaLook === "dark";
 
@@ -556,7 +784,7 @@ export function World() {
         />
       ))}
       <RefereeMesh lane={1} />
-      <RefereeMesh lane={-1} />
+      {clockMode === "practice" ? null : <RefereeMesh lane={-1} />}
       <PuckMesh />
       <CameraRig />
       <FreestyleControls />

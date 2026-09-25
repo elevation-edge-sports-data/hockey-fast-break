@@ -38,9 +38,41 @@ export const LINE_RED = "#c8102e";
 export const LINE_BLUE = "#1d4ed8";
 export const CREASE_FILL = "rgba(70, 168, 255, 0.62)";
 
-export const GOAL_LINE_W = (2 / 12) * FT;
-export const CENTER_LINE_W = GOAL_LINE_W;
-export const BLUE_LINE_W = GOAL_LINE_W;
+export const GOAL_LINE_W = 0.09;
+export const CENTER_LINE_W = FT / 1.25;
+export const BLUE_LINE_W = FT / 1.25;
+
+export function boardLineFaces(
+  lineX: number,
+  inset: number,
+  proud: number,
+): { x: number; z: number; rot: number }[] {
+  const cornerX = RINK_L / 2 - CORNER_R;
+  const cornerZ = RINK_W / 2 - CORNER_R;
+  const r = Math.max(0.05, CORNER_R - inset);
+  const faceZ = RINK_W / 2 - inset;
+  const absX = Math.abs(lineX);
+  const spots: { x: number; z: number; rot: number }[] = [];
+  if (absX <= cornerX + 0.02) {
+    spots.push({ x: lineX, z: faceZ - proud, rot: 0 });
+    spots.push({ x: lineX, z: -(faceZ - proud), rot: Math.PI });
+    return spots;
+  }
+  const dx = absX - cornerX;
+  if (dx >= r - 0.01) return spots;
+  const dz = Math.sqrt(Math.max(0, r * r - dx * dx));
+  const sx = lineX < 0 ? -1 : 1;
+  for (const sz of [1, -1] as const) {
+    const nx = (sx * dx) / r;
+    const nz = (sz * dz) / r;
+    spots.push({
+      x: sx * cornerX + sx * dx - nx * proud,
+      z: sz * cornerZ + sz * dz - nz * proud,
+      rot: Math.atan2(nx, nz),
+    });
+  }
+  return spots;
+}
 
 export function iceWidthAtX(x: number): number {
   const absX = Math.abs(x);
@@ -107,6 +139,15 @@ export function resolveRink(
   }
 
   return { x: px, z: pz, nx, nz, hit };
+}
+
+export function benchGlassOpen(x: number, z: number): boolean {
+  return z < -RINK_W / 2 + 0.85 && Math.abs(x) < 9.95;
+}
+
+export function wallTop(nx: number, nz: number, x: number, z: number): number {
+  if (nz < -0.65 && Math.abs(nx) < 0.45 && benchGlassOpen(x, z)) return BOARD_H;
+  return BOARD_H + GLASS_H;
 }
 
 /** Depth of the D-shaped cage from the goal line at lateral z and height y. */
@@ -194,4 +235,20 @@ export function bounce(
     };
   }
   return { vx, vz };
+}
+
+export const BOARD_BOUNCE_DAMP = 0.84;
+
+export function reflectBoard(
+  vx: number,
+  vz: number,
+  nx: number,
+  nz: number,
+  damp = BOARD_BOUNCE_DAMP,
+): { vx: number; vz: number } {
+  const vn = vx * nx + vz * nz;
+  if (vn <= 0) return { vx, vz };
+  // Outward normal. +z wall (nz > 0) with inbound +vz comes back as -vz.
+  const k = 2 * vn;
+  return { vx: (vx - k * nx) * damp, vz: (vz - k * nz) * damp };
 }

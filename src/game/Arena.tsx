@@ -8,7 +8,7 @@ import {
   createScoreboardCanvas,
   mixHex,
 } from "./iceTexture";
-import { BOARD_H, CORNER_R, GLASS_H, GOAL_LINE_X, RINK_L, RINK_W } from "./rink";
+import { BOARD_H, CORNER_R, FT, GLASS_H, GOAL_LINE_X, RINK_L, RINK_W } from "./rink";
 import { rinkPerimeter } from "./rinkGeom";
 import { kitById } from "./uniforms";
 import { useGame, type ArenaLook } from "./store";
@@ -162,7 +162,11 @@ function SeatDeck() {
     const ui = useGame.getState();
     const winHome = world.periodOver && ui.homeScore > ui.awayScore;
     const winAway = world.periodOver && ui.awayScore > ui.homeScore;
-    const on = (world.goalTicker > 0 && !!world.goalSide) || winHome || winAway;
+    const drill = ui.clockMode === "drill";
+    const brawl = world.lineBrawl !== null;
+    const on = drill
+      ? world.drillCheer > 0
+      : (world.goalTicker > 0 && !!world.goalSide) || winHome || winAway;
     const scoringHome = winHome || (!world.periodOver && world.goalSide === "home");
     const t = world.time;
     const cx = camera.position.x;
@@ -187,7 +191,7 @@ function SeatDeck() {
       const hide = dist < 4.4 && depth > 0 && depth < 5.2 && p.y < 4.2 && below > 0.15;
       const sc = hide ? 0.001 : 1;
       let hop = 0;
-      if (on && p.awayFan !== scoringHome) {
+      if (brawl || (on && p.awayFan !== scoringHome)) {
         hop = 0.16 + 0.72 * Math.abs(Math.sin(t * 13.4 + i * 0.37));
       }
       dummy.position.set(p.x, p.y, p.z);
@@ -308,7 +312,7 @@ function StadiumRibbon({
     const scoring = world.goalSide ?? goalSide;
     const fill =
       scoring === "home" ? home.ribbon : scoring === "away" ? away.ribbon : home.ribbon;
-    const lit = !!scoring && world.goalTicker > 0;
+    const lit = clockMode === "drill" ? world.drillCheer > 0 : !!scoring && world.goalTicker > 0;
     const opts = {
       homeJersey: home.jersey,
       homeStripe: home.stripe,
@@ -394,7 +398,8 @@ function LightRig({ look }: { look: ArenaLook }) {
   ];
   useFrame(() => {
     const scored = world.goalTicker > 0 && !!world.goalSide;
-    const partyOn = scored && world.goalSide === "home";
+    const drill = useGame.getState().clockMode === "drill";
+    const partyOn = drill ? world.drillCheer > 0 : scored && world.goalSide === "home";
     const hex = world.goalSide === "away" ? away.ribbon : home.ribbon;
     const pulse = partyOn ? 0.48 + 0.52 * Math.abs(Math.sin(world.time * 9.4)) : 0;
     if (party.current) {
@@ -589,7 +594,7 @@ function Jumbotron() {
     const scoring = world.goalSide ?? goalSide;
     const fill =
       scoring === "home" ? home.ribbon : scoring === "away" ? away.ribbon : home.ribbon;
-    const lit = !!scoring && world.goalTicker > 0;
+    const lit = clockMode === "drill" ? world.drillCheer > 0 : !!scoring && world.goalTicker > 0;
     const replay = jumboReplayView();
     face.paint({
       homeJersey: home.jersey,
@@ -782,15 +787,96 @@ function PenaltyBox({
   );
 }
 
+function BenchReporter() {
+  const shell = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: "#c0c6ce", metalness: 0.46, roughness: 0.34 }),
+    [],
+  );
+  const plate = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: "#8e969e", metalness: 0.4, roughness: 0.42 }),
+    [],
+  );
+  const joint = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: "#3a424c", metalness: 0.36, roughness: 0.48 }),
+    [],
+  );
+  return (
+    <group scale={[1, 1.0862, 1]}>
+      {[-0.09, 0.09].map((x) => (
+        <mesh key={`foot${x}`} position={[x, 0.035, 0.02]} material={plate}>
+          <boxGeometry args={[0.12, 0.07, 0.2]} />
+        </mesh>
+      ))}
+      {[-0.09, 0.09].map((x) => (
+        <mesh key={`shin${x}`} position={[x, 0.26, 0]} material={shell}>
+          <boxGeometry args={[0.08, 0.38, 0.09]} />
+        </mesh>
+      ))}
+      {[-0.09, 0.09].map((x) => (
+        <mesh key={`knee${x}`} position={[x, 0.46, 0]} rotation={[0, 0, Math.PI / 2]} material={joint}>
+          <capsuleGeometry args={[0.048, 0.02, 3, 6]} />
+        </mesh>
+      ))}
+      {[-0.09, 0.09].map((x) => (
+        <mesh key={`thigh${x}`} position={[x, 0.66, 0]} material={shell}>
+          <boxGeometry args={[0.1, 0.34, 0.11]} />
+        </mesh>
+      ))}
+      <mesh position={[0, 0.86, 0]} material={joint}>
+        <boxGeometry args={[0.28, 0.08, 0.14]} />
+      </mesh>
+      <mesh position={[0, 1.16, 0]} material={shell}>
+        <boxGeometry args={[0.32, 0.5, 0.18]} />
+      </mesh>
+      <mesh position={[0, 1.18, 0.105]} material={plate}>
+        <boxGeometry args={[0.18, 0.22, 0.02]} />
+      </mesh>
+      <mesh position={[0, 1.46, 0]} material={joint}>
+        <capsuleGeometry args={[0.04, 0.05, 3, 6]} />
+      </mesh>
+      <mesh position={[0, 1.6, 0]} material={shell}>
+        <boxGeometry args={[0.18, 0.16, 0.16]} />
+      </mesh>
+      <mesh position={[0, 1.625, 0.09]} material={joint}>
+        <boxGeometry args={[0.11, 0.032, 0.016]} />
+      </mesh>
+      <mesh position={[0, 1.74, 0]} material={plate}>
+        <capsuleGeometry args={[0.012, 0.11, 2, 5]} />
+      </mesh>
+      {[-1, 1].map((side) => (
+        <group key={side}>
+          <mesh position={[side * 0.175, 1.34, 0]} rotation={[0, 0, Math.PI / 2]} material={joint}>
+            <capsuleGeometry args={[0.042, 0.02, 3, 6]} />
+          </mesh>
+          <mesh position={[side * 0.215, 1.18, 0]} material={shell}>
+            <boxGeometry args={[0.055, 0.26, 0.07]} />
+          </mesh>
+          <mesh position={[side * 0.215, 1.02, 0]} rotation={[0, 0, Math.PI / 2]} material={joint}>
+            <capsuleGeometry args={[0.034, 0.01, 3, 6]} />
+          </mesh>
+          <mesh position={[side * 0.215, 0.85, 0.01]} material={plate}>
+            <boxGeometry args={[0.05, 0.26, 0.06]} />
+          </mesh>
+          <mesh position={[side * 0.215, 0.685, 0.02]} material={shell}>
+            <boxGeometry args={[0.055, 0.06, 0.065]} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 function Benches() {
   const home = kitById(useGame((s) => s.homeKit));
   const away = kitById(useGame((s) => s.awayKit));
   const liveHome = useGame((s) => s.liveHome);
   const liveAway = useGame((s) => s.liveAway);
   useGame((s) => s.lineupRev);
-  const practice = useGame((s) => s.clockMode) === "practice";
-  const homeBox = practice ? [] : penaltyNumbers("home", liveHome);
-  const awayBox = practice ? [] : penaltyNumbers("away", liveAway);
+  const clockMode = useGame((s) => s.clockMode);
+  const homeBox =
+    clockMode === "practice" || clockMode === "drill" ? [] : penaltyNumbers("home", liveHome);
+  const awayBox =
+    clockMode === "practice" || clockMode === "drill" ? [] : penaltyNumbers("away", liveAway);
   const homeGSlot = defendDir("home") < 0 ? 0 : HOME_BENCH_XS.length - 1;
   const awayGSlot = defendDir("away") < 0 ? 0 : AWAY_BENCH_XS.length - 1;
   const homeGNum = benchGoalieNumber("home", liveHome.g);
@@ -807,36 +893,59 @@ function Benches() {
       }),
     [],
   );
+  const postMat = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: "#c8102e", roughness: 0.42, metalness: 0.08 }),
+    [],
+  );
   const zBench = -RINK_W / 2 - 1.58;
   const zBox = RINK_W / 2 + 1.55;
   const gY = BOARD_H + GLASS_H / 2;
-  const benchW = 19.6;
+  const benchOuter = 9.8;
+  const benchInner = 0.52;
+  const benchSpan = benchOuter - benchInner;
+  const benchMid = (benchOuter + benchInner) / 2;
+  const postH = BOARD_H + GLASS_H - 4 * FT;
+  const postW = 0.18;
+  const postX = benchInner - 0.04 - postW / 2;
+  const zPost = zBench + 0.37;
   return (
     <group>
-      <mesh position={[0, 0.7, zBench + 0.08]} material={wood}>
-        <boxGeometry args={[benchW, 0.1, 0.58]} />
-      </mesh>
-      <mesh position={[0, 0.34, zBench - 0.22]} material={wood}>
-        <boxGeometry args={[benchW, 0.68, 0.28]} />
-      </mesh>
-      <mesh position={[0, 0.7, zBench - 0.48]} material={wood}>
-        <boxGeometry args={[benchW, 0.22, 0.12]} />
-      </mesh>
-      <mesh position={[0, gY, zBench - 0.62]} material={glass}>
-        <boxGeometry args={[benchW, GLASS_H, 0.06]} />
-      </mesh>
-      <mesh position={[-(benchW / 2), gY, zBench - 0.18]} material={glass}>
+      {([-1, 1] as const).map((side) => (
+        <group key={side} position={[side * benchMid, 0, zBench]}>
+          <mesh position={[0, 0.7, 0.08]} material={wood}>
+            <boxGeometry args={[benchSpan, 0.1, 0.58]} />
+          </mesh>
+          <mesh position={[0, 0.34, -0.22]} material={wood}>
+            <boxGeometry args={[benchSpan, 0.68, 0.28]} />
+          </mesh>
+          <mesh position={[0, 0.7, -0.48]} material={wood}>
+            <boxGeometry args={[benchSpan, 0.22, 0.12]} />
+          </mesh>
+          <mesh position={[0, gY, -0.62]} material={glass}>
+            <boxGeometry args={[benchSpan, GLASS_H, 0.06]} />
+          </mesh>
+        </group>
+      ))}
+      <mesh position={[-benchOuter, gY, zBench - 0.18]} material={glass}>
         <boxGeometry args={[0.06, GLASS_H, 1.05]} />
       </mesh>
-      <mesh position={[benchW / 2, gY, zBench - 0.18]} material={glass}>
+      <mesh position={[benchOuter, gY, zBench - 0.18]} material={glass}>
         <boxGeometry args={[0.06, GLASS_H, 1.05]} />
       </mesh>
+      {([-1, 1] as const).map((side) => (
+        <mesh key={`post${side}`} position={[side * postX, postH / 2, zPost]} material={postMat}>
+          <boxGeometry args={[postW, postH, 0.28]} />
+        </mesh>
+      ))}
+      <group position={[0, 0, zPost]}>
+        <BenchReporter />
+      </group>
       {HOME_BENCH_XS.map((x, i) => {
         const goalie = i === homeGSlot;
         const number = goalie ? homeGNum : HOME_BENCH_NUMS[i < homeGSlot ? i : i - 1]!;
         return (
           <group key={`h${number}-${home.id}`} position={[x, 0.75, zBench - 0.04]}>
-            <SeatedPlayer kit={home} number={number} holdStick={!goalie && i % 2 === 0} goalie={goalie} />
+            <SeatedPlayer kit={home} number={number} holdStick={!goalie && i % 2 === 0} goalie={goalie} seatX={x} />
           </group>
         );
       })}
@@ -845,7 +954,7 @@ function Benches() {
         const number = goalie ? awayGNum : AWAY_BENCH_NUMS[i < awayGSlot ? i : i - 1]!;
         return (
           <group key={`a${number}-${away.id}`} position={[x, 0.75, zBench - 0.04]}>
-            <SeatedPlayer kit={away} number={number} holdStick={!goalie && i % 2 === 1} goalie={goalie} />
+            <SeatedPlayer kit={away} number={number} holdStick={!goalie && i % 2 === 1} goalie={goalie} seatX={x} />
           </group>
         );
       })}

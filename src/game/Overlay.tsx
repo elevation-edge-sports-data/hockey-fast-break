@@ -6,7 +6,6 @@ import {
   world,
   attackCompass,
   cycleAimCompass,
-  setPracticeDrop,
   beginPauseCam,
   beginPauseReplay,
   stopPauseReplay,
@@ -24,6 +23,7 @@ import {
   patchLineup,
   useGame,
   type CamMode,
+  type DrillTargets,
   type Lineup,
 } from "./store";
 import { kitById, UNIFORMS, type UniformKit } from "./uniforms";
@@ -252,6 +252,33 @@ function fmtClock(sec: number): string {
   return `${m}:${r.toString().padStart(2, "0")}`;
 }
 
+function drillNextLine(n: number): string | null {
+  if (n === 4) return "next level: 8 targets";
+  if (n === 8) return "next level: 12 targets";
+  if (n === 12) return "next level: 16 targets";
+  return null;
+}
+
+const drillEndStack = {
+  position: "absolute" as const,
+  left: "50%",
+  top: "28%",
+  transform: "translate(-50%, -50%)",
+  zIndex: 4,
+  display: "flex",
+  flexDirection: "column" as const,
+  alignItems: "center",
+  gap: 12,
+  pointerEvents: "none" as const,
+};
+
+const drillEndCard = {
+  position: "static" as const,
+  left: "auto",
+  top: "auto",
+  transform: "none",
+};
+
 function AbilitySliders() {
   const gameSpeed = useGame((s) => s.gameSpeed);
   const setGameSpeed = useGame((s) => s.setGameSpeed);
@@ -379,12 +406,7 @@ function ClockSetup() {
         >
           Practice
         </button>
-        {clockMode === "practice" ? (
-          <>
-            <p className="clock-untimed">Untimed</p>
-            <p className="clock-untimed drop-hint">Click ice to set drop</p>
-          </>
-        ) : null}
+        {clockMode === "practice" ? <p className="clock-untimed">Untimed</p> : null}
       </div>
       <div className="clock-col">
         <button
@@ -392,7 +414,7 @@ function ClockSetup() {
           className={clockMode === "scrimmage" ? "is-on" : ""}
           onClick={() => chooseMode("scrimmage")}
         >
-          Scrimmage
+          Roller
         </button>
         {clockMode === "scrimmage" ? <p className="clock-untimed">Untimed</p> : null}
       </div>
@@ -415,23 +437,29 @@ type MenuId = "mode" | "controller" | "gameplay" | "camera";
 const MODES: { id: "drill" | "practice" | "scrimmage" | "game"; label: string }[] = [
   { id: "drill", label: "Drill" },
   { id: "practice", label: "Practice" },
-  { id: "scrimmage", label: "Scrimmage" },
+  { id: "scrimmage", label: "Roller" },
   { id: "game", label: "Game" },
 ];
 
 function DrillTargetPick() {
   const drillTargets = useGame((s) => s.drillTargets);
-  const pick = (n: 8 | 12) => {
+  const pick = (n: DrillTargets) => {
     if (drillTargets === n) return;
     previewPausedTargets(n);
   };
   return (
     <div className="clock-mins">
+      <button type="button" className={drillTargets === 4 ? "is-on" : ""} onClick={() => pick(4)}>
+        4
+      </button>
       <button type="button" className={drillTargets === 8 ? "is-on" : ""} onClick={() => pick(8)}>
         8
       </button>
       <button type="button" className={drillTargets === 12 ? "is-on" : ""} onClick={() => pick(12)}>
         12
+      </button>
+      <button type="button" className={drillTargets === 16 ? "is-on" : ""} onClick={() => pick(16)}>
+        16
       </button>
     </div>
   );
@@ -444,12 +472,16 @@ function MainMenus() {
   const setControlProfile = useGame((s) => s.setControlProfile);
   const powerPlay = useGame((s) => s.powerPlay);
   const setPowerPlay = useGame((s) => s.setPowerPlay);
+  const chaos = useGame((s) => s.chaos);
+  const setChaos = useGame((s) => s.setChaos);
   const offsides = useGame((s) => s.offsides);
   const setOffsides = useGame((s) => s.setOffsides);
   const checkRefs = useGame((s) => s.checkRefs);
   const setCheckRefs = useGame((s) => s.setCheckRefs);
   const checkGoalies = useGame((s) => s.checkGoalies);
   const setCheckGoalies = useGame((s) => s.setCheckGoalies);
+  const lineBrawl = useGame((s) => s.lineBrawl);
+  const setLineBrawl = useGame((s) => s.setLineBrawl);
   const camMode = useGame((s) => s.camMode);
   const setCamMode = useGame((s) => s.setCamMode);
   const arenaLook = useGame((s) => s.arenaLook);
@@ -562,6 +594,15 @@ function MainMenus() {
               </button>
               <button
                 type="button"
+                className={chaos ? "is-on" : ""}
+                title="Scored-on team keeps gaining a skater each goal, up to 11"
+                aria-pressed={chaos}
+                onClick={() => setChaos(!chaos)}
+              >
+                Chaos
+              </button>
+              <button
+                type="button"
                 className={checkRefs ? "is-on" : ""}
                 aria-pressed={checkRefs}
                 onClick={() => setCheckRefs(!checkRefs)}
@@ -575,6 +616,14 @@ function MainMenus() {
                 onClick={() => setCheckGoalies(!checkGoalies)}
               >
                 Check Goalies
+              </button>
+              <button
+                type="button"
+                className={lineBrawl ? "is-on" : ""}
+                aria-pressed={lineBrawl}
+                onClick={() => setLineBrawl(!lineBrawl)}
+              >
+                Line Brawl
               </button>
             </>
           ) : null}
@@ -813,6 +862,7 @@ export function Overlay() {
   const homeScore = useGame((s) => s.homeScore);
   const awayScore = useGame((s) => s.awayScore);
   const whistle = useGame((s) => s.whistle);
+  const delayedOffside = useGame((s) => s.delayedOffside);
   const replay = useGame((s) => s.replay);
   const clockMode = useGame((s) => s.clockMode);
   const controlProfile = useGame((s) => s.controlProfile);
@@ -855,9 +905,10 @@ export function Overlay() {
 
   const homeUni = kitById(homeKit);
   const awayUni = kitById(awayKit);
+  const drillNext = clockMode === "drill" && world.drillWon ? drillNextLine(drillTargets) : null;
 
   return (
-    <div className="hud">
+    <div className={playing ? "hud" : "hud is-title"}>
       <div className="hud-top-stack">
         <div className="uni-banner">
           <div className="uni-cluster">
@@ -1091,7 +1142,9 @@ export function Overlay() {
               ? " · Drag or stick to look · X / B zoom · A resume"
               : whistle === "goal"
                 ? " · A switch · B skip celebration · stick skates · Y hit"
-                : hasPuck
+                : whistle === "brawl"
+                  ? " · X jab · B uppercut"
+                  : hasPuck
                 ? world.skaters[world.userId]?.kind === "goalie"
                   ? controlProfile === "wings"
                     ? " · A outlet pass · X dump · stick aims · hold LB / N goalie"
@@ -1112,25 +1165,54 @@ export function Overlay() {
             : "A/B/X/Y skip"}
         </div>
       ) : periodOver || world.drillWon ? (
-        <div className="whistle">
-          {clockMode === "drill"
-            ? world.drillWon
-              ? (
-                  <>
-                    {drillScore}
-                    <small>{fmtClock(world.drillElapsed)}</small>
-                  </>
-                )
-              : `DRILL ${drillScore}`
-            : homeScore === awayScore
-              ? "Final"
-              : homeScore > awayScore
-                ? "YOU WIN"
-                : "CPU WINS"}
-        </div>
+        clockMode === "drill" ? (
+          <div style={drillEndStack}>
+            <div className="whistle" style={drillEndCard}>
+              {world.drillWon ? (
+                <>
+                  <span style={{ display: "block" }}>drill complete</span>
+                  <span style={{ display: "block" }}>{`score ${drillScore}/${drillMaxScore()}`}</span>
+                  <small>{fmtClock(world.drillElapsed)}</small>
+                </>
+              ) : (
+                `score ${drillScore}/${drillMaxScore()}`
+              )}
+            </div>
+            {drillNext ? (
+              <div className="whistle" style={drillEndCard}>
+                {drillNext}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="whistle">
+            {homeScore === awayScore ? "Final" : homeScore > awayScore ? "YOU WIN" : "CPU WINS"}
+          </div>
+        )
       ) : whistle ? (
         <div className={`whistle ${whistle}`}>
-          {whistle === "goal" ? "GOAL" : whistle === "offside" ? "Offsides" : "Goalie Covered"}
+          {whistle === "goal"
+            ? "GOAL"
+            : whistle === "offside"
+              ? "Offsides"
+              : whistle === "brawl"
+                ? "Line Brawl"
+                : "Goalie Covered"}
+        </div>
+      ) : playing && delayedOffside && !replay ? (
+        <div
+          className="whistle"
+          style={{
+            top: "20%",
+            minWidth: 0,
+            padding: "7px 14px",
+            fontSize: "1rem",
+            letterSpacing: "0.16em",
+            color: "var(--color-accent)",
+            borderColor: "var(--color-accent)",
+          }}
+        >
+          Delayed offsides
         </div>
       ) : null}
 
