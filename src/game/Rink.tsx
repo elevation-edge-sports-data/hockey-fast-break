@@ -33,6 +33,7 @@ import {
   benchGlassOpen,
   GOAL_D,
   GOAL_D_TOP,
+  GOAL_PIPE_R,
   GOAL_H,
   GOAL_LINE_W,
   GOAL_LINE_X,
@@ -355,7 +356,7 @@ function cagePoint(dir: 1 | -1, t: number, y: number, depth: number, hw: number)
 function goalMesh(dir: 1 | -1) {
   const h = GOAL_H;
   const hw = GOAL_W / 2;
-  const r = 0.042;
+  const r = GOAL_PIPE_R;
   const segs = 18;
   const ySegs = 5;
   const shell = new THREE.BufferGeometry();
@@ -465,7 +466,7 @@ function Goal({ side }: { side: 1 | -1 }) {
       }),
     [],
   );
-  const r = 0.042;
+  const r = GOAL_PIPE_R;
   const hw = GOAL_W / 2;
   const h = GOAL_H;
   const join = r * 1.15;

@@ -773,6 +773,19 @@ h2 {
   opacity: 0.4;
 }
 
+.pause-new {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-line);
+  pointer-events: none;
+}
+
+.pause-new .btn-primary:disabled {
+  opacity: 0.4;
+}
+
 .period-clock {
   margin-left: 8px;
   font-family: var(--font-display);

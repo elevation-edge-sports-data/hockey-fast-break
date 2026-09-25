@@ -1114,13 +1114,13 @@ const GOALIE_DOWN: GetUpFrame = {
   brx: 1.15,
   brz: 0.18,
   lx: -0.18,
-  ly: 0.55,
+  ly: 0.82,
   lz: 0.12,
   lrx: 0.9,
   lrz: -0.55,
   ls: 1.8,
   rx: 0.16,
-  ry: 0.55,
+  ry: 0.82,
   rz: 0.12,
   rrx: 1.05,
   rrz: 0.44,
@@ -1145,13 +1145,13 @@ const GOALIE_ONE: GetUpFrame = {
   brx: 1.05,
   brz: 0.08,
   lx: -0.2,
-  ly: 0.58,
+  ly: 0.82,
   lz: 0.16,
   lrx: 0.7,
   lrz: -0.4,
   ls: 1.2,
   rx: 0.16,
-  ry: 0.78,
+  ry: 0.82,
   rz: 0.08,
   rrx: -0.45,
   rrz: 0.12,
@@ -1496,16 +1496,21 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         rFore.current,
       );
     } else if (tumbling) {
+      const u = Math.min(1, Math.max(0, 1 - s.struck / 1.68));
+      const tuck = u * u * (3 - 2 * u);
+      const hip = 0.86;
       if (lLeg.current) {
-        lLeg.current.position.set(-0.14, 0.55, 0.04);
-        lLeg.current.rotation.set(0.85, 0, -0.22);
+        lLeg.current.position.set(-0.2, hip, 0);
+        lLeg.current.rotation.set(0.05 + 0.8 * tuck, 0, -0.22 * tuck);
       }
       if (rLeg.current) {
-        rLeg.current.position.set(0.14, 0.55, 0.04);
-        rLeg.current.rotation.set(1.15, 0, 0.28);
+        rLeg.current.position.set(0.2, hip, 0);
+        rLeg.current.rotation.set(0.05 + 1.1 * tuck, 0, 0.28 * tuck);
       }
-      if (lShin.current) lShin.current.rotation.set(0.7, 0, 0);
-      if (rShin.current) rShin.current.rotation.set(0.85, 0, 0);
+      if (lShin.current) lShin.current.rotation.set(0.25 + 0.45 * tuck, 0, 0);
+      if (rShin.current) rShin.current.rotation.set(0.25 + 0.6 * tuck, 0, 0);
+      if (lBoot.current) lBoot.current.rotation.set(-0.16 + 0.26 * tuck, 0, 0);
+      if (rBoot.current) rBoot.current.rotation.set(-0.16 + 0.28 * tuck, 0, 0);
     } else if (!goalie) {
       if (lLeg.current) {
         lLeg.current.position.set(-0.2, 0.86, 0);

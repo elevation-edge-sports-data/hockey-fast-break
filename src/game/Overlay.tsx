@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Pause, Play, RotateCcw } from "lucide-react";
 import { setTouchBurst, setTouchFace, setTouchLt, setTouchMove } from "./input";
 import {
@@ -16,6 +16,9 @@ import {
   previewPausedMinutes,
   resumePausedGame,
   resetPausedGame,
+  startPausedNewGame,
+  getPauseDraft,
+  subscribePauseDraft,
 } from "./sim";
 import {
   lineupTotal,
@@ -346,25 +349,21 @@ function SideSliders({ who }: { who: "user" | "cpu" }) {
   );
 }
 
+function usePauseDraft() {
+  return useSyncExternalStore(subscribePauseDraft, getPauseDraft, getPauseDraft);
+}
+
 function chooseMode(m: "drill" | "practice" | "scrimmage" | "game"): void {
-  const ui = useGame.getState();
-  if (ui.playing && ui.paused) {
-    previewPausedMode(m);
-    return;
-  }
-  ui.setClockMode(m);
-  resetWorld();
+  previewPausedMode(m);
 }
 
 function GameMinutes() {
-  const gameMinutes = useGame((s) => s.gameMinutes);
-  const setGameMinutes = useGame((s) => s.setGameMinutes);
+  const storeMinutes = useGame((s) => s.gameMinutes);
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
-  const setMin = (n: number) => {
-    if (playing && paused) previewPausedMinutes(n);
-    else setGameMinutes(n);
-  };
+  const draft = usePauseDraft();
+  const gameMinutes = playing && paused && draft ? draft.gameMinutes : storeMinutes;
+  const setMin = (n: number) => previewPausedMinutes(n);
   return (
     <div className="clock-mins">
       <button type="button" aria-label="Fewer minutes" disabled={gameMinutes <= 1} onClick={() => setMin(gameMinutes - 1)}>
@@ -380,7 +379,11 @@ function GameMinutes() {
 }
 
 function ClockSetup() {
-  const clockMode = useGame((s) => s.clockMode);
+  const storeMode = useGame((s) => s.clockMode);
+  const playing = useGame((s) => s.playing);
+  const paused = useGame((s) => s.paused);
+  const draft = usePauseDraft();
+  const clockMode = playing && paused && draft ? draft.clockMode : storeMode;
   return (
     <div className="clock-setup">
       <div className="clock-col">
@@ -442,7 +445,11 @@ const MODES: { id: "drill" | "practice" | "scrimmage" | "game"; label: string }[
 ];
 
 function DrillTargetPick() {
-  const drillTargets = useGame((s) => s.drillTargets);
+  const storeTargets = useGame((s) => s.drillTargets);
+  const playing = useGame((s) => s.playing);
+  const paused = useGame((s) => s.paused);
+  const draft = usePauseDraft();
+  const drillTargets = playing && paused && draft ? draft.drillTargets : storeTargets;
   const pick = (n: DrillTargets) => {
     if (drillTargets === n) return;
     previewPausedTargets(n);
@@ -869,6 +876,8 @@ export function Overlay() {
   const periodClock = useGame((s) => s.periodClock);
   const drillScore = useGame((s) => s.drillScore);
   const drillTargets = useGame((s) => s.drillTargets);
+  const gameMinutes = useGame((s) => s.gameMinutes);
+  const pauseDraft = usePauseDraft();
   const periodOver = useGame((s) => s.periodOver);
   const setPlaying = useGame((s) => s.setPlaying);
   const setPaused = useGame((s) => s.setPaused);
@@ -906,6 +915,11 @@ export function Overlay() {
   const homeUni = kitById(homeKit);
   const awayUni = kitById(awayKit);
   const drillNext = clockMode === "drill" && world.drillWon ? drillNextLine(drillTargets) : null;
+  const newGameDraft =
+    !!pauseDraft &&
+    (pauseDraft.clockMode !== clockMode ||
+      pauseDraft.drillTargets !== drillTargets ||
+      pauseDraft.gameMinutes !== gameMinutes);
 
   return (
     <div className={playing ? "hud" : "hud is-title"}>
@@ -1053,20 +1067,10 @@ export function Overlay() {
           <div className="cam-adjust">
             <p>
               <b>Paused</b>
-              <span>Drag to look · X zoom in · B zoom out · A resume</span>
-            </p>
-            <ClockSetup />
-            <p className="hint">
-              {controlProfile === "wings"
-                ? "Wings: LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB takes goalie; RB dives."
-                : "Classic: current map, LT goalie."}
+              <span>Drag to look · X zoom in · B zoom out · A resumes this game</span>
             </p>
             <div className="btn-row cam-adjust-btns">
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() => resumePausedGame()}
-              >
+              <button type="button" className="btn-primary" onClick={() => resumePausedGame()}>
                 Resume
               </button>
               <button
@@ -1089,6 +1093,38 @@ export function Overlay() {
                 Reset
               </button>
             </div>
+            <p>
+              <span>
+                Resume continues this game and drops unused picks. Reset starts over in the running mode, targets,
+                and minutes.
+              </span>
+            </p>
+            <p className="hint">
+              {controlProfile === "wings"
+                ? "Wings: LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB takes goalie; RB dives."
+                : "Classic: current map, LT goalie."}
+            </p>
+            <section className="pause-new" aria-label="New game">
+              <p>
+                <b>New game</b>
+                <span>Pick a setup to start</span>
+              </p>
+              <ClockSetup />
+              <div className="btn-row cam-adjust-btns">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={!newGameDraft}
+                  tabIndex={-1}
+                  onKeyDown={(e) => {
+                    if (e.code === "Space") e.preventDefault();
+                  }}
+                  onClick={() => startPausedNewGame()}
+                >
+                  New game
+                </button>
+              </div>
+            </section>
           </div>
         ) : null}
         <MainMenus />
@@ -1139,7 +1175,7 @@ export function Overlay() {
           {replay
             ? ""
             : paused
-              ? " · Drag or stick to look · X / B zoom · A resume"
+              ? " · Drag or stick to look · X / B zoom · A resumes this game"
               : whistle === "goal"
                 ? " · A switch · B skip celebration · stick skates · Y hit"
                 : whistle === "brawl"

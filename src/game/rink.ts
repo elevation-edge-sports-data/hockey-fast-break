@@ -15,6 +15,7 @@ export const GOAL_W = 6 * FT * NET_FACE;
 export const GOAL_H = 4 * FT * NET_FACE;
 export const GOAL_D = (44 / 12) * FT;
 export const GOAL_D_TOP = (22 / 12) * FT;
+export const GOAL_PIPE_R = 0.042;
 export const CREASE_R = 6 * FT;
 export const FACEOFF_R = 15 * FT;
 export const FACEOFF_MARK_R = FACEOFF_R * 0.88;
@@ -161,12 +162,231 @@ export function cageDepthAt(z: number, y = 0): number {
   return d * Math.sqrt(Math.max(0, 1 - u * u));
 }
 
+type CagePush = { x: number; z: number; nx: number; nz: number; hit: boolean };
+
+function pushFromCircle(
+  x: number,
+  z: number,
+  cx: number,
+  cz: number,
+  reach: number,
+  fx: number,
+  fz: number,
+): { x: number; z: number; nx: number; nz: number } | null {
+  const dx = x - cx;
+  const dz = z - cz;
+  const dist = Math.hypot(dx, dz);
+  if (dist >= reach) return null;
+  const fl = Math.hypot(fx, fz) || 1;
+  const nx = dist <= 1e-6 ? fx / fl : dx / dist;
+  const nz = dist <= 1e-6 ? fz / fl : dz / dist;
+  return { x: cx + nx * reach, z: cz + nz * reach, nx, nz };
+}
+
+function semiInside(along: number, z: number): boolean {
+  if (along <= 0) return false;
+  const depth = cageDepthAt(z, 0);
+  return depth > 0.02 && along < depth - 1e-6;
+}
+
+function closestOnArc(along: number, z: number): { a: number; z: number } {
+  const hw = GOAL_W / 2;
+  let best = Infinity;
+  let ba = 0;
+  let bz = hw;
+  let bt = 0;
+  const n = 32;
+  for (let i = 0; i <= n; i++) {
+    const t = (i / n) * Math.PI;
+    const ca = GOAL_D * Math.sin(t);
+    const cz = hw * Math.cos(t);
+    const d = (ca - along) * (ca - along) + (cz - z) * (cz - z);
+    if (d < best) {
+      best = d;
+      ba = ca;
+      bz = cz;
+      bt = t;
+    }
+  }
+  let t = bt;
+  for (let k = 0; k < 6; k++) {
+    const step = Math.PI / n / 2 ** k;
+    for (const cand of [t - step, t + step]) {
+      const tt = Math.max(0, Math.min(Math.PI, cand));
+      const ca = GOAL_D * Math.sin(tt);
+      const cz = hw * Math.cos(tt);
+      const d = (ca - along) * (ca - along) + (cz - z) * (cz - z);
+      if (d < best) {
+        best = d;
+        ba = ca;
+        bz = cz;
+        t = tt;
+      }
+    }
+  }
+  return { a: ba, z: bz };
+}
+
+function arcOutward(a: number, z: number): { na: number; nz: number } {
+  const hw = GOAL_W / 2;
+  const na = a / (GOAL_D * GOAL_D);
+  const nz = z / (hw * hw);
+  const len = Math.hypot(na, nz) || 1;
+  return { na: na / len, nz: nz / len };
+}
+
+function pushFromTwine(
+  along: number,
+  z: number,
+  reach: number,
+): { along: number; z: number; na: number; nz: number } | null {
+  const inside = semiInside(along, z);
+  const arc = closestOnArc(along, z);
+  const dx = along - arc.a;
+  const dz = z - arc.z;
+  const dist = Math.hypot(dx, dz);
+  if (!inside && dist >= reach) return null;
+  if (!inside) {
+    const o = arcOutward(arc.a, arc.z);
+    if (dx * o.na + dz * o.nz < 0) return null;
+    return { along: arc.a + o.na * reach, z: arc.z + o.nz * reach, na: o.na, nz: o.nz };
+  }
+  if (along <= dist) return { along: -reach, z, na: -1, nz: 0 };
+  const o = arcOutward(arc.a, arc.z);
+  return { along: arc.a + o.na * reach, z: arc.z + o.nz * reach, na: o.na, nz: o.nz };
+}
+
+function resolveBodyCage(x: number, z: number, radius: number): CagePush {
+  let px = x;
+  let pz = z;
+  let nx = 0;
+  let nz = 0;
+  let hit = false;
+  const hw = GOAL_W / 2;
+  const reach = radius + GOAL_PIPE_R;
+
+  for (let iter = 0; iter < 3; iter++) {
+    for (const side of [1, -1] as const) {
+      const mouth = side * GOAL_LINE_X;
+      const along0 = (px - mouth) * side;
+      if (along0 < -(reach + 1.4) || along0 > GOAL_D + reach + 1.4) continue;
+      if (Math.abs(pz) > hw + reach + 1.4) continue;
+
+      const outX = -side;
+      for (const zPost of [hw, -hw] as const) {
+        const sep = pushFromCircle(px, pz, mouth, zPost, reach, outX, zPost >= 0 ? 1 : -1);
+        if (!sep) continue;
+        px = sep.x;
+        pz = sep.z;
+        nx = sep.nx;
+        nz = sep.nz;
+        hit = true;
+      }
+
+      const cz = Math.max(-hw, Math.min(hw, pz));
+      const bar = pushFromCircle(px, pz, mouth, cz, reach, outX, 0);
+      if (bar) {
+        px = bar.x;
+        pz = bar.z;
+        nx = bar.nx;
+        nz = bar.nz;
+        hit = true;
+      }
+
+      const along = (px - mouth) * side;
+      const twine = pushFromTwine(along, pz, reach);
+      if (!twine) continue;
+      px = mouth + side * twine.along;
+      pz = twine.z;
+      const nxw = side * twine.na;
+      const nlen = Math.hypot(nxw, twine.nz) || 1;
+      nx = nxw / nlen;
+      nz = twine.nz / nlen;
+      hit = true;
+    }
+  }
+  return { x: px, z: pz, nx, nz, hit };
+}
+
+function segmentHitsCircle(
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  cx: number,
+  cz: number,
+  rad: number,
+): boolean {
+  const dx = x1 - x0;
+  const dz = z1 - z0;
+  const fx = x0 - cx;
+  const fz = z0 - cz;
+  const a = dx * dx + dz * dz;
+  const c = fx * fx + fz * fz - rad * rad;
+  if (a < 1e-10) return c <= 0;
+  const b = 2 * (fx * dx + fz * dz);
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return false;
+  const root = Math.sqrt(disc);
+  const t1 = (-b - root) / (2 * a);
+  const t2 = (-b + root) / (2 * a);
+  if (t1 >= 0 && t1 <= 1) return true;
+  if (t2 >= 0 && t2 <= 1) return true;
+  return c <= 0 && t1 <= 0 && t2 >= 1;
+}
+
+function segmentHitsSemi(
+  a0: number,
+  z0: number,
+  a1: number,
+  z1: number,
+): boolean {
+  const depth = GOAL_D;
+  const hw = GOAL_W / 2;
+  const da = a1 - a0;
+  const dz = z1 - z0;
+  const qa = (da * da) / (depth * depth) + (dz * dz) / (hw * hw);
+  const qb = 2 * ((a0 * da) / (depth * depth) + (z0 * dz) / (hw * hw));
+  const qc = (a0 * a0) / (depth * depth) + (z0 * z0) / (hw * hw) - 1;
+  const onArc = (t: number) => {
+    if (t < -1e-4 || t > 1 + 1e-4) return false;
+    return a0 + da * t >= -1e-3;
+  };
+  if (qa < 1e-12) return qc <= 0 && a0 >= -1e-3 && Math.abs(z0) <= hw + 1e-3;
+  const disc = qb * qb - 4 * qa * qc;
+  if (disc >= 0) {
+    const root = Math.sqrt(Math.max(0, disc));
+    const t1 = (-qb - root) / (2 * qa);
+    const t2 = (-qb + root) / (2 * qa);
+    if (onArc(t1) || onArc(t2)) return true;
+  }
+  const amid = (a0 + a1) * 0.5;
+  const zmid = (z0 + z1) * 0.5;
+  return semiInside(amid, zmid);
+}
+
+export function segmentHitsCage(x0: number, z0: number, x1: number, z1: number): boolean {
+  const hw = GOAL_W / 2;
+  for (const side of [1, -1] as const) {
+    const mouth = side * GOAL_LINE_X;
+    for (const zPost of [hw, -hw] as const) {
+      if (segmentHitsCircle(x0, z0, x1, z1, mouth, zPost, GOAL_PIPE_R)) return true;
+    }
+    const a0 = (x0 - mouth) * side;
+    const a1 = (x1 - mouth) * side;
+    if (segmentHitsSemi(a0, z0, a1, z1)) return true;
+  }
+  return false;
+}
+
 /** Solid cage behind the goal line (mouth is on the goal line). Pushes skaters out. */
 export function resolveCage(
   x: number,
   z: number,
   radius: number,
-): { x: number; z: number; nx: number; nz: number; hit: boolean } {
+  body = false,
+): CagePush {
+  if (body) return resolveBodyCage(x, z, radius);
   const hw = GOAL_W / 2 + radius;
   const pad = radius + 0.05;
   let px = x;

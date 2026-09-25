@@ -8,7 +8,7 @@ import { PlayerMesh, PuckMesh, RefereeMesh } from "./PlayerMesh";
 import { attachInput } from "./input";
 import { installControlsProbe, resetWorld, stepSim, world } from "./sim";
 import { useGame, type CamMode } from "./store";
-import { BOARD_H, BLUE_X, GOAL_H, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
+import { BOARD_H, BLUE_X, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
 
 function LookSync() {
   const look = useGame((s) => s.arenaLook);
@@ -215,18 +215,31 @@ function projectUser(camera: THREE.Camera) {
   world.puckVisible = onScreen && !puckBlockedByBoards(camera);
 }
 
-function finishedDrillSkater(): { x: number; y: number; z: number } | null {
-  if (useGame.getState().clockMode !== "drill") return null;
-  if (!world.drillWon && !world.periodOver) return null;
-  const s = world.skaters[world.userId];
-  if (!s) return null;
-  return { x: s.x, y: 1.2, z: s.z };
-}
-
 function drillFollow(): { x: number; y: number; z: number } | null {
   if (useGame.getState().clockMode !== "drill") return null;
-  if (world.drillWon || world.periodOver) return finishedDrillSkater();
-  return { x: world.homeAttack * GOAL_LINE_X, y: GOAL_H * 0.5, z: 0 };
+  const s = world.skaters[world.userId];
+  if (!s) return null;
+  return { x: s.x, y: 1.05, z: s.z };
+}
+
+function parkClassicAt(x: number, y: number, z: number, cam: THREE.PerspectiveCamera): void {
+  const atk = world.homeAttack > 0 ? 1 : -1;
+  const back = 13.2;
+  const camX = atk > 0 ? Math.max(-RINK_L / 2 + 1.6, x - back) : Math.min(RINK_L / 2 - 1.6, x + back);
+  const zLimit = RINK_W / 2 - 4.8;
+  const fz = Math.max(-zLimit, Math.min(zLimit, z));
+  const lookX = x + atk * 1.15;
+  _follow.set(x, y, z);
+  _desired.set(camX, 9.4, fz);
+  _look.set(lookX, y + 0.16, fz);
+  _pos.copy(_desired);
+  _lookSmooth.copy(_look);
+  cam.up.set(atk, 0, 0);
+  cam.position.copy(_pos);
+  cam.lookAt(_lookSmooth);
+  cam.position.z = _lookSmooth.z;
+  _pos.z = cam.position.z;
+  cam.lookAt(_lookSmooth);
 }
 
 function seedFreestyleCam(camera: THREE.PerspectiveCamera) {
@@ -439,19 +452,29 @@ function CameraRig() {
   const mode: CamMode = rawMode === ("orbit" as CamMode) ? "classic" : rawMode;
   const prevMode = useRef(mode);
   const wasTitle = useRef(true);
+  const seenDrill = useRef(-1);
 
   useFrame((state, dt) => {
     const cam = state.camera as THREE.PerspectiveCamera;
+    const drillNow = useGame.getState().clockMode === "drill";
+    const drillSnap = drillNow && world.drillView !== seenDrill.current;
     if (!playing) {
       wasTitle.current = true;
       prevMode.current = mode;
-      cam.up.set(0, 1, 0);
+      if (drillNow) {
+        const look = drillFollow();
+        if (look) parkClassicAt(look.x, look.y, look.z, cam);
+        seenDrill.current = world.drillView;
+      } else {
+        cam.up.set(0, 1, 0);
+      }
       writeCamBasis(cam);
       projectUser(cam);
       return;
     }
     const fromTitle = wasTitle.current;
     wasTitle.current = false;
+    if (drillSnap) seenDrill.current = world.drillView;
     if (world.replay) {
       const puck = world.puck;
       cam.up.set(0, 1, 0);
@@ -488,6 +511,7 @@ function CameraRig() {
       return;
     }
     if (paused) {
+      if (drillSnap) world.freeCam.captured = false;
       if (!world.freeCam.captured) captureFreeCam(cam);
       applyFreeCam(cam);
       writeCamBasis(cam);
@@ -531,7 +555,7 @@ function CameraRig() {
     const px = idle ? 0 : drillCam ? drillCam.x : scorer ? scorer.x : puck.x;
     const pz = idle ? 0 : drillCam ? drillCam.z : scorer ? scorer.z : puck.z;
     const py = idle ? 0.45 : drillCam ? drillCam.y : scorer ? 1.05 : Math.max(0.35, puck.y);
-    const switched = prevMode.current !== mode || fromTitle;
+    const switched = prevMode.current !== mode || fromTitle || drillSnap;
     prevMode.current = mode;
 
     const puckJump = Math.hypot(px - _follow.x, pz - _follow.z);
@@ -690,6 +714,7 @@ function FreestyleControls() {
   const freeCamLive = useGame((s) => s.freeCamLive);
   const { camera } = useThree();
   const ref = useRef<any>(null);
+  const seenDrill = useRef(-1);
   const title = !playing;
   const live = title || (mode === "freestyle" && !paused && !freeCamLive);
 
@@ -709,9 +734,12 @@ function FreestyleControls() {
       const tx = drillCam ? drillCam.x : p.x;
       const tz = drillCam ? drillCam.z : p.z;
       const ty = drillCam ? drillCam.y : Math.max(0.45, p.y);
-      c.target.x += (tx - c.target.x) * 0.12;
-      c.target.z += (tz - c.target.z) * 0.12;
-      c.target.y += (ty - c.target.y) * 0.12;
+      const snap = drillCam !== null && world.drillView !== seenDrill.current;
+      if (snap) seenDrill.current = world.drillView;
+      const k = snap ? 1 : 0.12;
+      c.target.x += (tx - c.target.x) * k;
+      c.target.z += (tz - c.target.z) * k;
+      c.target.y += (ty - c.target.y) * k;
     }
   });
 

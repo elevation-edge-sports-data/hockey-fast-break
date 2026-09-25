@@ -420,7 +420,8 @@ function LightRig({ look }: { look: ArenaLook }) {
       netGlow.current.target.position.set(netX, 0, 0);
       netGlow.current.target.updateMatrixWorld();
       netGlow.current.color.set(hex);
-      netGlow.current.intensity = scored ? (dark ? 140 : 640) * (partyOn ? pulse : 0.55) : 0;
+      const netOn = drill ? world.drillCheer > 0 : scored;
+      netGlow.current.intensity = netOn ? (dark ? 140 : 640) * (partyOn ? pulse : 0.55) : 0;
     }
     if (amb.current) amb.current.intensity = (dark ? 0.62 : 0.5) + (partyOn ? 1.05 * pulse : 0);
     if (hemi.current) {
