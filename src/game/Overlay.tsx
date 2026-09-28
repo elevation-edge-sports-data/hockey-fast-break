@@ -851,6 +851,20 @@ function PauseOrbit() {
   );
 }
 
+function VersionArchive() {
+  return (
+    <nav className="lab-versions" aria-label="Version archive">
+      <span className="lab-versions-label">Archive</span>
+      <a href="archive/v0/index.html">v0</a>
+      <a href="archive/v1/index.html">v1</a>
+      <a href="archive/v2/index.html">v2</a>
+      <a href="./" aria-current="page">
+        v3
+      </a>
+    </nav>
+  );
+}
+
 export function Overlay() {
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
@@ -923,6 +937,7 @@ export function Overlay() {
 
   return (
     <div className={playing ? "hud" : "hud is-title"}>
+      <VersionArchive />
       <div className="hud-top-stack">
         <div className="uni-banner">
           <div className="uni-cluster">
@@ -989,7 +1004,7 @@ export function Overlay() {
 
         <header className="hud-top">
           <div>
-            <p className="eyebrow">Elevation Edge · v1</p>
+            <p className="eyebrow">Elevation Edge · v3</p>
             <h1>Hockey Fast Break</h1>
             <AbilitySliders />
           </div>
@@ -1099,11 +1114,9 @@ export function Overlay() {
                 and minutes.
               </span>
             </p>
-            <p className="hint">
-              {controlProfile === "wings"
-                ? "Wings: LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB takes goalie; RB dives."
-                : "Classic: current map, LT goalie."}
-            </p>
+            {controlProfile === "wings" ? null : (
+              <p className="hint">Classic: current map, LT goalie.</p>
+            )}
             <section className="pause-new" aria-label="New game">
               <p>
                 <b>New game</b>

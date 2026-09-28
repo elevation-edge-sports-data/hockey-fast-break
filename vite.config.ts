@@ -1,5 +1,5 @@
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { extname, isAbsolute, join, relative } from "node:path";
 import type { Plugin } from "vite";
 import { defineConfig } from "vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
@@ -30,6 +30,52 @@ function hasGlobbedMigrations(root: string): boolean {
  * migrations — no schema to apply — skips it entirely rather than paying for a
  * PGLite instance it never queries.
  */
+const ARCHIVE_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+};
+
+function versionArchivePlugin(): Plugin {
+  return {
+    name: "hfb-version-archive",
+    apply: "serve",
+    configureServer(server) {
+      const archiveRoot = join(server.config.root, "docs", "archive");
+      server.middlewares.use((req, res, next) => {
+        try {
+          const pathOnly = decodeURIComponent((req.url ?? "").split("?", 1)[0] ?? "");
+          if (pathOnly !== "/archive" && !pathOnly.startsWith("/archive/")) {
+            next();
+            return;
+          }
+          let rel = pathOnly.slice("/archive".length).replace(/^\/+/, "");
+          if (rel === "" || rel.endsWith("/")) rel += "index.html";
+          const file = join(archiveRoot, rel);
+          const fromRoot = relative(archiveRoot, file);
+          if (fromRoot.startsWith("..") || isAbsolute(fromRoot)) {
+            next();
+            return;
+          }
+          if (!existsSync(file) || !statSync(file).isFile()) {
+            next();
+            return;
+          }
+          res.statusCode = 200;
+          res.setHeader(
+            "Content-Type",
+            ARCHIVE_TYPES[extname(file).toLowerCase()] ?? "application/octet-stream",
+          );
+          createReadStream(file).pipe(res);
+        } catch {
+          next();
+        }
+      });
+    },
+  };
+}
+
 function pgliteBootstrapPlugin(): Plugin {
   return {
     name: "app-builder:pglite-bootstrap",
@@ -158,6 +204,7 @@ export default defineConfig(({ command, isPreview }) => ({
   },
   resolve: { tsconfigPaths: true },
   plugins: [
+    versionArchivePlugin(),
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.
     authPopupPlugin(),
