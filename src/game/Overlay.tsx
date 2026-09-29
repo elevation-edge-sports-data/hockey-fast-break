@@ -939,6 +939,7 @@ export function Overlay() {
     <div className={playing ? "hud" : "hud is-title"}>
       <VersionArchive />
       <div className="hud-top-stack">
+        {playing && !paused && clockMode === "drill" ? null : (
         <div className="uni-banner">
           <div className="uni-cluster">
             <div className="uni-side">
@@ -1001,6 +1002,7 @@ export function Overlay() {
             {!playing || paused ? <SideSliders who="cpu" /> : null}
           </div>
         </div>
+        )}
 
         <header className="hud-top">
           <div>

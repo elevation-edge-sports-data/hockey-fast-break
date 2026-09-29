@@ -369,7 +369,10 @@ function dropperLane(): 1 | -1 {
 }
 
 function refsOnIce(): Referee[] {
-  return useGame.getState().clockMode === "practice" ? [world.ref] : [world.ref, world.ref2];
+  const mode = useGame.getState().clockMode;
+  if (mode === "practice") return [world.ref];
+  if (mode === "drill") return [world.ref2];
+  return [world.ref, world.ref2];
 }
 
 function refForLane(lane: number): Referee {
@@ -1237,8 +1240,6 @@ function hitDrillTarget(i: number): void {
       u.celebrate = 8;
       world.lastShooter = u.id;
     }
-    world.ref.pose = "goal";
-    world.ref.poseT = 0;
     world.ref2.pose = "goal";
     world.ref2.poseT = 0;
   }
@@ -1393,8 +1394,8 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
     resetDrill();
     world.faceoff = false;
     world.faceoffPhase = "live";
-    world.ref.pose = "idle";
-    world.ref2.pose = "idle";
+    placeDrillBoxRef(world.ref);
+    placeDrillIceRef(world.ref2);
     world.periodClock = DRILL_SECONDS;
     ui.setPeriodClock(DRILL_SECONDS);
     ui.setPeriodOver(false);
@@ -4410,19 +4411,6 @@ function behindOwnGoalLine(s: Skater): boolean {
   return s.x * defendDir(s.side) > GOAL_LINE_X;
 }
 
-function ownZoneAimSlop(s: Skater): { z: number; y: number } {
-  const depth = -BLUE_X - s.x * attackDir(s.side);
-  if (depth < 0) return { z: 0, y: 0 };
-  const span = Math.max(1, GOAL_LINE_X - BLUE_X);
-  const t = Math.min(1, depth / span);
-  const zAmp = 2.35 + t * 2.45;
-  const yAmp = 0.42 + t * 0.7;
-  const z = (Math.random() + Math.random() - 1) * zAmp;
-  let y = (Math.random() + Math.random() - 1) * yAmp;
-  if (Math.random() < 0.2 + t * 0.34) y += 0.48 + t * 0.85 + Math.random() * 0.4;
-  return { z, y };
-}
-
 function rimBoardSide(s: Skater, mx: number, my: number): 1 | -1 {
   const aim = stickToNetAim(mx, my, s.side);
   const lat = aim.lat * aimZSign(s.side);
@@ -4543,36 +4531,10 @@ function keepOwnCageSolid(s: Skater): void {
 }
 
 function drillIronTarget(
-  tZ: number,
-  wantY: number,
+  _tZ: number,
+  _wantY: number,
 ): { tZ: number; wantY: number; kind: "post" | "bar" } | null {
-  if (useGame.getState().clockMode !== "drill") return null;
-  const half = GOAL_W / 2;
-  const postGap = half - Math.abs(tZ);
-  const barGap = GOAL_H - wantY;
-  const nearPost = postGap > -0.16 && postGap < 0.4;
-  const nearBar = barGap > -0.14 && barGap < 0.32;
-  if (!nearPost && !nearBar) return null;
-  const postScore = nearPost ? (postGap <= 0 ? 0.7 : 0.18 + (1 - postGap / 0.4) * 0.52) : 0;
-  const barScore = nearBar ? (barGap <= 0 ? 0.68 : 0.16 + (1 - barGap / 0.32) * 0.5) : 0;
-  if (Math.random() > Math.max(postScore, barScore)) return null;
-  const pickPost =
-    nearPost &&
-    (postScore > barScore + 0.08 || (!nearBar && postScore >= barScore) || (nearBar && Math.abs(postScore - barScore) <= 0.08 && Math.random() < 0.5));
-  if (pickPost) {
-    const sign = Math.sign(tZ) || (Math.random() < 0.5 ? 1 : -1);
-    return {
-      kind: "post",
-      tZ: sign * half,
-      wantY: Math.max(PUCK_Y + 0.05, Math.min(wantY, GOAL_H - 0.18)),
-    };
-  }
-  if (!nearBar) return null;
-  return {
-    kind: "bar",
-    tZ: Math.max(-half + 0.22, Math.min(half - 0.22, tZ)),
-    wantY: GOAL_H,
-  };
+  return null;
 }
 
 function launchShotAtNet(
@@ -4587,8 +4549,17 @@ function launchShotAtNet(
   const attack = attackDir(s.side);
   const netX = attack * GOAL_LINE_X;
   const zSign = aimZSign(s.side);
-  const stickX = Math.max(-1, Math.min(1, mx));
-  const stickY = Math.max(-1, Math.min(1, my));
+  let stickX = Math.max(-1, Math.min(1, mx));
+  let stickY = Math.max(-1, Math.min(1, my));
+  const stickMag = Math.hypot(stickX, stickY);
+  if (stickMag < 1e-6) {
+    stickX = 0;
+    stickY = 0;
+  } else {
+    const stickScale = 1 / Math.max(Math.abs(stickX / stickMag), Math.abs(stickY / stickMag));
+    stickX *= stickScale;
+    stickY *= stickScale;
+  }
   const half = GOAL_W / 2;
   let drillCorner = false;
   const g = world.skaters.find((p) => p.kind === "goalie" && p.side !== s.side);
@@ -4619,27 +4590,15 @@ function launchShotAtNet(
     if (wantY < GOAL_H * 0.38 && Math.random() < 0.4) wantY = GOAL_H * 0.78;
     sprayAmt = Math.min(sprayAmt, 0.007);
   }
-  if (sprayAmt > 0.5) {
-    tZ += (Math.random() - 0.5) * Math.min(1.1, sprayAmt * 0.32);
-    wantY += (Math.random() - 0.5) * Math.min(0.4, sprayAmt * 0.12);
-  }
   tZ = Math.max(-half + (lowCorner ? 0.04 : 0.12), Math.min(half - (lowCorner ? 0.04 : 0.12), tZ));
   wantY = Math.max(PUCK_Y, Math.min(mouthTopY(), wantY));
-  if (!bodyAim) {
-    const slop = ownZoneAimSlop(s);
-    tZ += slop.z;
-    wantY += slop.y;
-    if (Math.abs(slop.z) + Math.abs(slop.y) > 0.001) {
-      tZ = Math.max(-half - 3.1, Math.min(half + 3.1, tZ));
-      wantY = Math.max(PUCK_Y, Math.min(GOAL_H + 1.15, wantY));
-    } else if (!lowCorner && !lock) {
-      const aim = stickToNetAim(stickX, stickY, s.side);
-      const spot = drill16CornerSpot(aim.lat, aim.hgt, zSign);
-      if (spot) {
-        tZ = spot.tZ;
-        wantY = spot.wantY;
-        drillCorner = true;
-      }
+  if (!bodyAim && !lowCorner && !lock) {
+    const aim = stickToNetAim(stickX, stickY, s.side);
+    const spot = drill16CornerSpot(aim.lat, aim.hgt, zSign);
+    if (spot) {
+      tZ = spot.tZ;
+      wantY = spot.wantY;
+      drillCorner = true;
     }
   }
   let ironKind: "post" | "bar" | null = null;
@@ -4656,6 +4615,7 @@ function launchShotAtNet(
   const dist = Math.hypot(dx, dz) || 1;
   const ax = dx / dist;
   const az = dz / dist;
+  if (!lowCorner) sprayAmt = Math.min(1.5, sprayAmt + 0.045 * dist);
   const spray = ironKind ? 0 : (Math.random() - 0.5) * sprayAmt;
   const flight = Math.max(0.14, dist / Math.max(8, power));
   const loft =
@@ -4826,7 +4786,18 @@ function fireOneTimer(t: Skater): void {
   }
   const half = GOAL_W / 2 - 0.1;
   const g = world.skaters.find((p) => p.kind === "goalie" && p.side !== t.side);
-  const aim = stickToNetAim(world.oneTimerMx, world.oneTimerMy, t.side);
+  let stickX = Math.max(-1, Math.min(1, world.oneTimerMx));
+  let stickY = Math.max(-1, Math.min(1, world.oneTimerMy));
+  const stickMag = Math.hypot(stickX, stickY);
+  if (stickMag < 1e-6) {
+    stickX = 0;
+    stickY = 0;
+  } else {
+    const stickScale = 1 / Math.max(Math.abs(stickX / stickMag), Math.abs(stickY / stickMag));
+    stickX *= stickScale;
+    stickY *= stickScale;
+  }
+  const aim = stickToNetAim(stickX, stickY, t.side);
   const corner = Math.max(-1, Math.min(1, aim.lat));
   const wantY = shotHeight(aim.hgt).wantY;
   const lat = t.z - pz;
@@ -4903,12 +4874,7 @@ function doShot(s: Skater, mx: number, my: number, slap: boolean, holdT?: number
     return;
   }
   const oneTimer = world.lastPassTo === s.id && world.time <= world.oneTimerUntil;
-  let sprayAmt = isSlap ? 0.016 : oneTimer ? 0.01 : 0.01;
-  const alongShot = s.x * attackDir(s.side);
-  if (alongShot >= -BLUE_X && alongShot < BLUE_X - 0.2) {
-    const shy = BLUE_X - alongShot;
-    sprayAmt = Math.max(sprayAmt, (isSlap ? 1.35 : 0.9) + Math.min(2.4, shy * 0.18));
-  }
+  const sprayAmt = isSlap ? 0.016 : oneTimer ? 0.012 : 0.01;
   const dist = launchShotAtNet(s, mx, my, power, sprayAmt);
   world.lastShoot = world.time;
   world.lastShotSlap = isSlap;
@@ -7614,6 +7580,83 @@ function maybeRedirect(puck: Puck): void {
   }
 }
 
+function placeDrillBoxRef(r: Referee): void {
+  r.x = -(2.6 / 2 + 0.05);
+  r.z = RINK_W / 2 + 1.55 - 0.32;
+  r.vx = 0;
+  r.vz = 0;
+  r.yaw = 0;
+  r.pose = "idle";
+  r.poseT = 0;
+  r.struck = 0;
+  r.tumble = 0;
+}
+
+function placeDrillIceRef(r: Referee): void {
+  r.x = -3.6;
+  r.z = -REF_BOARD_Z;
+  r.vx = 0;
+  r.vz = 0;
+  r.yaw = Math.PI;
+  r.pose = "idle";
+  r.poseT = 0;
+  r.struck = 0;
+  r.tumble = 0;
+}
+
+function stepDrillRefs(dt: number): void {
+  placeDrillBoxRef(world.ref);
+  const r = world.ref2;
+  r.poseT += dt;
+  if (r.struck > 0) {
+    r.struck = Math.max(0, r.struck - dt);
+    r.vx *= Math.exp(-3.2 * dt);
+    r.vz *= Math.exp(-3.2 * dt);
+    r.x += r.vx * dt;
+    r.z += r.vz * dt;
+    if (!(world.drillWon && world.goalTicker > 0)) {
+      const lim = BLUE_X - 0.45;
+      r.x = Math.max(-lim, Math.min(lim, r.x));
+    }
+    collideRefIce(r);
+    return;
+  }
+  r.vx = 0;
+  r.vz = 0;
+  if (world.drillWon && world.goalTicker > 0) {
+    const netX = world.homeAttack * GOAL_LINE_X;
+    const k = Math.min(1, 3.6 * dt);
+    r.x += (world.homeAttack * FACEOFF_EZ_X - r.x) * k;
+    r.z += (-FACEOFF_SPOT_Z - r.z) * k;
+    r.yaw = turnToward(r.yaw, netX - r.x, -r.z, 10, dt);
+    r.pose = "goal";
+    return;
+  }
+  const standX = -3.6;
+  const standZ = -REF_BOARD_Z;
+  let tx = standX;
+  let tz = standZ;
+  const user = world.skaters[world.userId];
+  if (user) {
+    const onSpot = Math.hypot(user.x - standX, user.z - standZ) < 1.7;
+    const onRef = Math.hypot(user.x - r.x, user.z - r.z) < 1.55;
+    if (onSpot || onRef) {
+      const sign = user.x >= standX ? -1 : 1;
+      const lo = -BLUE_X + 0.65;
+      const hi = BLUE_X - 0.65;
+      tx = Math.max(lo, Math.min(hi, standX + sign * 2.4));
+      const alt = Math.max(lo, Math.min(hi, standX - sign * 2.4));
+      if (Math.hypot(user.x - alt, user.z - standZ) > Math.hypot(user.x - tx, user.z - standZ)) tx = alt;
+      if (Math.hypot(user.x - tx, user.z - standZ) < 1.35) tz = standZ + 1.5;
+    }
+  }
+  const k = Math.min(1, 3.2 * dt);
+  r.x += (tx - r.x) * k;
+  r.z += (tz - r.z) * k;
+  r.yaw = turnToward(r.yaw, 0, 1, 5, dt);
+  r.pose = "idle";
+}
+
 function stepOneRef(r: Referee, lane: 1 | -1, dt: number): void {
   r.poseT += dt;
   if (r.struck > 0) {
@@ -7675,6 +7718,10 @@ function stepOneRef(r: Referee, lane: 1 | -1, dt: number): void {
 }
 
 function stepRef(dt: number): void {
+  if (useGame.getState().clockMode === "drill") {
+    stepDrillRefs(dt);
+    return;
+  }
   stepOneRef(world.ref, 1, dt);
   if (useGame.getState().clockMode !== "practice") stepOneRef(world.ref2, -1, dt);
 }
