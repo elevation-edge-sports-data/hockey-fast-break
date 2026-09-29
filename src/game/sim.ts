@@ -843,6 +843,7 @@ function resetSkaters(): void {
   stickLooseUntil = -1;
   stickLooseBy = -1;
   stickLooseFrom = -1;
+  userStickCommit = false;
   ozHold.clear();
   pressCacheT = Number.NaN;
   pressPrimary = -1;
@@ -876,6 +877,7 @@ let boardRide: { dir: 1 | -1; speed: number; until: number; phase: "seek" | "gli
 const overWall = new WeakSet<Puck>();
 let boardBank: { hx: number; hz: number; vx: number; vz: number; until: number; loft: boolean } | null = null;
 let userWinding = false;
+let userStickCommit = false;
 let slapMx = 0;
 let slapMy = 0;
 let cpuOtKey = -1;
@@ -3196,6 +3198,7 @@ function updateWrapFlag(holder: Skater): void {
 
 function goalieDefendCarry(g: Skater, holder: Skater): void {
   if (holder.kind === "goalie" || holder.side === g.side) return;
+  if (userStickCommitHolds(holder.id)) return;
   const attack = attackDir(holder.side);
   const mouth = attack * GOAL_LINE_X;
   const distMouth = (mouth - holder.x) * attack;
@@ -5242,39 +5245,25 @@ function tryReboundSnap(user: Skater, act: Actions): boolean {
   return true;
 }
 
-function tryWindupTurnover(user: Skater): boolean {
-  if (world.shotWindupT < 1.5) return false;
-  if (world.puck.owner !== user.id) return false;
-  if (user.kind === "goalie") return false;
-  for (const s of world.skaters) {
-    if (s.side === user.side || s.kind === "goalie") continue;
-    if (s.stun > 0.12 || s.struck > 0.2 || s.dive > 0) continue;
-    const d = Math.hypot(s.x - user.x, s.z - user.z);
-    if (d > 2.1) continue;
-    const { fx, fz } = heading(s.yaw);
-    const lx = -fz;
-    const lz = fx;
-    const side = Math.sign((user.x - s.x) * lx + (user.z - s.z) * lz) || 1;
-    s.poke = 0.48;
-    s.yaw = Math.atan2(-(user.x - s.x), -(user.z - s.z));
-    launchPuck(user, fx * 2.4 + lx * side * 8.8, fz * 2.4 + lz * side * 8.8, 0.42);
-    user.stun = 0.4;
-    user.windup = 0;
-    world.shotWindupT = 0;
-    world.windupCancel = true;
-    world.lastPass = world.time;
-    world.lastPasser = null;
-    world.lastPassTo = null;
-    world.oneTimerArmed = false;
-    world.oneTimerSlap = false;
-    world.oneTimerPass = false;
-    world.oneTimerSaucer = false;
-    stickLooseUntil = world.time + 0.3;
-    stickLooseBy = s.id;
-    stickLooseFrom = user.id;
-    return true;
-  }
-  return false;
+function refreshUserStickCommit(act: Actions): void {
+  const user = world.skaters[world.userId];
+  userStickCommit =
+    !!user &&
+    world.puck.owner === user.id &&
+    ((!world.faceoffA && act.aDown) || (act.xDown && !world.windupCancel));
+}
+
+function userStickCommitHolds(id: number): boolean {
+  return userStickCommit && id === world.userId;
+}
+
+function userJustReleasedPuck(): boolean {
+  if (world.lastShooter === world.userId && world.lastShoot === world.time) return true;
+  return (
+    world.lastPasser === world.userId &&
+    world.lastPass === world.time &&
+    world.lastShoot < world.lastPass
+  );
 }
 
 function pokeCheck(user: Skater): void {
@@ -5286,6 +5275,7 @@ function pokeCheck(user: Skater): void {
   if (puck.owner !== null) {
     const holder = world.skaters[puck.owner];
     if (!holder || holder.side === user.side) return;
+    if (userStickCommitHolds(holder.id)) return;
     if (holder.deke > 0.06) return;
     const dBlade = Math.hypot(blade.x - puck.x, blade.z - puck.z);
     const dBody = Math.hypot(user.x - holder.x, user.z - holder.z);
@@ -5366,6 +5356,7 @@ function pokeCheck(user: Skater): void {
     return;
   }
   if (user.dive > 0) return;
+  if (user.id !== world.userId && userJustReleasedPuck()) return;
   const d = Math.hypot(blade.x - puck.x, blade.z - puck.z);
   if (d < 0.95 && puck.y < 0.4) {
     if (world.time < stickLooseUntil && (user.id !== world.userId || user.id === stickLooseFrom)) return;
@@ -6081,9 +6072,10 @@ function applyUserHit(user: Skater): boolean {
     const d = Math.hypot(dx, dz);
     const ahead = dx * fx + dz * fz;
     const lateral = Math.abs(dx * fz - dz * fx);
-    const reach = s.kind === "goalie" ? 2.55 : 2.25;
-    const gate = (user.radius + s.radius) * 0.92;
-    if (d < reach && ahead > -0.15 && lateral < gate) take(ahead, lateral, s, null);
+    const open = world.puck.owner !== user.id;
+    const reach = s.kind === "goalie" ? (open ? 3.45 : 2.55) : open ? 3.15 : 2.25;
+    const gate = (user.radius + s.radius) * (open ? 1.55 : 0.92);
+    if (d < reach && ahead > (open ? -0.4 : -0.15) && lateral < gate) take(ahead, lateral, s, null);
   }
   if (ui.checkRefs) {
     for (const r of refsOnIce()) {
@@ -6245,7 +6237,7 @@ function applyHit(user: Skater): boolean {
         s.vx = fx * 12 + user.vx * 0.45;
         s.vz = fz * 12 + user.vz * 0.45;
       }
-      if (world.puck.owner === s.id) spillCheckedPuck(s, user);
+      if (world.puck.owner === s.id && !userStickCommitHolds(s.id)) spillCheckedPuck(s, user);
       else if (world.puck.owner === null && world.time - world.lastHitTime > 0.2) {
         const dP = Math.hypot(world.puck.x - s.x, world.puck.z - s.z);
         if (dP < 1.45) {
@@ -7989,7 +7981,10 @@ function tryPickup(puck: Puck): void {
 
   let best = -1;
   let bestD = 99;
+  let userLooseWin = false;
+  const justReleased = userJustReleasedPuck();
   for (const s of world.skaters) {
+    if (justReleased && s.side === "away") continue;
     if (s.kind === "goalie") {
       if (s.stun > 0.2 || s.struck > 0.3 || s.tumble !== 0) continue;
       const behind = puck.x * defendDir(s.side) > GOAL_LINE_X - 0.2;
@@ -8022,7 +8017,7 @@ function tryPickup(puck: Puck): void {
       passLive && intended !== s.id && (puck.y > 0.12 || Math.abs(puck.vy) > 0.35);
     if (s.id === world.userId && airbornePass) continue;
     if (ahead < -0.08 && !(intended === s.id && sincePass < 2.2) && s.id !== world.userId) continue;
-    const d = dBlade;
+    let d = dBlade;
     const isIntended = intended === s.id && sincePass < 2.2;
     if (isIntended && sincePass < 0.04) continue;
     if (world.oneTimerArmed && isIntended) continue;
@@ -8056,9 +8051,18 @@ function tryPickup(puck: Puck): void {
       if (s.side === "home") reach *= 0.52;
       else reach *= 1.12;
     }
+    const userLoose =
+      s.id === world.userId && sinceSave >= 1.2 && !passLive && !shotInFlight;
+    if (userLoose) {
+      const looseReach = moving > 10 ? 1.35 : 1.72;
+      reach = Math.max(reach, looseReach);
+      const bodyD = Math.hypot(s.x - puck.x, s.z - puck.z);
+      if (bodyD < d && dBlade <= looseReach) d = bodyD;
+    }
     if (d < reach && d < bestD) {
       bestD = d;
       best = s.id;
+      userLooseWin = userLoose;
     }
   }
   if (best >= 0) {
@@ -8081,7 +8085,8 @@ function tryPickup(puck: Puck): void {
       return;
     }
     const intendedPickup = intended === best && sincePass < 2.2;
-    const snapCap = sinceSave < 1.2 ? 0.55 : intendedPickup ? 2.6 : 1.28;
+    let snapCap = sinceSave < 1.2 ? 0.55 : intendedPickup ? 2.6 : 1.28;
+    if (userLooseWin) snapCap = Math.max(snapCap, 1.72);
     if (Math.hypot(blade.x - puck.x, blade.z - puck.z) > snapCap) return;
     puck.owner = best;
     puck.x = blade.x;
@@ -8204,7 +8209,11 @@ function stepPuck(dt: number): void {
     if (!s) {
       puck.owner = null;
     } else {
-      if (s.kind !== "goalie" && (s.struck > 0.2 || s.stun > 0.12 || s.dive > 0)) {
+      if (
+        s.kind !== "goalie" &&
+        (s.struck > 0.2 || s.stun > 0.12 || s.dive > 0) &&
+        !userStickCommitHolds(s.id)
+      ) {
         spillCheckedPuck(s);
       } else {
         updateWrapFlag(s);
@@ -9860,6 +9869,7 @@ function stepGoalCelebrate(dt: number): void {
 function stepPlay(dt: number, act: Actions): void {
   offsideTouchSide = 0;
   userWinding = false;
+  userStickCommit = false;
   const ui = useGame.getState();
   world.time += dt;
 
@@ -10023,6 +10033,7 @@ function stepPlay(dt: number, act: Actions): void {
       if (user.hit > 0) applyHit(user);
       integrateSkater(user, wx, wz, mag, world.whistle === "goal" ? false : act.burst, dt);
       keepInBowl(user);
+      refreshUserStickCommit(act);
       let retaliator: Skater | undefined;
       if (world.creasePokeN >= 2 && world.creasePokeGoalie !== null) {
         const g = world.skaters[world.creasePokeGoalie];
@@ -10238,7 +10249,6 @@ function stepPlay(dt: number, act: Actions): void {
         world.shotWindupT = 0;
       } else {
         userWinding = true;
-        if (world.shotWindupT > 1.5 && tryWindupTurnover(user)) userWinding = false;
       }
     } else if (user.follow <= 0) {
       user.windup = Math.max(0, user.windup - dt * 3);
@@ -10385,6 +10395,7 @@ function stepPlay(dt: number, act: Actions): void {
     integrateSkater(user, wx, wz, mag, act.burst, dt);
   }
   keepInBowl(user);
+  refreshUserStickCommit(act);
 
   for (const s of world.skaters) {
     if (s.id === world.userId || s.id === user.id) continue;
@@ -10418,7 +10429,7 @@ function stepPlay(dt: number, act: Actions): void {
       const n = nearestFoe(user);
       if (n.foe && n.d < 1.85) world.idlePokeT += dt;
       else world.idlePokeT = Math.max(0, world.idlePokeT - dt * 0.35);
-      if (world.idlePokeT >= 2 && n.foe && n.d < 1.85) {
+      if (world.idlePokeT >= 2 && n.foe && n.d < 1.85 && !userStickCommit) {
         cpuIdlePoke(n.foe, user);
       }
     } else {
