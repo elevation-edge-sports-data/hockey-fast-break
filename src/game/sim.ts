@@ -908,7 +908,33 @@ let ironResolved: "in" | "back" | "out" | null = null;
 let drillPipeHit = false;
 let drillFromPass = false;
 let drillPassSide = false;
+let drillPuckLive = false;
+let drillRecastAt = Infinity;
+let drillFlightStashed = false;
+let drillNetTouch = false;
 let steppingGhost = false;
+const drillSettledUntil = new WeakMap<Puck, number>();
+let drillWinPuck: Puck | null = null;
+let drillWinAt = -10;
+let drillWinKicked = false;
+let drillWinLodged = false;
+let drillEncoreLive = false;
+let drillEncoreAt = -10;
+let drillEncoreShots = 0;
+let drillPuckFrozen = false;
+let drillPin: { x: number; y: number; z: number } | null = null;
+let drillWinPin: { x: number; y: number; z: number } | null = null;
+
+function drillGhostScoring(): boolean {
+  return world.drillGhosts.some((g) => g.strike);
+}
+
+function releaseDrillShotState(): void {
+  if (drillPuckLive || drillGhostScoring()) return;
+  world.drillShot = false;
+  drillFromPass = false;
+  drillPassSide = false;
+}
 
 export type DrillTarget = { col: number; row: number; pts: number };
 
@@ -1066,11 +1092,26 @@ function resetDrill(): void {
   drillPipeHit = false;
   drillFromPass = false;
   drillPassSide = false;
+  drillPuckLive = false;
+  drillRecastAt = Infinity;
+  drillFlightStashed = false;
+  drillNetTouch = false;
+  drillSettledUntil.delete(world.puck);
+  drillWinPuck = null;
+  drillWinAt = -10;
+  drillWinKicked = false;
+  drillWinLodged = false;
+  drillEncoreLive = false;
+  drillEncoreAt = -10;
+  drillEncoreShots = 0;
+  drillPuckFrozen = false;
+  drillPin = null;
+  drillWinPin = null;
   useGame.getState().setDrillScore(0);
 }
 
 function spawnDrillGhost(p: Puck, strike = false): void {
-  world.drillGhosts.push({
+  const g: DrillGhost = {
     x: p.x,
     y: p.y,
     z: p.z,
@@ -1080,7 +1121,10 @@ function spawnDrillGhost(p: Puck, strike = false): void {
     owner: null,
     age: 0,
     strike,
-  });
+  };
+  const until = drillSettledUntil.get(p);
+  if (until !== undefined) drillSettledUntil.set(g, until);
+  world.drillGhosts.push(g);
 }
 
 function spawnDrillCard(i: number): void {
@@ -1122,10 +1166,24 @@ function easeAngle(cur: number, target: number, k: number, dt: number): number {
 }
 
 function stepDrillGhosts(dt: number): void {
-  if (world.drillGhosts.length === 0) return;
+  if (world.drillGhosts.length === 0) {
+    releaseDrillShotState();
+    return;
+  }
   steppingGhost = true;
   for (const g of world.drillGhosts) {
     g.age += dt;
+    if (drillWinLodged && drillWinPin && g === drillWinPuck) {
+      g.x = drillWinPin.x;
+      g.y = drillWinPin.y;
+      g.z = drillWinPin.z;
+      g.vx = 0;
+      g.vy = 0;
+      g.vz = 0;
+      g.owner = null;
+      g.strike = false;
+      continue;
+    }
     const prevX = g.x;
     const prevY = g.y;
     const prevZ = g.z;
@@ -1148,15 +1206,29 @@ function stepDrillGhosts(dt: number): void {
     bouncePuckCage(g, prevX, prevZ, prevY);
     containPuckBoards(g);
     if (g.strike) {
-      const strike = strikeDrillMouth(prevX, prevY, prevZ, g.x, g.y, g.z, shotX, shotY, shotZ);
+      const strike = strikeDrillMouth(prevX, prevY, prevZ, g.x, g.y, g.z, shotX, shotY, shotZ, g);
       if (strike.crossed || strike.hit || g.age >= 2.5) g.strike = false;
+    }
+    if (drillWinLodged && drillWinPin && g === drillWinPuck) {
+      g.x = drillWinPin.x;
+      g.y = drillWinPin.y;
+      g.z = drillWinPin.z;
+      g.vx = 0;
+      g.vy = 0;
+      g.vz = 0;
+      g.owner = null;
+      g.strike = false;
+      continue;
     }
     drillReboundNet(g);
   }
   steppingGhost = false;
-  if (world.drillGhosts.some((g) => g.age >= 1.5 && !g.strike)) {
-    world.drillGhosts = world.drillGhosts.filter((g) => g.age < 1.5 || g.strike);
+  if (world.drillGhosts.some((g) => g.age >= 1.5 && !g.strike && !(drillWinLodged && g === drillWinPuck))) {
+    world.drillGhosts = world.drillGhosts.filter(
+      (g) => g.age < 1.5 || g.strike || (drillWinLodged && g === drillWinPuck),
+    );
   }
+  releaseDrillShotState();
 }
 
 function stepDrillCards(dt: number): void {
@@ -1224,18 +1296,61 @@ function giveUserPuck(): void {
   world.puck.vx = 0;
   world.puck.vz = 0;
   world.puck.vy = 0;
-  world.drillShot = false;
+  drillPuckLive = false;
   drillFromPass = false;
   drillPassSide = false;
+  drillSettledUntil.delete(world.puck);
+  if (!drillGhostScoring()) world.drillShot = false;
   useGame.getState().setHasPuck(true);
 }
 
-function recycleDrillPuck(): void {
-  spawnDrillGhost(world.puck);
+function recycleDrillPuck(strike = false): void {
+  spawnDrillGhost(world.puck, strike);
   giveUserPuck();
 }
 
-function hitDrillTarget(i: number): void {
+function drillScoreSoft(puck: Puck): boolean {
+  const until = drillSettledUntil.get(puck);
+  return until !== undefined && world.time < until;
+}
+
+function clampDrillScoreSpeed(puck: Puck): void {
+  const sp = Math.hypot(puck.vx, puck.vz);
+  if (sp > 1.35) {
+    const s = 1.35 / sp;
+    puck.vx *= s;
+    puck.vz *= s;
+  }
+  if (puck.vy > 1.1) puck.vy = 1.1;
+  else if (puck.vy < -1.1) puck.vy = -1.1;
+}
+
+function buryDrillScore(puck: Puck, i: number): void {
+  const t = drillTargetList()[i];
+  if (!t) return;
+  const { cols, rows } = drillGrid();
+  const hw = GOAL_W / 2;
+  const colW = GOAL_W / cols;
+  const rowH = GOAL_H / rows;
+  const z = Math.max(-hw + 0.14, Math.min(hw - 0.14, -hw + (t.col + 0.5) * colW));
+  const y = Math.max(PUCK_Y, Math.min(GOAL_H - 0.1, (t.row + 0.5) * rowH));
+  const side = 1;
+  const mouth = side * GOAL_LINE_X;
+  const depth = Math.max(0.08, cageDepthAt(z, Math.min(y, GOAL_H)));
+  let inset = Math.min(0.16, Math.max(0.07, depth * 0.4));
+  if (inset > depth - 0.05) inset = Math.max(0.03, depth - 0.05);
+  puck.x = mouth + side * inset;
+  puck.y = y;
+  puck.z = z;
+  const trickle = (i % 5) / 4;
+  const out = 0.2 + trickle * 1.05;
+  puck.vx = -side * out;
+  puck.vz = ((i % 3) - 1) * 0.22;
+  puck.vy = y > PUCK_Y + 0.2 ? -0.35 : 0.05;
+  drillSettledUntil.set(puck, world.time + 0.7);
+}
+
+function hitDrillTarget(i: number, puck?: Puck): void {
   if (i < 0 || world.drillGone[i]) return;
   world.drillGone[i] = true;
   spawnDrillCard(i);
@@ -1246,8 +1361,10 @@ function hitDrillTarget(i: number): void {
   world.goalTicker = 0.48;
   world.drillCheer = 0.48;
   ui.setGoalSide("home");
+  let wonNow = false;
   if (world.drillGone.length > 0 && world.drillGone.every(Boolean)) {
     world.drillWon = true;
+    wonNow = true;
     drillPromote = true;
     world.drillElapsed = Math.max(0, DRILL_SECONDS - world.periodClock);
     world.goalTicker = 8;
@@ -1260,6 +1377,8 @@ function hitDrillTarget(i: number): void {
     world.ref2.pose = "goal";
     world.ref2.poseT = 0;
   }
+  if (puck) buryDrillScore(puck, i);
+  if (wonNow) noteDrillWin(puck);
 }
 
 function strikeDrillMouth(
@@ -1272,6 +1391,7 @@ function strikeDrillMouth(
   shotX: number,
   shotY: number,
   shotZ: number,
+  puck?: Puck,
 ): { crossed: boolean; hit: boolean } {
   const mouth = GOAL_LINE_X;
   const crossed = (prevX - mouth) * (x - mouth) <= 0 && x !== prevX && prevX < mouth;
@@ -1287,7 +1407,7 @@ function strikeDrillMouth(
     i = drill16EnteredCorner(prevX, prevY, prevZ, shotX, shotY, shotZ);
   }
   if (i >= 0 && !world.drillGone[i]) {
-    hitDrillTarget(i);
+    hitDrillTarget(i, puck);
     return { crossed, hit: true };
   }
   return { crossed, hit: false };
@@ -1307,14 +1427,12 @@ function tickDrill(
     if (world.drillFlash[i]! > 0) world.drillFlash[i] = Math.max(0, world.drillFlash[i]! - dt);
   }
   const puck = world.puck;
-  if (world.drillWon || !world.drillShot || puck.owner !== null) {
-    ironResolved = null;
-    drillPipeHit = false;
-    if (puck.owner !== null || world.drillWon) {
-      drillFromPass = false;
-      drillPassSide = false;
+  if (world.drillWon || !world.drillShot || !drillPuckLive || puck.owner !== null) {
+    if (!drillGhostScoring()) {
+      ironResolved = null;
+      drillPipeHit = false;
     }
-    if (puck.owner !== null) world.drillShot = false;
+    if (puck.owner !== null || world.drillWon || !drillPuckLive) releaseDrillShotState();
     return true;
   }
   const mouth = GOAL_LINE_X;
@@ -1344,7 +1462,7 @@ function tickDrill(
   ironResolved = null;
   let settled = false;
   if (resolved !== "back" && resolved !== "out") {
-    const strike = strikeDrillMouth(prevX, prevY, prevZ, puck.x, puck.y, puck.z, shotX, shotY, shotZ);
+    const strike = strikeDrillMouth(prevX, prevY, prevZ, puck.x, puck.y, puck.z, shotX, shotY, shotZ, puck);
     if (strike.crossed || strike.hit) settled = true;
   }
   if (pipe || resolved !== null) settled = true;
@@ -1358,9 +1476,13 @@ function tickDrill(
   drillPassSide = false;
   const u = world.skaters[world.userId];
   const behind = !drillFromPass && !!(u && puck.x < u.x - 0.45);
-  if (!settled && !past && world.time - released <= 2.5 && !behind) return true;
-  if (world.drillWon) spawnDrillGhost(world.puck);
-  else recycleDrillPuck();
+  const missed = past || behind || crossedFar;
+  const recastAt = Number.isFinite(drillRecastAt) ? drillRecastAt : released + 1;
+  const recastDue = world.time >= recastAt;
+  if (!settled && !missed && !recastDue) return true;
+  if (world.drillWon) {
+    if (drillWinKicked) spawnDrillGhost(world.puck);
+  } else recycleDrillPuck(recastDue && !settled && !missed);
   return true;
 }
 
@@ -1378,10 +1500,25 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
   drillPipeHit = false;
   drillFromPass = false;
   drillPassSide = false;
+  drillPuckLive = false;
+  drillRecastAt = Infinity;
+  drillFlightStashed = false;
+  drillNetTouch = false;
+  drillSettledUntil.delete(world.puck);
+  drillWinPuck = null;
+  drillWinAt = -10;
+  drillWinKicked = false;
+  drillWinLodged = false;
+  drillEncoreLive = false;
+  drillEncoreAt = -10;
+  drillEncoreShots = 0;
+  drillPuckFrozen = false;
+  drillPin = null;
+  drillWinPin = null;
   const ui = useGame.getState();
   if (ui.clockMode === "drill") {
     world.homeAttack = 1;
-    world.faceX = BLUE_X;
+    world.faceX = 0;
     world.faceZ = 0;
   }
   if (!opts?.keepScore) {
@@ -1413,10 +1550,7 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
   if (ui.clockMode === "drill") {
     applyDrillPromote();
     resetDrill();
-    world.faceoff = false;
-    world.faceoffPhase = "live";
-    placeDrillBoxRef(world.ref);
-    placeDrillIceRef(world.ref2);
+    beginDrillDrop();
     world.periodClock = DRILL_SECONDS;
     ui.setPeriodClock(DRILL_SECONDS);
     ui.setPeriodOver(false);
@@ -1428,13 +1562,12 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
       world.skaters.find((s) => s.side === "home");
     if (u) {
       world.userId = u.id;
-      u.x = world.homeAttack * BLUE_X;
+      u.x = defendDir("home") * 1.15;
       u.z = 0;
       u.vx = 0;
       u.vz = 0;
       u.yaw = faceYaw("home");
     }
-    giveUserPuck();
     world.drillView += 1;
   }
   ui.setCharge(0, null);
@@ -4316,6 +4449,9 @@ function armDrillShot(): void {
   drillFromPass = false;
   drillPassSide = false;
   world.drillShot = true;
+  drillPuckLive = true;
+  if (!drillFlightStashed) drillRecastAt = world.time + 1;
+  drillFlightStashed = false;
 }
 
 function passGoesBack(s: Skater): boolean {
@@ -4332,6 +4468,12 @@ function noteDrillUserPass(s: Skater): void {
   drillPassSide = false;
   drillFromPass = true;
   world.drillShot = true;
+  drillPuckLive = true;
+  const netX = attackDir(s.side) * GOAL_LINE_X;
+  const dist = Math.hypot(netX - world.puck.x, world.puck.z) || 1;
+  const power = Math.hypot(world.puck.vx, world.puck.vz) || 1;
+  drillRecastAt = world.time + Math.min(1, dist / power);
+  drillFlightStashed = false;
   if (!passGoesBack(s)) return;
   spawnDrillGhost(world.puck, true);
   giveUserPuck();
@@ -4602,13 +4744,14 @@ function launchShotAtNet(
   const from = stickBlade(s);
   const fromLine = GOAL_LINE_X - from.x * attack;
   const lowCorner = fromLine < 3.6 && fromLine > -0.28 && Math.abs(from.z) > 4.6;
+  const drillAim = useGame.getState().clockMode === "drill";
   world.lastShotCorner = lowCorner;
   world.lastShotCornerSide = lowCorner ? Math.sign(from.z || 1) : 0;
   shotIron = null;
   if (lowCorner && !lock && !bodyAim) {
     tZ = -Math.sign(from.z || 1) * (half - 0.05);
     wantY = shotHeight(stickToNetAim(stickX, stickY, s.side).hgt).wantY;
-    if (wantY < GOAL_H * 0.38 && Math.random() < 0.4) wantY = GOAL_H * 0.78;
+    if (!drillAim && wantY < GOAL_H * 0.38 && Math.random() < 0.4) wantY = GOAL_H * 0.78;
     sprayAmt = Math.min(sprayAmt, 0.007);
   }
   tZ = Math.max(-half + (lowCorner ? 0.04 : 0.12), Math.min(half - (lowCorner ? 0.04 : 0.12), tZ));
@@ -4636,9 +4779,14 @@ function launchShotAtNet(
   const dist = Math.hypot(dx, dz) || 1;
   const ax = dx / dist;
   const az = dz / dist;
-  if (!lowCorner) sprayAmt = Math.min(1.5, sprayAmt + 0.045 * dist);
-  const spray = ironKind ? 0 : (Math.random() - 0.5) * sprayAmt;
+  if (drillAim) sprayAmt = 0;
+  else if (!lowCorner) sprayAmt = Math.min(1.5, sprayAmt + 0.045 * dist);
+  const spray = ironKind || drillAim ? 0 : (Math.random() - 0.5) * sprayAmt;
   const flight = Math.max(0.14, dist / Math.max(8, power));
+  if (drillAim) {
+    drillRecastAt = world.time + Math.min(1, flight);
+    drillFlightStashed = true;
+  }
   const loft =
     wantY > mouthTopY()
       ? 1
@@ -4864,6 +5012,31 @@ function shotFromHold(holdT: number, spd: number): { power: number; slap: boolea
 }
 
 function doShot(s: Skater, mx: number, my: number, slap: boolean, holdT?: number): void {
+  drillFlightStashed = false;
+  if (useGame.getState().clockMode === "drill" && world.drillWon) {
+    if (!drillUserEncore(s)) return;
+    const held = holdT ?? (slap ? 1.05 : 0.1);
+    const { power } = shotFromHold(held, Math.hypot(s.vx, s.vz));
+    const shelf = drillTopShelfPin();
+    launchShotAtNet(s, 0, 1, Math.max(power, 28), 0, false, { tZ: 0, wantY: shelf.y });
+    world.lastShoot = world.time;
+    world.lastShotSlap = false;
+    world.lastShotOneTimer = false;
+    world.lastShotRedirect = false;
+    world.lastShooter = s.id;
+    world.oneTimerArmed = false;
+    world.oneTimerSlap = false;
+    world.oneTimerPass = false;
+    world.oneTimerSaucer = false;
+    world.shotWindupT = 0;
+    drillEncoreLive = true;
+    drillEncoreAt = world.time;
+    drillEncoreShots = 1;
+    s.windup = 0;
+    s.follow = 0.2;
+    beginShotSpeedTrack();
+    return;
+  }
   if (s.kind === "goalie") {
     if (world.coverT < GOALIE_HOLD) return;
     goalieLengthPlay(s, farPlayFromStick(mx, my, slap));
@@ -4895,7 +5068,8 @@ function doShot(s: Skater, mx: number, my: number, slap: boolean, holdT?: number
     return;
   }
   const oneTimer = world.lastPassTo === s.id && world.time <= world.oneTimerUntil;
-  const sprayAmt = isSlap ? 0.016 : oneTimer ? 0.012 : 0.01;
+  let sprayAmt = isSlap ? 0.016 : oneTimer ? 0.012 : 0.01;
+  if (useGame.getState().clockMode === "drill") sprayAmt = 0;
   const dist = launchShotAtNet(s, mx, my, power, sprayAmt);
   world.lastShoot = world.time;
   world.lastShotSlap = isSlap;
@@ -4915,6 +5089,7 @@ function doShot(s: Skater, mx: number, my: number, slap: boolean, holdT?: number
 }
 
 function shootAtNet(s: Skater): void {
+  if (world.drillWon) return;
   const attack = attackDir(s.side);
   const netX = attack * GOAL_LINE_X;
   const g = world.skaters.find((p) => p.kind === "goalie" && p.side !== s.side);
@@ -5213,6 +5388,7 @@ function reboundShotReady(user: Skater): boolean {
 }
 
 function tryReboundSnap(user: Skater, act: Actions): boolean {
+  if (world.drillWon && !drillUserEncore(user)) return false;
   if (!(act.xTap || act.xEdge)) return false;
   if (world.oneTimerArmed || userPassInFlight()) return false;
   if (world.time - world.lastShoot < 0.08) return false;
@@ -6807,8 +6983,144 @@ function drillCageSide(puck: Puck): 1 | -1 | 0 {
   return 0;
 }
 
+function drillAttackSide(): 1 | -1 {
+  return world.homeAttack >= 0 ? 1 : -1;
+}
+
+function drillPuckInNet(puck: Puck): boolean {
+  const side = drillAttackSide();
+  const mouth = side * GOAL_LINE_X;
+  const along = (puck.x - mouth) * side;
+  if (along <= 0.015) return false;
+  const hw = GOAL_W / 2;
+  if (Math.abs(puck.z) > hw - 0.02) return false;
+  if (puck.y > GOAL_H + 0.08 || puck.y < -0.02) return false;
+  const depth = Math.max(
+    0.08,
+    cageDepthAt(Math.min(Math.abs(puck.z), hw - 0.001), Math.min(Math.max(puck.y, 0), GOAL_H)),
+  );
+  return along < depth + 0.05;
+}
+
+function drillMeshLodge(z: number, y: number): { x: number; y: number; z: number } {
+  const side = drillAttackSide();
+  const mouth = side * GOAL_LINE_X;
+  const hw = GOAL_W / 2;
+  const zz = Math.max(-(hw - 0.1), Math.min(hw - 0.1, z));
+  const yy = Math.max(PUCK_Y, Math.min(GOAL_H - 0.08, y));
+  const depth = Math.max(0.2, cageDepthAt(zz, Math.min(yy, GOAL_H)));
+  const along = Math.max(0.12, depth - 0.03);
+  return { x: mouth + side * along, y: yy, z: zz };
+}
+
+function drillTopShelfPin(): { x: number; y: number; z: number } {
+  const y = Math.min(mouthTopY() - 0.02, GOAL_H * 0.8);
+  return drillMeshLodge(0, y);
+}
+
+function noteDrillWin(puck?: Puck): void {
+  const scored = puck ?? world.puck;
+  drillWinPuck = scored;
+  drillWinAt = world.time;
+  drillWinKicked = false;
+  drillWinLodged = false;
+  drillEncoreLive = false;
+  drillEncoreShots = 0;
+  drillPuckFrozen = false;
+  drillPin = null;
+  drillPuckLive = false;
+  world.drillShot = false;
+  if (scored !== world.puck) {
+    drillWinLodged = true;
+    const pin = drillMeshLodge(scored.z, scored.y);
+    drillWinPin = pin;
+    drillPin = pin;
+    scored.x = pin.x;
+    scored.y = pin.y;
+    scored.z = pin.z;
+    scored.vx = 0;
+    scored.vy = 0;
+    scored.vz = 0;
+    scored.owner = null;
+    return;
+  }
+  if (!drillPuckInNet(scored)) drillWinKicked = true;
+}
+
+function holdDrillPin(): void {
+  if (!drillPin) return;
+  const puck = world.puck;
+  puck.owner = null;
+  puck.x = drillPin.x;
+  puck.y = drillPin.y;
+  puck.z = drillPin.z;
+  puck.vx = 0;
+  puck.vy = 0;
+  puck.vz = 0;
+}
+
+function stepDrillWinPuck(): void {
+  if (!world.drillWon || drillWinLodged || drillWinKicked || drillPuckFrozen || drillEncoreLive) return;
+  const puck = drillWinPuck;
+  if (!puck || puck !== world.puck) return;
+  const side = drillAttackSide();
+  const mouth = side * GOAL_LINE_X;
+  const along = (puck.x - mouth) * side;
+  const sp = Math.hypot(puck.vx, puck.vz);
+  const kicked = along < -0.45 || (along <= 0.015 && sp > 0.55);
+  if (kicked) {
+    drillWinKicked = true;
+    return;
+  }
+  const age = world.time - drillWinAt;
+  if (age < 0.45 && sp > 0.15) return;
+  if (along <= 0.015 && sp > 0.35) {
+    drillWinKicked = true;
+    return;
+  }
+  drillWinLodged = true;
+  drillPuckFrozen = true;
+  const pin = drillMeshLodge(puck.z, puck.y);
+  drillPin = pin;
+  puck.owner = null;
+  puck.x = pin.x;
+  puck.y = pin.y;
+  puck.z = pin.z;
+  puck.vx = 0;
+  puck.vy = 0;
+  puck.vz = 0;
+}
+
+function settleDrillEncore(): void {
+  if (!drillEncoreLive || drillPuckFrozen) return;
+  const side = drillAttackSide();
+  const mouth = side * GOAL_LINE_X;
+  const arrived = (world.puck.x - mouth) * side > -0.4 || world.time - drillEncoreAt > 0.9;
+  if (!arrived) return;
+  const pin = drillTopShelfPin();
+  drillPin = pin;
+  drillPuckFrozen = true;
+  drillEncoreLive = false;
+  drillPuckLive = false;
+  world.drillShot = false;
+  world.puck.owner = null;
+  world.puck.x = pin.x;
+  world.puck.y = pin.y;
+  world.puck.z = pin.z;
+  world.puck.vx = 0;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+}
+
+function drillUserEncore(s: Skater): boolean {
+  if (s.id !== world.userId || s.kind === "goalie") return false;
+  if (!world.drillWon || drillPuckFrozen || drillEncoreLive || drillEncoreShots >= 1) return false;
+  if (drillWinKicked && !drillWinLodged) return true;
+  return drillWinLodged && drillWinPuck !== world.puck && world.puck.owner === s.id;
+}
+
 function releaseDrillNetPuck(puck: Puck): void {
-  if (useGame.getState().clockMode !== "drill" || (!world.drillWon && !world.periodOver)) return;
+  if (useGame.getState().clockMode !== "drill" || world.drillWon || !world.periodOver) return;
   const side = drillCageSide(puck);
   if (!side) return;
   const mouth = side * GOAL_LINE_X;
@@ -6899,6 +7211,13 @@ function applyShotIron(
 
 function drillReboundNet(puck: Puck): void {
   if (useGame.getState().clockMode !== "drill" || puck.owner !== null) return;
+  const soft = drillScoreSoft(puck);
+  const x0 = puck.x;
+  const y0 = puck.y;
+  const z0 = puck.z;
+  const vx0 = puck.vx;
+  const vy0 = puck.vy;
+  const vz0 = puck.vz;
   const hw = GOAL_W / 2;
   for (const side of [1, -1] as const) {
     const mouth = side * GOAL_LINE_X;
@@ -6915,8 +7234,10 @@ function drillReboundNet(puck: Puck): void {
       along > depth - 0.02
     ) {
       puck.x = mouth + side * Math.max(0.05, depth - 0.06);
-      if (puck.vx * side > 0) puck.vx = -puck.vx * 0.62;
-      puck.vz *= 0.8;
+      if (puck.vx * side > 0) {
+        puck.vx = soft ? -side * Math.min(0.7, Math.abs(puck.vx) * 0.08) : -puck.vx * 0.62;
+      }
+      puck.vz *= soft ? 0.4 : 0.8;
     }
     const roof = cageDepthAt(zAbs, GOAL_H);
     if (
@@ -6927,7 +7248,7 @@ function drillReboundNet(puck: Puck): void {
       puck.y < GOAL_H + 0.45
     ) {
       puck.y = GOAL_H - 0.05;
-      if (puck.vy > 0) puck.vy = -puck.vy * 0.5;
+      if (puck.vy > 0) puck.vy = soft ? -Math.min(0.4, puck.vy * 0.08) : -puck.vy * 0.5;
     }
     for (const zPost of [hw, -hw]) {
       const dx = puck.x - mouth;
@@ -6941,20 +7262,27 @@ function drillReboundNet(puck: Puck): void {
       puck.z = zPost + nz * rad;
       const vn = puck.vx * nx + puck.vz * nz;
       if (vn < 0) {
-        puck.vx -= 1.65 * vn * nx;
-        puck.vz -= 1.65 * vn * nz;
+        const k = soft ? 0.08 : 1.65;
+        puck.vx -= k * vn * nx;
+        puck.vz -= k * vn * nz;
       }
     }
   }
-  if (puck.y > GOAL_H + 0.2) return;
-  const cage = resolveCage(puck.x, puck.z, 0.09);
-  if (cage.hit) {
-    const vn = puck.vx * cage.nx + puck.vz * cage.nz;
-    puck.x = cage.x;
-    puck.z = cage.z;
-    if (vn < 0) {
-      puck.vx -= 1.55 * vn * cage.nx;
-      puck.vz -= 1.55 * vn * cage.nz;
+  if (puck.y > GOAL_H + 0.2) {
+    if (soft) clampDrillScoreSpeed(puck);
+    markDrillNetTouch(puck, x0, y0, z0, vx0, vy0, vz0);
+    return;
+  }
+  if (!soft) {
+    const cage = resolveCage(puck.x, puck.z, 0.09);
+    if (cage.hit) {
+      const vn = puck.vx * cage.nx + puck.vz * cage.nz;
+      puck.x = cage.x;
+      puck.z = cage.z;
+      if (vn < 0) {
+        puck.vx -= 1.55 * vn * cage.nx;
+        puck.vz -= 1.55 * vn * cage.nz;
+      }
     }
   }
   for (const side of [1, -1] as const) {
@@ -6965,13 +7293,34 @@ function drillReboundNet(puck: Puck): void {
     const along = (puck.x - mouth) * side;
     if (depth <= 0.04 || Math.abs(puck.z) >= hw + 0.02 || along < depth - 0.03) continue;
     puck.x = mouth + side * (depth - 0.06);
-    if (puck.vx * side > 0) puck.vx = -Math.abs(puck.vx) * 0.62;
+    if (puck.vx * side > 0) {
+      puck.vx = soft ? -side * Math.min(0.7, Math.abs(puck.vx) * 0.08) : -Math.abs(puck.vx) * 0.62;
+    }
   }
+  if (soft) clampDrillScoreSpeed(puck);
+  markDrillNetTouch(puck, x0, y0, z0, vx0, vy0, vz0);
+}
+
+function markDrillNetTouch(
+  puck: Puck,
+  x0: number,
+  y0: number,
+  z0: number,
+  vx0: number,
+  vy0: number,
+  vz0: number,
+): void {
+  if (steppingGhost || puck !== world.puck || !world.drillShot) return;
+  if (puck.x === x0 && puck.y === y0 && puck.z === z0 && puck.vx === vx0 && puck.vy === vy0 && puck.vz === vz0) {
+    return;
+  }
+  drillNetTouch = true;
 }
 
 function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number): void {
   const hw = GOAL_W / 2;
   const pr = 0.11;
+  const soft = drillScoreSoft(puck);
   for (const side of [1, -1] as const) {
     if (world.whistle === "goal") {
       const scoring: 1 | -1 =
@@ -7032,13 +7381,19 @@ function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number)
         const inward = -Math.sign(zPost) || 1;
         puck.z = zPost + inward * 0.1;
         puck.x = mouth + side * 0.1;
-        puck.vx = side * Math.max(3.4, Math.abs(puck.vx) * 0.72);
-        puck.vz = inward * Math.max(0.8, Math.abs(puck.vz) * 0.25);
-        puck.vy *= 0.4;
+        if (soft) {
+          puck.vx *= 0.08;
+          puck.vz *= 0.2;
+          puck.vy *= 0.4;
+        } else {
+          puck.vx = side * Math.max(3.4, Math.abs(puck.vx) * 0.72);
+          puck.vz = inward * Math.max(0.8, Math.abs(puck.vz) * 0.25);
+          puck.vy *= 0.4;
+        }
       } else {
         puck.x = mouth + nx * pr;
         puck.z = zPost + nz * pr;
-        const b = bounce(puck.vx, puck.vz, -nx, -nz, 0.55);
+        const b = bounce(puck.vx, puck.vz, -nx, -nz, soft ? 0.08 : 0.55);
         puck.vx = b.vx;
         puck.vz = b.vz;
       }
@@ -7057,12 +7412,12 @@ function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number)
       const fromBehind = prevAlong > depthNow;
       if (fromBehind) {
         puck.x = back + side * 0.14;
-        const b = bounce(puck.vx, puck.vz, side, 0, 0.42);
+        const b = bounce(puck.vx, puck.vz, side, 0, soft ? 0.08 : 0.42);
         puck.vx = b.vx;
         puck.vz = b.vz;
       } else if (puck.y < GOAL_H - 0.02) {
         puck.x = back - side * 0.1;
-        const b = bounce(puck.vx, puck.vz, -side, 0, 0.35);
+        const b = bounce(puck.vx, puck.vz, -side, 0, soft ? 0.08 : 0.35);
         puck.vx = b.vx;
         puck.vz = b.vz;
       }
@@ -7089,15 +7444,15 @@ function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number)
         return;
       } else if (fromOut && (nowInMouth || (cornerSnipeLive() && goingIn && puck.y < GOAL_H && farSide))) {
         puck.z = zWall - nz * 0.1;
-        if (puck.vx * side < 0.4) puck.vx = side * Math.max(2.2, Math.abs(puck.vx));
+        if (!soft && puck.vx * side < 0.4) puck.vx = side * Math.max(2.2, Math.abs(puck.vx));
       } else if (fromOut) {
         puck.z = zWall + nz * 0.12;
-        const b = bounce(puck.vx, puck.vz, 0, -nz, 0.5);
+        const b = bounce(puck.vx, puck.vz, 0, -nz, soft ? 0.08 : 0.5);
         puck.vx = b.vx;
         puck.vz = b.vz;
       } else {
         puck.z = zWall - nz * 0.1;
-        const b = bounce(puck.vx, puck.vz, 0, nz, 0.4);
+        const b = bounce(puck.vx, puck.vz, 0, nz, soft ? 0.08 : 0.4);
         puck.vx = b.vx;
         puck.vz = b.vz;
       }
@@ -7130,7 +7485,11 @@ function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number)
           return;
         }
         noteDrillPipe();
-        if (barHit.ny < 0.08 && goingIn) {
+        if (soft) {
+          puck.vy = Math.min(0.4, Math.abs(puck.vy) * 0.1);
+          puck.vx *= 0.15;
+          puck.vz *= 0.5;
+        } else if (barHit.ny < 0.08 && goingIn) {
           puck.x = mouth + side * 0.04;
           puck.y = Math.min(barHit.y, GOAL_H - barRad - 0.012);
           puck.z = barZ;
@@ -7145,6 +7504,7 @@ function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number)
           puck.vz *= 0.75;
         }
       } else if (
+        !soft &&
         along > 0.02 &&
         along < depthNow + 0.05 &&
         Math.abs(puck.z) < hw &&
@@ -7208,6 +7568,7 @@ function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number)
       }
     }
   }
+  if (soft) clampDrillScoreSpeed(puck);
 }
 
 function chooseCoverFaceoff(coverer: Skater | undefined): void {
@@ -7705,7 +8066,7 @@ function maybeRedirect(puck: Puck): void {
 }
 
 function placeDrillBoxRef(r: Referee): void {
-  r.x = -(2.6 / 2 + 0.05);
+  r.x = 2.6 / 2 + 0.05;
   r.z = RINK_W / 2 + 1.55 - 0.32;
   r.vx = 0;
   r.vz = 0;
@@ -7728,7 +8089,93 @@ function placeDrillIceRef(r: Referee): void {
   r.tumble = 0;
 }
 
+function drillDropLive(): boolean {
+  return useGame.getState().clockMode === "drill" && world.faceoff && world.faceoffPhase !== "live";
+}
+
+function beginDrillDrop(): void {
+  world.faceX = 0;
+  world.faceZ = 0;
+  world.faceoff = true;
+  world.faceoffT = 0;
+  world.faceoffA = false;
+  world.faceoffPhase = "hold";
+  world.faceoffFakes = 0;
+  world.faceoffAimX = 0;
+  world.faceoffAimY = 0;
+  const r = world.ref2;
+  r.x = world.faceX;
+  r.z = world.faceZ - REF_STAND;
+  r.yaw = 0;
+  r.pose = "drop";
+  r.poseT = 0;
+  r.handY = 1.38;
+  r.vx = 0;
+  r.vz = 0;
+  r.struck = 0;
+  r.tumble = 0;
+  refStayPut.delete(r);
+  placeDrillBoxRef(world.ref);
+  world.puck.x = world.faceX;
+  world.puck.z = world.faceZ;
+  world.puck.y = r.handY;
+  world.puck.owner = null;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  useGame.getState().setHasPuck(false);
+}
+
+function stepDrillDrop(dt: number): void {
+  world.faceoffT += dt;
+  const user = world.skaters[world.userId];
+  if (user) lockDot(user, defendDir("home") * 1.15, 0, faceYaw("home"));
+  const r = world.ref2;
+  r.pose = "drop";
+  r.poseT += dt;
+  r.vx = 0;
+  r.vz = 0;
+  r.x = world.faceX;
+  r.z = world.faceZ - REF_STAND;
+  r.yaw = 0;
+  if (world.faceoffPhase === "hold") {
+    r.handY = 1.38;
+    if (world.faceoffT > HOLD_T) {
+      world.faceoffPhase = "lower";
+      world.faceoffT = 0;
+    }
+  } else if (world.faceoffPhase === "lower") {
+    const k = Math.min(1, world.faceoffT / LOWER_T);
+    const e = k * k;
+    r.handY = 1.38 + (PUCK_Y - 1.38) * e;
+    if (world.faceoffT > LOWER_T) {
+      world.faceoff = false;
+      world.faceoffPhase = "live";
+      world.faceoffT = 0;
+      r.pose = "idle";
+      r.handY = 1.38;
+      giveUserPuck();
+      return;
+    }
+  } else {
+    world.faceoff = false;
+    world.faceoffPhase = "live";
+    world.faceoffT = 0;
+    r.pose = "idle";
+    giveUserPuck();
+    return;
+  }
+  world.puck.x = world.faceX;
+  world.puck.z = world.faceZ;
+  world.puck.y = r.handY;
+  world.puck.owner = null;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+}
+
 function stepDrillRefs(dt: number): void {
+  if (drillDropLive()) return;
   placeDrillBoxRef(world.ref);
   const r = world.ref2;
   r.poseT += dt;
@@ -8375,6 +8822,13 @@ function stepPuck(dt: number): void {
   if (useGame.getState().clockMode === "drill") {
     stepDrillGhosts(dt);
     stepDrillCards(dt);
+    if (drillPuckFrozen) {
+      holdDrillPin();
+      return;
+    }
+    if (world.drillWon && drillWinPuck === world.puck && !drillWinKicked && !drillEncoreLive) {
+      world.puck.owner = null;
+    }
   }
   if (
     world.delayedOffside !== 0 &&
@@ -8540,11 +8994,32 @@ function stepPuck(dt: number): void {
   maybeRedirect(puck);
 
   if (useGame.getState().clockMode === "drill") {
+    drillNetTouch = false;
     tickDrill(dt, prevX, prevY, prevZ, shotX, shotY, shotZ);
     drillReboundNet(puck);
-    for (const g of world.drillGhosts) drillReboundNet(g);
+    for (const g of world.drillGhosts) {
+      if (drillWinLodged && g === drillWinPuck) continue;
+      drillReboundNet(g);
+    }
+    const released = drillFromPass ? world.lastPass : world.lastShoot;
+    if (
+      drillNetTouch &&
+      drillPuckLive &&
+      puck.owner === null &&
+      world.drillShot &&
+      !world.drillWon &&
+      world.time - released >= 0.06
+    ) {
+      recycleDrillPuck(true);
+    }
+    stepDrillWinPuck();
+    settleDrillEncore();
+    if (drillPuckFrozen) {
+      holdDrillPin();
+      return;
+    }
     releaseDrillNetPuck(puck);
-    if (puck.owner === null) tryPickup(puck);
+    if (puck.owner === null && !(world.drillWon && !drillWinKicked) && !drillEncoreLive) tryPickup(puck);
     return;
   }
 
@@ -8846,6 +9321,10 @@ function stepPause(dt: number, act: Actions): boolean {
 }
 
 function stepFaceoff(dt: number, act: Actions, user: Skater): void {
+  if (useGame.getState().clockMode === "drill") {
+    stepDrillDrop(dt);
+    return;
+  }
   world.faceoffT += dt;
   const home = world.skaters[world.homeDot];
   const away = world.skaters.find((s) => s.id === world.awayDot);
@@ -10078,7 +10557,7 @@ function stepPlay(dt: number, act: Actions): void {
     return;
   }
 
-  if (ui.clockMode === "drill" && !world.stoppage && !world.drillWon) {
+  if (ui.clockMode === "drill" && !world.stoppage && !world.drillWon && !drillDropLive()) {
     world.periodClock = Math.max(0, world.periodClock - dt);
     const shown = Math.floor(world.periodClock);
     if (shown !== ui.periodClock) ui.setPeriodClock(shown);
