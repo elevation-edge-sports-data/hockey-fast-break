@@ -393,6 +393,7 @@ function placeRefsForFaceoff(): void {
   drop.vz = 0;
   drop.struck = 0;
   drop.tumble = 0;
+  refStayPut.delete(drop);
   other.x = world.faceX;
   other.z = -dLane * REF_BOARD_Z;
   other.yaw = 0;
@@ -403,6 +404,7 @@ function placeRefsForFaceoff(): void {
   other.vz = 0;
   other.struck = 0;
   other.tumble = 0;
+  refStayPut.delete(other);
   if (useGame.getState().clockMode === "practice") {
     world.ref2.x = 0;
     world.ref2.z = -80;
@@ -410,7 +412,22 @@ function placeRefsForFaceoff(): void {
     world.ref2.vz = 0;
     world.ref2.struck = 0;
     world.ref2.tumble = 0;
+    refStayPut.delete(world.ref2);
   }
+}
+
+function refBackInPlay(): boolean {
+  if (world.stoppage) return false;
+  if (world.faceoff && world.faceoffPhase !== "live") return false;
+  if (world.drillWon && world.goalTicker > 0) return false;
+  return true;
+}
+
+function holdCheckedRef(r: Referee, netX: number, dt: number): void {
+  r.vx = 0;
+  r.vz = 0;
+  r.yaw = turnToward(r.yaw, netX - r.x, -r.z, 10, dt);
+  r.pose = "goal";
 }
 
 const HOME_NUMS = { g: [41, 39], d: [8, 7, 84, 42], o: [29, 92, 88, 62, 11, 10] };
@@ -1348,6 +1365,10 @@ function tickDrill(
 }
 
 export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean }): void {
+  checkAbsorbed.clear();
+  checkCloseLeft.clear();
+  refStayPut.delete(world.ref);
+  refStayPut.delete(world.ref2);
   stickRage = null;
   world.benchDump = null;
   world.lineBrawl = null;
@@ -1623,12 +1644,7 @@ function integrateSkater(
     s.vz *= m;
   }
 
-  if (s.hit > 0) {
-    const { fx, fz } = heading(s.yaw);
-    s.x += fx * 7.2 * dt;
-    s.z += fz * 7.2 * dt;
-  }
-
+  stepCheckClose(s, dt);
   s.x += s.vx * dt;
   s.z += s.vz * dt;
   collideSkater(s);
@@ -1649,7 +1665,10 @@ function integrateSkater(
     s.follow = Math.max(0, s.follow - dt);
     if (s.follow <= 0) s.windup = 0;
   }
-  if (s.hit > 0) s.hit = Math.max(0, s.hit - dt);
+  if (s.hit > 0) {
+    s.hit = Math.max(0, s.hit - dt);
+    if (s.hit <= 0) endCheckSwing(s.id);
+  }
   if (s.windup > 0 && mag < 0.01 && s.follow <= 0) s.windup = Math.max(0, s.windup - dt * 1.6);
 }
 
@@ -3247,6 +3266,7 @@ function defendUserCarrier(s: Skater, holder: Skater): void {
   const hit = Math.random() < hitP;
   if (hit) {
     s.hit = 0.42;
+    armCheckSwing(s);
     const wind = 0.5;
     const peel = idle ? 0.55 : 0.84;
     pressPeelAt.set(s.id, world.time + wind);
@@ -3318,6 +3338,7 @@ function cpuDefend(s: Skater): void {
     ahead > 0.12
   ) {
     s.hit = 0.42;
+    armCheckSwing(s);
   }
 }
 
@@ -5476,6 +5497,93 @@ function beginUserCheck(): void {
   userCheckSkaters.clear();
   userCheckRefs.clear();
   userCheckSpared.clear();
+  const u = world.skaters[world.userId];
+  if (u) armCheckSwing(u);
+}
+
+const CHECK_PAD = 0.22;
+const CHECK_LAT = 0.5;
+const CHECK_CLOSE_S = 0.12;
+const CHECK_CLOSE_V = 3.2;
+const CHECK_KEEP_FWD = 0.7;
+const CHECK_KEEP_LAT = 0.85;
+const CHECK_RECOIL = 0.6;
+const CHECK_POSE = 0.22;
+const checkCloseLeft = new Map<number, number>();
+const checkAbsorbed = new Set<number>();
+// Checked refs stay where they get up through a goal or a finished drill.
+const refStayPut = new WeakSet<Referee>();
+
+function armCheckSwing(s: Skater): void {
+  checkAbsorbed.delete(s.id);
+  checkCloseLeft.set(s.id, CHECK_CLOSE_S);
+}
+
+function endCheckSwing(id: number): void {
+  checkAbsorbed.delete(id);
+  checkCloseLeft.delete(id);
+}
+
+function checkSpot(hitterR: number, targetR: number): { reach: number; lateral: number } {
+  const bodies = hitterR + targetR;
+  return { reach: bodies + CHECK_PAD, lateral: bodies * CHECK_LAT };
+}
+
+function checkLane(
+  dx: number,
+  dz: number,
+  fx: number,
+  fz: number,
+  reach: number,
+  lateralGate: number,
+): { ok: boolean; ahead: number; lateral: number } {
+  const ahead = dx * fx + dz * fz;
+  const lateral = Math.abs(dx * fz - dz * fx);
+  return {
+    ok: Math.hypot(dx, dz) < reach && ahead > 0 && lateral < lateralGate,
+    ahead,
+    lateral,
+  };
+}
+
+function foeNearCheck(s: Skater, left: number): boolean {
+  const { fx, fz } = heading(s.yaw);
+  const ui = useGame.getState();
+  const extra = CHECK_CLOSE_V * left;
+  for (const o of world.skaters) {
+    if (o.id === s.id || o.side === s.side) continue;
+    if (o.kind === "goalie" && !ui.checkGoalies) continue;
+    if (o.struck > 0.45) continue;
+    const spot = checkSpot(s.radius, o.radius);
+    const dx = o.x - s.x;
+    const dz = o.z - s.z;
+    const near = checkLane(dx, dz, fx, fz, spot.reach + extra, spot.lateral);
+    const touching = checkLane(dx, dz, fx, fz, spot.reach, spot.lateral);
+    if (near.ok && !touching.ok) return true;
+  }
+  if (!ui.checkRefs) return false;
+  for (const r of refsOnIce()) {
+    if (r.struck > 0.45) continue;
+    const spot = checkSpot(s.radius, 0.45);
+    const dx = r.x - s.x;
+    const dz = r.z - s.z;
+    const near = checkLane(dx, dz, fx, fz, spot.reach + extra, spot.lateral);
+    const touching = checkLane(dx, dz, fx, fz, spot.reach, spot.lateral);
+    if (near.ok && !touching.ok) return true;
+  }
+  return false;
+}
+
+/** Shoulder lean before contact only. Stops on connect; never the old 7.2 through-check. */
+function stepCheckClose(s: Skater, dt: number): void {
+  if (s.hit <= 0 || checkAbsorbed.has(s.id)) return;
+  const left = checkCloseLeft.get(s.id) ?? 0;
+  if (left <= 0 || !foeNearCheck(s, left)) return;
+  const step = Math.min(left, dt);
+  const { fx, fz } = heading(s.yaw);
+  s.x += fx * CHECK_CLOSE_V * step;
+  s.z += fz * CHECK_CLOSE_V * step;
+  checkCloseLeft.set(s.id, left - step);
 }
 
 function solidRunInto(
@@ -5504,6 +5612,21 @@ function takeChainDown(key: Skater | Referee): boolean {
   }
   userCheckDowns += 1;
   return true;
+}
+
+/** First connect only: keep most of the forward speed, light lateral damp, small kick back. */
+function absorbHitterMomentum(hitter: Skater): void {
+  checkCloseLeft.set(hitter.id, 0);
+  if (checkAbsorbed.has(hitter.id)) return;
+  checkAbsorbed.add(hitter.id);
+  const { fx, fz } = heading(hitter.yaw);
+  const fwd = hitter.vx * fx + hitter.vz * fz;
+  const lat = -hitter.vx * fz + hitter.vz * fx;
+  const outFwd = fwd * CHECK_KEEP_FWD - CHECK_RECOIL;
+  const outLat = lat * CHECK_KEEP_LAT;
+  hitter.vx = fx * outFwd - fz * outLat;
+  hitter.vz = fz * outFwd + fx * outLat;
+  if (hitter.hit > CHECK_POSE) hitter.hit = CHECK_POSE;
 }
 
 function layDownSkater(s: Skater, fx: number, fz: number, ivx: number, ivz: number): void {
@@ -5539,6 +5662,7 @@ function layDownSkater(s: Skater, fx: number, fz: number, ivx: number, ivz: numb
 }
 
 function layDownRef(r: Referee, fx: number, fz: number, ivx: number, ivz: number): void {
+  refStayPut.add(r);
   r.vx = fx * 11 + ivx * 0.45;
   r.vz = fz * 11 + ivz * 0.45;
   r.pose = "idle";
@@ -6035,24 +6159,18 @@ function applyUserHit(user: Skater): boolean {
     if (s.struck > 0.45) continue;
     const dx = s.x - user.x;
     const dz = s.z - user.z;
-    const d = Math.hypot(dx, dz);
-    const ahead = dx * fx + dz * fz;
-    const lateral = Math.abs(dx * fz - dz * fx);
-    const open = world.puck.owner !== user.id;
-    const reach = s.kind === "goalie" ? (open ? 3.45 : 2.55) : open ? 3.15 : 2.25;
-    const gate = (user.radius + s.radius) * (open ? 1.55 : 0.92);
-    if (d < reach && ahead > (open ? -0.4 : -0.15) && lateral < gate) take(ahead, lateral, s, null);
+    const spot = checkSpot(user.radius, s.radius);
+    const lane = checkLane(dx, dz, fx, fz, spot.reach, spot.lateral);
+    if (lane.ok) take(lane.ahead, lane.lateral, s, null);
   }
   if (ui.checkRefs) {
     for (const r of refsOnIce()) {
       if (r.struck > 0.45) continue;
       const dx = r.x - user.x;
       const dz = r.z - user.z;
-      const d = Math.hypot(dx, dz);
-      const ahead = dx * fx + dz * fz;
-      const lateral = Math.abs(dx * fz - dz * fx);
-      const gate = (user.radius + 0.45) * 0.92;
-      if (d < 2.35 && ahead > -0.15 && lateral < gate) take(ahead, lateral, null, r);
+      const spot = checkSpot(user.radius, 0.45);
+      const lane = checkLane(dx, dz, fx, fz, spot.reach, spot.lateral);
+      if (lane.ok) take(lane.ahead, lane.lateral, null, r);
     }
   }
   if (!best.s && !best.r) return false;
@@ -6060,11 +6178,13 @@ function applyUserHit(user: Skater): boolean {
   userCheckDowns = 1;
   if (best.s) {
     if (tryBenchDump(user, best.s, fx, fz)) {
+      absorbHitterMomentum(user);
       world.lastHitter = user.id;
       world.lastHitTime = world.time;
       return true;
     }
     layDownSkater(best.s, fx, fz, user.vx, user.vz);
+    absorbHitterMomentum(user);
     userCheckSkaters.add(best.s.id);
     if (world.puck.owner === best.s.id) spillCheckedPuck(best.s, user);
     else if (world.puck.owner === null && world.time - world.lastHitTime > 0.2) {
@@ -6081,6 +6201,7 @@ function applyUserHit(user: Skater): boolean {
     }
   } else if (best.r) {
     layDownRef(best.r, fx, fz, user.vx, user.vz);
+    absorbHitterMomentum(user);
     userCheckRefs.add(best.r);
   }
   world.lastHitter = user.id;
@@ -6163,17 +6284,18 @@ function applyHit(user: Skater): boolean {
   const { fx, fz } = heading(user.yaw);
   const checkGoalies = useGame.getState().checkGoalies;
   let connected = false;
+  let landed = false;
   for (const s of world.skaters) {
     if (s.id === user.id || s.side === user.side) continue;
     if (s.kind === "goalie" && !checkGoalies) continue;
     if (s.struck > 0.45) continue;
     const dx = s.x - user.x;
     const dz = s.z - user.z;
-    const d = Math.hypot(dx, dz);
-    const ahead = dx * fx + dz * fz;
-    const reach = s.kind === "goalie" ? 2.55 : 2.25;
-    if (d < reach && ahead > -0.45) {
+    const spot = checkSpot(user.radius, s.radius);
+    const lane = checkLane(dx, dz, fx, fz, spot.reach, spot.lateral);
+    if (lane.ok) {
       connected = true;
+      landed = true;
       if (s.kind === "goalie") {
         const out = attackDir(s.side);
         s.stun = 1.55;
@@ -6226,9 +6348,10 @@ function applyHit(user: Skater): boolean {
       if (r.struck > 0.45) continue;
       const dx = r.x - user.x;
       const dz = r.z - user.z;
-      const d = Math.hypot(dx, dz);
-      const ahead = dx * fx + dz * fz;
-      if (d < 2.35 && ahead > -0.45) {
+      const spot = checkSpot(user.radius, 0.45);
+      const lane = checkLane(dx, dz, fx, fz, spot.reach, spot.lateral);
+      if (lane.ok) {
+        landed = true;
         r.vx = fx * 11 + user.vx * 0.45;
         r.vz = fz * 11 + user.vz * 0.45;
         r.pose = "idle";
@@ -6242,6 +6365,7 @@ function applyHit(user: Skater): boolean {
       }
     }
   }
+  if (landed) absorbHitterMomentum(user);
   return connected;
 }
 
@@ -7621,10 +7745,15 @@ function stepDrillRefs(dt: number): void {
     collideRefIce(r);
     return;
   }
+  if (refBackInPlay()) refStayPut.delete(r);
   r.vx = 0;
   r.vz = 0;
   if (world.drillWon && world.goalTicker > 0) {
     const netX = world.homeAttack * GOAL_LINE_X;
+    if (refStayPut.has(r)) {
+      holdCheckedRef(r, netX, dt);
+      return;
+    }
     const k = Math.min(1, 3.6 * dt);
     r.x += (world.homeAttack * FACEOFF_EZ_X - r.x) * k;
     r.z += (-FACEOFF_SPOT_Z - r.z) * k;
@@ -7668,8 +7797,13 @@ function stepOneRef(r: Referee, lane: 1 | -1, dt: number): void {
     collideRefIce(r);
     return;
   }
+  if (refBackInPlay()) refStayPut.delete(r);
   if (world.drillWon && world.goalTicker > 0) {
     const netX = world.homeAttack * GOAL_LINE_X;
+    if (refStayPut.has(r)) {
+      holdCheckedRef(r, netX, dt);
+      return;
+    }
     const standX = netX - Math.sign(netX || 1) * 4.4;
     const boardZ = lane * REF_BOARD_Z;
     r.x += (standX - r.x) * Math.min(1, 3.6 * dt);
@@ -7681,6 +7815,7 @@ function stepOneRef(r: Referee, lane: 1 | -1, dt: number): void {
   const boardZ = lane * REF_BOARD_Z;
   const dropping = dropperLane() === lane;
   if (world.faceoff && world.faceoffPhase !== "live") {
+    refStayPut.delete(r);
     if (dropping) {
       r.x += (world.faceX - r.x) * Math.min(1, 8 * dt);
       r.z += (world.faceZ + lane * REF_STAND - r.z) * Math.min(1, 8 * dt);
@@ -7698,6 +7833,10 @@ function stepOneRef(r: Referee, lane: 1 | -1, dt: number): void {
     const puck = world.puck;
     if (world.whistle === "goal") {
       const netX = world.goalSide === "home" ? world.homeAttack * GOAL_LINE_X : -world.homeAttack * GOAL_LINE_X;
+      if (refStayPut.has(r)) {
+        holdCheckedRef(r, netX, dt);
+        return;
+      }
       const standX = netX - Math.sign(netX || 1) * 4.4;
       r.x += (standX - r.x) * Math.min(1, 3.6 * dt);
       r.z += (boardZ * 0.42 - r.z) * Math.min(1, 3.6 * dt);
@@ -10107,7 +10246,10 @@ function stepPlay(dt: number, act: Actions): void {
           const d = Math.hypot(dx, dz) || 1;
           s.yaw = Math.atan2(-dx, -dz);
           integrateSkater(s, dx / d, dz / d, Math.min(1, d / 1.6), d > 2.2, dt);
-          if (d < 2.35 && s.hit <= 0 && s.struck <= 0.12) s.hit = 0.52;
+          if (d < 2.35 && s.hit <= 0 && s.struck <= 0.12) {
+            s.hit = 0.52;
+            armCheckSwing(s);
+          }
           if (s.hit > 0) applyHit(s);
           keepInBowl(s);
           continue;

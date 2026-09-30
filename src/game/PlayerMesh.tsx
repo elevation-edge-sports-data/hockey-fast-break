@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNumberTexture } from "./iceTexture";
-import { cheerFor, defendDir, drillFade, rageDraw, world, type Skater } from "./sim";
+import { cheerFor, defendDir, drillFade, rageDraw, world, type Referee, type Skater } from "./sim";
 import { kitById, type UniformKit } from "./uniforms";
 import { useGame } from "./store";
 import { BLUE_X, GOAL_H } from "./rink";
@@ -2228,12 +2228,224 @@ const refShadowGeo = new THREE.CircleGeometry(0.22, 14);
 const refBand = new THREE.BoxGeometry(0.13, 0.08, 0.14);
 const _refArmDown = new THREE.Vector3(0, -1, 0);
 const _refArmPoint = new THREE.Vector3(0, 0, 1);
+const REF_HIP = 0.78;
+const REF_HINGE_RISE = 0.95;
+const REF_TUMBLE_RISE = 0.62;
+const REF_SOLE_LEN = Math.hypot(0.15 - REF_HIP, 0.04);
+const _refEuler = new THREE.Euler(0, 0, 0, "XYZ");
+const _refQFall = new THREE.Quaternion();
+const _refQFold = new THREE.Quaternion();
+const _refQStand = new THREE.Quaternion();
+const _refQ = new THREE.Quaternion();
+const _refQInv = new THREE.Quaternion();
+const _refQLeg = new THREE.Quaternion();
+const _refHip0 = new THREE.Vector3(0, REF_HIP, 0);
+const _refIdleM = new THREE.Vector3(-0.13, 0.15, 0.04);
+const _refIdleP = new THREE.Vector3(0.13, 0.15, 0.04);
+const _refSoleLocal = new THREE.Vector3(0, 0.15 - REF_HIP, 0.04);
+const _refSoleDir = _refSoleLocal.clone().normalize();
+const _refHip = new THREE.Vector3();
+const _refHipB = new THREE.Vector3();
+const _refSoleM = new THREE.Vector3();
+const _refSoleP = new THREE.Vector3();
+const _refSoleMB = new THREE.Vector3();
+const _refSolePB = new THREE.Vector3();
+const _refSock = new THREE.Vector3();
+const _refDir = new THREE.Vector3();
+const _refLand = new THREE.Vector3();
+
+function refQuat(rx: number, ry: number, rz: number, out: THREE.Quaternion) {
+  _refEuler.set(rx, ry, rz);
+  return out.setFromEuler(_refEuler);
+}
+
+function refSmooth(t: number) {
+  const x = Math.min(1, Math.max(0, t));
+  return x * x * (3 - 2 * x);
+}
+
+function restRefRig(body: THREE.Group, lLeg: THREE.Group, rLeg: THREE.Group, shadow: THREE.Mesh | null) {
+  body.position.set(0, REF_HIP, 0);
+  body.rotation.set(0, 0, 0);
+  lLeg.position.set(-0.13, REF_HIP, 0);
+  lLeg.rotation.set(0, 0, 0);
+  rLeg.position.set(0.13, REF_HIP, 0);
+  rLeg.rotation.set(0, 0, 0);
+  if (shadow) shadow.position.set(0, 0.015, 0);
+}
+
+function writeRefSnap(
+  kind: "down" | "one" | "both" | "stand",
+  plantP: boolean,
+  fallY: number,
+  hip: THREE.Vector3,
+  soleM: THREE.Vector3,
+  soleP: THREE.Vector3,
+): number {
+  if (kind === "down") {
+    hip.copy(_refHip0).applyQuaternion(_refQFall);
+    soleM.copy(_refIdleM).applyQuaternion(_refQFall);
+    soleP.copy(_refIdleP).applyQuaternion(_refQFall);
+    return fallY;
+  }
+  let hx = 0;
+  let hy = REF_HIP;
+  let hz = 0;
+  let mx = -0.13;
+  let my = 0.15;
+  let mz = 0.04;
+  let px = 0.13;
+  let py = 0.15;
+  let pz = 0.04;
+  if (kind === "one") {
+    hx = plantP ? 0.05 : -0.05;
+    hy = 0.5;
+    hz = 0.3;
+    if (plantP) {
+      mx = -0.2;
+      my = 0.46;
+      mz = -0.2;
+      px = 0.18;
+      py = 0.15;
+      pz = 0.74;
+    } else {
+      mx = -0.18;
+      my = 0.15;
+      mz = 0.74;
+      px = 0.2;
+      py = 0.46;
+      pz = -0.2;
+    }
+  } else if (kind === "both") {
+    hy = 0.58;
+    hz = 0.16;
+    mx = -0.22;
+    my = 0.15;
+    mz = 0.58;
+    px = 0.22;
+    py = 0.15;
+    pz = 0.58;
+  }
+  hip.set(hx, hy, hz).applyQuaternion(_refQStand);
+  soleM.set(mx, my, mz).applyQuaternion(_refQStand);
+  soleP.set(px, py, pz).applyQuaternion(_refQStand);
+  return 0;
+}
+
+function plantRefLeg(leg: THREE.Group, socketX: number, target: THREE.Vector3, floorY: number, rootY: number) {
+  _refSock.set(socketX, 0, 0).applyQuaternion(_refQ).add(_refHip);
+  _refDir.copy(target).sub(_refSock);
+  if (_refDir.lengthSq() < 1e-8) _refDir.set(0, -1, 0.15);
+  _refDir.normalize();
+  const minDirY = (floorY - rootY - _refSock.y) / REF_SOLE_LEN;
+  if (_refDir.y < minDirY) {
+    _refDir.y = Math.min(0.96, minDirY);
+    const h = Math.sqrt(Math.max(0, 1 - _refDir.y * _refDir.y));
+    const xz = Math.hypot(_refDir.x, _refDir.z) || 1;
+    _refDir.x = (_refDir.x / xz) * h;
+    _refDir.z = (_refDir.z / xz) * h;
+  }
+  // Bend in the body frame, then take the body's yaw, so the boot does not twist against the pants.
+  _refQInv.copy(_refQ).invert();
+  _refDir.applyQuaternion(_refQInv);
+  _refQLeg.setFromUnitVectors(_refSoleDir, _refDir);
+  _refQLeg.premultiply(_refQ);
+  leg.position.copy(_refSock);
+  leg.quaternion.copy(_refQLeg);
+}
+
+function poseRefRise(
+  r: Referee,
+  root: THREE.Group,
+  body: THREE.Group,
+  lLeg: THREE.Group,
+  rLeg: THREE.Group,
+  shadow: THREE.Mesh | null,
+) {
+  const start = r.tumble !== 0 ? REF_TUMBLE_RISE : REF_HINGE_RISE;
+  const p = (start - r.struck) / start;
+  let fallY = 0;
+  if (r.tumble !== 0) {
+    const t = tumbleRoot(REF_TUMBLE_RISE, r.tumble, r.yaw);
+    refQuat(t.rx, t.ry, t.rz, _refQFall);
+    fallY = t.y;
+  } else {
+    refQuat(REF_HINGE_RISE * 1.05, r.yaw + Math.PI, REF_HINGE_RISE * 0.18, _refQFall);
+  }
+  refQuat(REF_HINGE_RISE * 1.05, r.yaw + Math.PI, REF_HINGE_RISE * 0.18, _refQFold);
+  refQuat(0, r.yaw + Math.PI, 0, _refQStand);
+  // Chest stays folded on one skate, then comes upright as the second skate plants.
+  if (p < 0.4) {
+    if (r.tumble !== 0) _refQ.copy(_refQFall).slerp(_refQFold, refSmooth(Math.min(1, p / 0.18)));
+    else _refQ.copy(_refQFold);
+  } else if (p < 0.52) {
+    _refQ.copy(_refQFold).slerp(_refQStand, refSmooth((p - 0.4) / 0.12));
+  } else {
+    _refQ.copy(_refQStand);
+  }
+  const plantP = r.tumble >= 0;
+  let a: "down" | "one" | "both" | "stand" = "down";
+  let b: "down" | "one" | "both" | "stand" = "one";
+  let blend = 0;
+  if (p < 0.18) {
+    a = "down";
+    b = "one";
+    blend = refSmooth(p / 0.18);
+  } else if (p < 0.4) {
+    a = "one";
+    b = "one";
+  } else if (p < 0.52) {
+    a = "one";
+    b = "both";
+    blend = refSmooth((p - 0.4) / 0.12);
+  } else if (p < 0.7) {
+    a = "both";
+    b = "both";
+  } else {
+    a = "both";
+    b = "stand";
+    blend = refSmooth((p - 0.7) / 0.3);
+  }
+  const yA = writeRefSnap(a, plantP, fallY, _refHip, _refSoleM, _refSoleP);
+  const yB = writeRefSnap(b, plantP, fallY, _refHipB, _refSoleMB, _refSolePB);
+  _refHip.lerp(_refHipB, blend);
+  _refSoleM.lerp(_refSoleMB, blend);
+  _refSoleP.lerp(_refSolePB, blend);
+  const rootY = yA + (yB - yA) * blend;
+  const floorY = 0.14 * refSmooth(Math.min(1, Math.max(0, (p - 0.02) / 0.14)));
+  root.position.set(r.x, rootY, r.z);
+  root.rotation.set(0, 0, 0);
+  body.position.copy(_refHip);
+  body.quaternion.copy(_refQ);
+  plantRefLeg(lLeg, -0.13, _refSoleM, floorY, rootY);
+  plantRefLeg(rLeg, 0.13, _refSoleP, floorY, rootY);
+  if (shadow) {
+    _refLand.copy(_refSoleLocal).applyQuaternion(lLeg.quaternion).add(lLeg.position);
+    const lx = _refLand.x;
+    const lz = _refLand.z;
+    _refLand.copy(_refSoleLocal).applyQuaternion(rLeg.quaternion).add(rLeg.position);
+    shadow.position.set((lx + _refLand.x) * 0.5, 0.015, (lz + _refLand.z) * 0.5);
+  }
+}
+
+function poseRefRiseArms(lArm: THREE.Group, rArm: THREE.Group, p: number, tumble: number) {
+  const brace = tumble !== 0 ? refSmooth(Math.min(1, p / 0.18)) : 1;
+  const up = p < 0.4 ? 0 : p < 0.52 ? refSmooth((p - 0.4) / 0.12) : 1;
+  const w = brace * (1 - up);
+  const hang = 0.25;
+  lArm.rotation.set(hang + (-0.35 - hang) * w, 0.2 * w, 0.85 * w);
+  rArm.rotation.set(hang + (-0.35 - hang) * w, -0.2 * w, -0.85 * w);
+}
 
 
 export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
   const root = useRef<THREE.Group>(null);
+  const body = useRef<THREE.Group>(null);
+  const lLeg = useRef<THREE.Group>(null);
+  const rLeg = useRef<THREE.Group>(null);
   const lArm = useRef<THREE.Group>(null);
   const rArm = useRef<THREE.Group>(null);
+  const shadow = useRef<THREE.Mesh>(null);
   const mats = useMemo(
     () => ({
       helm: mat("#1a1a1a", { roughness: 0.32, metalness: 0.2 }),
@@ -2256,16 +2468,25 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
   useFrame(() => {
     const r = lane >= 0 ? world.ref : world.ref2;
     const g = root.current;
-    if (!g) return;
-    const tumbling = r.tumble !== 0 && r.struck > 0.1;
-    const down = !tumbling && r.struck > 0.2 ? Math.min(1, r.struck) : 0;
-    if (tumbling) {
+    const b = body.current;
+    const ll = lLeg.current;
+    const rl = rLeg.current;
+    if (!g || !b || !ll || !rl) return;
+    // Rise pivots the chest at the hip. Root pitch stays 0 so the feet hinge is not played backward.
+    const rising = r.struck > 0 && (r.tumble !== 0 ? r.struck < REF_TUMBLE_RISE : r.struck < REF_HINGE_RISE);
+    let down = 0;
+    if (rising) {
+      poseRefRise(r, g, b, ll, rl, shadow.current);
+    } else if (r.tumble !== 0 && r.struck >= REF_TUMBLE_RISE) {
       const t = tumbleRoot(r.struck, r.tumble, r.yaw);
       g.position.set(r.x, t.y, r.z);
       g.rotation.set(t.rx, t.ry, t.rz);
+      restRefRig(b, ll, rl, shadow.current);
     } else {
+      down = r.struck > 0.2 ? Math.min(1, r.struck) : 0;
       g.position.set(r.x, 0, r.z);
       g.rotation.set(down * 1.05, r.yaw + Math.PI, down * 0.18);
+      restRefRig(b, ll, rl, shadow.current);
     }
     if (lArm.current) {
       lArm.current.position.set(-0.24, 1.46, 0);
@@ -2279,7 +2500,10 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
       rArm.current.quaternion.identity();
       rArm.current.rotation.set(0.25, 0, 0);
     }
-    if (down > 0.18) {
+    if (rising && lArm.current && rArm.current) {
+      const start = r.tumble !== 0 ? REF_TUMBLE_RISE : REF_HINGE_RISE;
+      poseRefRiseArms(lArm.current, rArm.current, (start - r.struck) / start, r.tumble);
+    } else if (down > 0.18) {
       if (lArm.current) lArm.current.rotation.set(-0.35, 0.2, 0.85);
       if (rArm.current) rArm.current.rotation.set(-0.35, -0.2, -0.85);
     } else if (r.pose === "drop") {
@@ -2326,9 +2550,11 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
 
   return (
     <group ref={root}>
-      <mesh geometry={refShadowGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}>
+      <mesh ref={shadow} geometry={refShadowGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}>
         <meshBasicMaterial color="#000000" transparent opacity={0.1} depthWrite={false} />
       </mesh>
+      <group ref={body} position={[0, REF_HIP, 0]}>
+        <group position={[0, -REF_HIP, 0]}>
       <mesh geometry={refNeck} material={mats.white} position={[0, 1.52, 0.02]} />
       <mesh geometry={refHelmet} material={mats.helm} position={[0, 1.62, 0.02]} scale={[1.05, 0.92, 1.12]} />
       <mesh geometry={refTorso} material={mats.white} position={[0, 1.18, 0]} />
@@ -2372,12 +2598,18 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
         <mesh geometry={refBand} material={mats.orange} position={[0, -0.26, 0]} />
         <mesh geometry={gloveGeo} material={mats.black} position={[0, -0.44, 0.02]} />
       </group>
-      <mesh geometry={refLeg} material={mats.pants} position={[-0.13, 0.55, 0]} />
-      <mesh geometry={refLeg} material={mats.pants} position={[0.13, 0.55, 0]} />
-      <mesh geometry={refBoot} material={mats.helm} position={[-0.13, 0.22, 0.04]} />
-      <SkateSole mats={{ blade: mats.blade, skates: mats.helm, mask: mats.mask }} position={[-0.13, 0.15, 0.04]} />
-      <mesh geometry={refBoot} material={mats.helm} position={[0.13, 0.22, 0.04]} />
-      <SkateSole mats={{ blade: mats.blade, skates: mats.helm, mask: mats.mask }} position={[0.13, 0.15, 0.04]} />
+        </group>
+      </group>
+      <group ref={lLeg} position={[-0.13, REF_HIP, 0]}>
+        <mesh geometry={refLeg} material={mats.pants} position={[0, 0.55 - REF_HIP, 0]} />
+        <mesh geometry={refBoot} material={mats.helm} position={[0, 0.22 - REF_HIP, 0.04]} />
+        <SkateSole mats={{ blade: mats.blade, skates: mats.helm, mask: mats.mask }} position={[0, 0.15 - REF_HIP, 0.04]} />
+      </group>
+      <group ref={rLeg} position={[0.13, REF_HIP, 0]}>
+        <mesh geometry={refLeg} material={mats.pants} position={[0, 0.55 - REF_HIP, 0]} />
+        <mesh geometry={refBoot} material={mats.helm} position={[0, 0.22 - REF_HIP, 0.04]} />
+        <SkateSole mats={{ blade: mats.blade, skates: mats.helm, mask: mats.mask }} position={[0, 0.15 - REF_HIP, 0.04]} />
+      </group>
     </group>
   );
 }

@@ -1110,15 +1110,6 @@ export function Overlay() {
                 Reset
               </button>
             </div>
-            <p>
-              <span>
-                Resume continues this game and drops unused picks. Reset starts over in the running mode, targets,
-                and minutes.
-              </span>
-            </p>
-            {controlProfile === "wings" ? null : (
-              <p className="hint">Classic: current map, LT goalie.</p>
-            )}
             <section className="pause-new" aria-label="New game">
               <p>
                 <b>New game</b>

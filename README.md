@@ -1,76 +1,70 @@
 # Hockey Fast Break
 
-A browser 3D hockey game: skate a fast break on a full-size 200 × 85 ft rink with
-arena, ice, kits, and CPU opposition. Built with React 19, TanStack Start,
-React Three Fiber, and a custom 60 Hz sim in [`src/game/sim.ts`](src/game/sim.ts).
+Free online hockey game (3D). Compatible with keyboard and gamepad.
 
-The game is client-side only. World state lives in the sim; UI state lives in
-zustand. Nothing is sent to a server.
+[Play now](https://elevation-edge-sports-data.github.io/hockey-fast-break/)
 
-**Play:** [https://elevation-edge-sports-data.github.io/hockey-fast-break/](https://elevation-edge-sports-data.github.io/hockey-fast-break/)
+![Hockey Fast Break](screenshot.png)
+
+## Modes
+
+- **Drill**: 4, 8, 12, or 16 targets. One minute.
+- **Practice**: skater vs goalie
+- **Roller**: 4-on-4, no offsides, roller skates
+- **Game**: 5-on-5, offsides on, timed (1–5 minutes).
+
+## Controls
+
+### With the puck
+
+| | Gamepad | Keyboard |
+|---|---|---|
+| Skate / aim pass or shot | Left stick | WASD or arrows |
+| Pass (hold for saucer) | A | E or J |
+| Wrist (hold for slap) | X | F, C, or K |
+| Cancel slap | B | Space |
+| Deke | Y | Q or I |
+
+### Without the puck
+
+| | Gamepad | Keyboard |
+|---|---|---|
+| Skate | Left stick | WASD or arrows |
+| Change player | A | E or J |
+| Poke / one-timer on a pass you just sent | X | F, C, or K |
+| Hit. Frozen puck: check | Y | Q or I |
+| Burst | B | Space |
+
+### Classic profile
+
+| | Gamepad | Keyboard |
+|---|---|---|
+| Take your goalie | Hold LT | Hold G |
+| Dive | RT | Shift |
+
+### Wings profile
+
+| | Gamepad | Keyboard |
+|---|---|---|
+| Steer nearest teammate left / right | Hold LT / RT | Hold G / Shift |
+| Take your goalie | Hold LB | Hold N or comma |
+| Dive | RB | M |
+
+Pause is P or Esc. Camera is picked in the pause menu (classic, chase, broadcast, high, freestyle). Freestyle angle and zoom stay on when you resume.
+
+Replay (from pause, last 30 seconds): A play/pause, X / B zoom, stick pan, hold Y and stick to orbit, LT / RT or G / Shift scrub fast, LB / RB or N / M scrub slow, R to exit.
+
+## What you can change
+
+Pick home and away uniforms from eight kits. Home starts in burgundy and blue.
+
+Light or dark rink. Check goalies, check refs. Line brawl: hit a player without the puck into the benches and a line brawl starts. Offsides. Power play (players come back from the box). Chaos (higher on-ice cap, more bodies after a goal). Game speed. Lineup counts and six sliders for user / CPU offense, defense, and goalie.
+
+
+The home crowd and the ribbons use the home kit. The away crowd sits in an upper-deck corner in the away kit. Home crowd reacts to home goals and finished drill boards. Away crowd reacts to away goals. Three-deck bowl, press box, jumbotron with a live video board, Elevation Edge logo at center ice.
+
+HUD: YOU–CPU (or drill score), clock in Drill and Game, shot speed, puck status.
+
+Archive links to playable v0, v1, v2, and this build.
 
 Not affiliated with, endorsed by, or licensed by any league or team.
-
-## Requirements
-
-- Node.js 22+
-- npm 10+
-- A gamepad is the intended control scheme (Xbox layout). Keyboard fallbacks work.
-
-## Run locally
-
-```bash
-npm install
-npm run dev
-```
-
-Then open [http://localhost:8080](http://localhost:8080).
-
-```bash
-npm run typecheck
-npm run lint
-```
-
-## Pack a double-click HTML
-
-```bash
-npm run play:build
-```
-
-That writes a self-contained `dist-play/index.html` (React + Three.js + the
-game inlined). Copy or open that file — no other project files are needed to
-play. Fonts load from Google if you are online; the game still runs offline.
-
-## Layout
-
-```
-src/game/          ← the game
-  sim.ts           world state, physics, AI, input consumption
-  PlayerMesh.tsx   skater + goalie meshes and poses
-  World.tsx        R3F scene, cameras, sim loop
-  Overlay.tsx      HUD / pause / lineup / kits
-  input.ts         keyboard + gamepad + touch
-  rink.ts          rink dimensions and cage collision helpers
-  Rink.tsx         ice, boards, nets
-  Arena.tsx        bowl, lights, jumbo
-  store.ts         zustand UI state
-  uniforms.ts      kit colors
-src/routes/        pages (index mounts the canvas)
-```
-
-## Controls (Xbox / DualSense)
-
-| Input | Action |
-|---|---|
-| Left stick | Skate / aim pass / aim shot |
-| A | Pass (hold = saucer). Goalie: outlet. During a live user pass, X = one-timer |
-| X | Wrist. Hold X = slap (B before release cancels). Poke when you do not have the puck |
-| Y | Deke with puck / body check without |
-| B | Change player. Cancel slap windup |
-| LT | Take the home goalie (only way A jumps to the goalie) |
-| Start / Esc | Pause |
-| Right stick click | Cycle camera: classic, chase, broadcast, high, freestyle |
-
-Defaults: burgundy and blue at home against green and black or gold and black
-on the road. Light rink. Lineup G / D / **F** (forwards — stored as `o` in
-code).
