@@ -3,6 +3,15 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNumberTexture } from "./iceTexture";
 import { cheerFor, defendDir, drillFade, rageDraw, world, type Referee, type Skater } from "./sim";
+import {
+  SKATER_GRIP_BOT,
+  SKATER_GRIP_TOP,
+  SKATER_STICK_LEN,
+  carryStickAim,
+  shotStickAim,
+  stickFrame,
+  type StickAim,
+} from "./stickSide";
 import { kitById, type UniformKit } from "./uniforms";
 import { useGame } from "./store";
 import { BLUE_X, GOAL_H } from "./rink";
@@ -85,6 +94,12 @@ const _liftPt = new THREE.Vector3();
 const _corner = new THREE.Vector3();
 const _euler = new THREE.Euler();
 const STICK_ICE_Y = 0.03;
+const CARRY_HIP = (18 * Math.PI) / 180;
+const CARRY_KNEE = (40 * Math.PI) / 180;
+const CARRY_DROP = -0.163;
+const CARRY_BOOT = -(CARRY_HIP + CARRY_KNEE);
+const CARRY_SHAFT_PITCH = (55 * Math.PI) / 180;
+const READY_SHAFT_PITCH = (40 * Math.PI) / 180;
 const RAGE_HX = 0.14;
 const RAGE_HY = 1.2;
 const RAGE_HZ = 0.34;
@@ -237,7 +252,7 @@ function disposeKit(m: KitMats) {
 }
 
 function stickLayout(goalie: boolean) {
-  const len = goalie ? 1.02 : 1.66;
+  const len = goalie ? 1.02 : SKATER_STICK_LEN;
   const heel: [number, number, number] = [0, 0, 0];
   const top: [number, number, number] = [0, len, 0];
   const bot: [number, number, number] = [0, len * 0.42, 0];
@@ -246,39 +261,83 @@ function stickLayout(goalie: boolean) {
   return { heel, top, bot, mid, quat, len };
 }
 
-function poseSlapStick(g: THREE.Group, t: number) {
-  const u = t < 0 ? t + 1 : t;
-  const s = u * u * (3 - 2 * u);
-  let bx: number;
-  let by: number;
-  let bz: number;
-  let dx: number;
-  let dy: number;
-  let dz: number;
-  if (t < 0) {
-    const a = 1 - s;
-    const b = s;
-    bx = 0.56 * a + 0.22 * b;
-    by = 1.48 * a + 0.05 * b;
-    bz = -0.52 * a + 0.58 * b;
-    dx = -0.34 * a - 0.08 * b;
-    dy = -0.36 * a + 1.02 * b;
-    dz = 0.52 * a - 0.34 * b;
-  } else {
-    const a = 1 - s;
-    const b = s;
-    bx = 0.22 * a - 0.44 * b;
-    by = 0.05 * a + 1.46 * b;
-    bz = 0.58 * a + 0.5 * b;
-    dx = -0.08 * a + 0.48 * b;
-    dy = 1.02 * a - 0.3 * b;
-    dz = -0.34 * a - 0.32 * b;
+function applyStickAim(stick: THREE.Group, aim: StickAim) {
+  const f = stickFrame(aim);
+  _ikN.set(f.axisX.x, f.axisX.y, f.axisX.z);
+  _ikD1.set(f.axisY.x, f.axisY.y, f.axisY.z);
+  _ikD2.set(f.axisZ.x, f.axisZ.y, f.axisZ.z);
+  _stickM.makeBasis(_ikN, _ikD1, _ikD2);
+  stick.quaternion.setFromRotationMatrix(_stickM);
+  stick.position.set(f.heel.x, f.heel.y, f.heel.z);
+}
+
+/** Puck carry only. Shaft through the 0.92 and 0.74 grips, 55° off vertical, blade toward travel. */
+function carryOwnStickAim(): StickAim {
+  return {
+    heel: [-1.15, 0.03, 0.65],
+    shaft: [Math.sin(CARRY_SHAFT_PITCH), Math.cos(CARRY_SHAFT_PITCH), 0],
+    blade: [0, 0, 1],
+  };
+}
+
+/** Idle, no puck. Shaft 40° off vertical, yaw closed, blade toward travel, heel near the ice. */
+function readyStickAim(): StickAim {
+  return {
+    heel: [-1.15, STICK_ICE_Y + 0.012, 0.3],
+    shaft: [Math.sin(READY_SHAFT_PITCH), Math.cos(READY_SHAFT_PITCH), 0],
+    blade: [0, 0, 1],
+  };
+}
+
+function hangSkaterArm(arm: THREE.Group, fore: THREE.Group | null, side: -1 | 1) {
+  arm.position.set(side < 0 ? -0.26 : 0.24, 1.46, 0.06);
+  arm.rotation.set(0.22, 0, side * 0.16);
+  if (fore) fore.rotation.set(0.25, 0, 0);
+}
+
+function gripSkaterHand(
+  body: THREE.Group,
+  arm: THREE.Group,
+  fore: THREE.Group,
+  sx: number,
+  sy: number,
+  sz: number,
+  gx: number,
+  gy: number,
+  gz: number,
+  poleSign: number,
+  coincide = false,
+) {
+  arm.position.set(sx, sy, sz);
+  const ox = poleSign < 0 ? 0.02 : -0.01;
+  const oz = poleSign < 0 ? 0.06 : 0.07;
+  let tx = gx;
+  let ty = gy;
+  let tz = gz;
+  const passes = coincide ? 16 : 4;
+  const eps = coincide ? 0.001 : 0.03;
+  for (let n = 0; n < passes; n++) {
+    poseArmIk(arm, fore, sx, sy, sz, tx, ty, tz, poleSign, true);
+    body.updateWorldMatrix(true, true);
+    _corner.set(ox, -0.28, oz);
+    fore.localToWorld(_corner);
+    body.worldToLocal(_corner);
+    const ex = gx - _corner.x;
+    const ey = gy - _corner.y;
+    const ez = gz - _corner.z;
+    if (Math.hypot(ex, ey, ez) < eps) break;
+    tx += ex * 0.85;
+    ty += ey * 0.85;
+    tz += ez * 0.85;
   }
-  _ikD1.set(dx, dy, dz);
-  if (_ikD1.lengthSq() < 1e-8) _ikD1.set(0, 1, 0);
-  else _ikD1.normalize();
-  g.quaternion.setFromUnitVectors(_fromY, _ikD1);
-  g.position.set(bx, by, bz);
+}
+
+function puckNearSkater(s: Skater): boolean {
+  const puck = world.puck;
+  if (puck.y > 1.35) return false;
+  const dx = puck.x - s.x;
+  const dz = puck.z - s.z;
+  return dx * dx + dz * dz < 2.2 * 2.2;
 }
 
 function clampHandOutsideTorso(
@@ -387,109 +446,6 @@ function poseArmIk(
   }
 }
 
-function poseStickFromHands(
-  stick: THREE.Group,
-  parent: THREE.Group,
-  lFore: THREE.Group,
-  rFore: THREE.Group | null,
-  layout: { top: [number, number, number]; heel: [number, number, number]; len: number },
-  poke: boolean,
-  plant = true,
-) {
-  parent.updateWorldMatrix(true, false);
-  lFore.updateWorldMatrix(true, false);
-  _handTop.set(0.02, -0.28, 0.06);
-  lFore.localToWorld(_handTop);
-  parent.worldToLocal(_handTop);
-  if (poke || !rFore) {
-    _ikD1.set(0.18, -0.95, 0.42).normalize();
-    stick.quaternion.setFromUnitVectors(_fromY, _ikD1);
-    _ikD2.set(layout.top[0], layout.top[1], layout.top[2]).applyQuaternion(stick.quaternion);
-    stick.position.set(_handTop.x - _ikD2.x, _handTop.y - _ikD2.y, _handTop.z - _ikD2.z);
-    return;
-  }
-  rFore.updateWorldMatrix(true, false);
-  _handBot.set(-0.01, -0.28, 0.07);
-  rFore.localToWorld(_handBot);
-  parent.worldToLocal(_handBot);
-  if (_handTop.y < _handBot.y + 0.28) _handTop.y = _handBot.y + 0.32;
-  _ikD1.set(_handTop.x - _handBot.x, _handTop.y - _handBot.y, _handTop.z - _handBot.z);
-  if (_ikD1.y < 0.2) _ikD1.y = 0.2;
-  if (_ikD1.lengthSq() < 1e-8) _ikD1.set(-0.06, 1, 0.12);
-  _ikD1.normalize();
-  const botT = 0.56;
-  let heelFromBot = layout.len * botT;
-  if (plant) {
-    const ice = 0.048;
-    const ay = Math.max(0.42, Math.min(0.92, (_handBot.y - ice) / Math.max(0.22, heelFromBot)));
-    const xz = Math.hypot(_ikD1.x, _ikD1.z) || 0.18;
-    const rest = Math.sqrt(Math.max(0.08, 1 - ay * ay));
-    _ikD1.x *= rest / xz;
-    _ikD1.z *= rest / xz;
-    _ikD1.y = ay;
-    _ikD1.normalize();
-    heelFromBot = (_handBot.y - ice) / Math.max(0.2, _ikD1.y);
-    stick.quaternion.setFromUnitVectors(_fromY, _ikD1);
-    stick.position.set(
-      _handBot.x - _ikD1.x * heelFromBot,
-      ice,
-      _handBot.z - _ikD1.z * heelFromBot,
-    );
-    return;
-  }
-  stick.quaternion.setFromUnitVectors(_fromY, _ikD1);
-  stick.position.set(
-    _handBot.x - _ikD1.x * heelFromBot,
-    _handBot.y - _ikD1.y * heelFromBot,
-    _handBot.z - _ikD1.z * heelFromBot,
-  );
-}
-
-function poseStickToPuck(
-  stick: THREE.Group,
-  root: THREE.Group,
-  hasPuck: boolean,
-  dekeA: number,
-) {
-  root.updateWorldMatrix(true, false);
-  _ikTo.set(world.puck.x, world.puck.y, world.puck.z);
-  root.worldToLocal(_ikTo);
-  let bx = _ikTo.x + dekeA * 0.3;
-  let bz = _ikTo.z;
-  const dist = Math.hypot(bx, bz);
-  const reach = hasPuck ? 1.02 : 0.92;
-  if (dist > reach && dist > 1e-4) {
-    bx *= reach / dist;
-    bz *= reach / dist;
-  }
-  if (!hasPuck && dist > 1.5) {
-    const ang = Math.atan2(_ikTo.x, Math.max(0.15, _ikTo.z));
-    bx = Math.sin(ang) * 0.34 + dekeA * 0.14;
-    bz = 0.46;
-  }
-  bx = Math.max(0.14, Math.min(0.34, bx));
-  bz = Math.max(0.5, Math.min(0.78, bz));
-  const by = 0.048;
-  const hx = 0.18;
-  const hy = 1.16;
-  const hz = 0.28;
-  _ikD1.set(hx - bx, hy - by, hz - bz);
-  if (_ikD1.lengthSq() < 1e-8) _ikD1.set(0.05, 1, -0.2);
-  _ikD1.normalize();
-  _ikD2.set(_ikTo.x - bx, 0, _ikTo.z - bz);
-  if (_ikD2.lengthSq() < 1e-4) _ikD2.set(-_ikD1.z, 0, _ikD1.x);
-  _ikD2.addScaledVector(_ikD1, -_ikD2.dot(_ikD1));
-  if (_ikD2.lengthSq() < 1e-6) _ikD2.set(0, 0, 1);
-  _ikD2.normalize();
-  _ikN.crossVectors(_ikD1, _ikD2);
-  if (_ikN.lengthSq() < 1e-6) _ikN.set(1, 0, 0);
-  _ikN.normalize();
-  _ikD2.crossVectors(_ikN, _ikD1).normalize();
-  _stickM.makeBasis(_ikN, _ikD1, _ikD2);
-  stick.quaternion.setFromRotationMatrix(_stickM);
-  stick.position.set(bx, by, bz);
-}
-
 function poseStickOneHand(
   stick: THREE.Group,
   parent: THREE.Group,
@@ -498,13 +454,13 @@ function poseStickOneHand(
 ) {
   parent.updateWorldMatrix(true, false);
   hand.updateWorldMatrix(true, false);
-  _handTop.set(-0.01, -0.28, 0.07);
+  _handTop.set(0.02, -0.28, 0.06);
   hand.localToWorld(_handTop);
   parent.worldToLocal(_handTop);
   const grip = layout.len * 0.86;
   const drop = _handTop.y - 0.05;
   const horiz = drop < grip ? Math.sqrt(Math.max(0.04, grip * grip - drop * drop)) : 0.22;
-  const bx = _handTop.x + horiz * 0.92;
+  const bx = _handTop.x - horiz * 0.92;
   const by = drop < grip ? 0.05 : _handTop.y - grip * 0.92;
   const bz = _handTop.z + horiz * 0.28;
   _ikD1.set(_handTop.x - bx, _handTop.y - by, _handTop.z - bz);
@@ -1340,7 +1296,7 @@ function poseBrawl(
     poseGloveAt(body, lArm, lFore, -0.26, 1.46, 0.06, -0.28, 1.22, 0.24, -1);
     poseGloveAt(body, rArm, rFore, 0.24, 1.46, 0.06, 0.1, 0.7 + up * 1.2, 0.18 + up * 0.32, 1);
   }
-  if (!goalie && stick) poseStickOneHand(stick, root, rFore, layout);
+  if (!goalie && stick) poseStickOneHand(stick, root, lFore, layout);
 }
 
 export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
@@ -1350,6 +1306,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
   const liveKitId = (side === "away" ? awayKit : homeKit) ?? kitId;
   const root = useRef<THREE.Group>(null);
   const body = useRef<THREE.Group>(null);
+  const head = useRef<THREE.Group>(null);
   const lLeg = useRef<THREE.Group>(null);
   const rLeg = useRef<THREE.Group>(null);
   const lShin = useRef<THREE.Group>(null);
@@ -1422,6 +1379,17 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       swingT = -wind;
       slapping = true;
     }
+    const carryPose =
+      !goalie &&
+      world.puck.owner === index &&
+      !slapping &&
+      !diving &&
+      !tumbling &&
+      !cheer &&
+      !rage &&
+      s.hit <= 0 &&
+      s.struck <= 0.2 &&
+      !brawlPoseFor(s.id);
     if (goalie && !tumbling) {
       poseGoaliePads(
         s,
@@ -1458,13 +1426,13 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         let pitch = s.lean + (s.hit > 0 ? 0.45 : 0) + down;
         if (diving) pitch = 1.08;
         if (slapping) pitch += swingT * 0.28;
-        body.current.position.y = diving ? -0.12 : 0;
+        if (carryPose) pitch = CARRY_HIP;
+        body.current.position.y = diving ? -0.12 : carryPose ? CARRY_DROP : 0;
         body.current.rotation.x = pitch;
         body.current.rotation.z = diving ? 0 : s.deke > 0.02 ? dekeA * 0.16 : s.bank;
         body.current.rotation.y = slapping ? swingT * 0.4 : 0;
       }
     }
-    if (slapping && stick.current && !goalie) poseSlapStick(stick.current, swingT);
     const amp = s.kind === "goalie" ? 0.08 : 0.52;
     const a = Math.sin(s.stride) * amp;
     const b = Math.sin(s.stride + Math.PI) * amp;
@@ -1528,6 +1496,14 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       if (rShin.current) rShin.current.rotation.set(kneeR, 0, 0);
       if (lBoot.current) lBoot.current.rotation.set(-0.1 - kneeL * 0.32 + Math.max(0, a) * 0.18, 0, 0);
       if (rBoot.current) rBoot.current.rotation.set(-0.1 - kneeR * 0.32 + Math.max(0, b) * 0.18, 0, 0);
+      if (carryPose) {
+        const extraKnee = CARRY_KNEE - 0.22;
+        const bootDelta = CARRY_BOOT - (-0.1 - 0.22 * 0.32);
+        if (lShin.current) lShin.current.rotation.x += extraKnee;
+        if (rShin.current) rShin.current.rotation.x += extraKnee;
+        if (lBoot.current) lBoot.current.rotation.x += bootDelta;
+        if (rBoot.current) rBoot.current.rotation.x += bootDelta;
+      }
     }
     if (lArm.current && rArm.current && !butterflied && !rage) {
       if (goalieCheer && body.current) {
@@ -1549,47 +1525,36 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         if (rFore.current) rFore.current.rotation.set(-0.2, 0, 0);
       } else if (goalie && !tumbling) {
         poseGoalieStance(s, lArm.current, rArm.current, lFore.current, rFore.current);
-      } else if (!goalie && stick.current && body.current && (slapping || s.dive <= 0.04)) {
+      } else if (!goalie && stick.current && body.current && lFore.current && rFore.current) {
         const hasPuck = world.puck.owner === index;
-        if (!slapping) {
-          poseStickToPuck(stick.current, g, hasPuck || poke, dekeA);
-        }
-        stick.current.updateWorldMatrix(true, false);
-        body.current.updateWorldMatrix(true, false);
-        _handTop.set(0, layout.len * 0.76, 0);
-        stick.current.localToWorld(_handTop);
-        body.current.worldToLocal(_handTop);
-        _handBot.set(0, layout.len * 0.48, 0);
-        stick.current.localToWorld(_handBot);
-        body.current.worldToLocal(_handBot);
-        _handTop.y = Math.min(_handTop.y, hasPuck || slapping ? 1.36 : 1.16);
-        const onStick = hasPuck || slapping || poke;
-        poseArmIk(
-          lArm.current,
-          lFore.current,
-          -0.26,
-          1.46,
-          0.06,
-          _handTop.x,
-          _handTop.y,
-          _handTop.z,
-          -1,
-          onStick,
-        );
-        poseArmIk(
-          rArm.current,
-          rFore.current,
-          0.24,
-          1.46,
-          0.06,
-          _handBot.x,
-          _handBot.y,
-          _handBot.z,
-          1,
-          onStick,
-        );
-        if (slapping && lFore.current && rFore.current) {
-          poseStickFromHands(stick.current, g, lFore.current, rFore.current, layout, false, false);
+        const reach = !hasPuck && (poke || puckNearSkater(s));
+        if (slapping) applyStickAim(stick.current, shotStickAim(swingT));
+        else if (carryPose) applyStickAim(stick.current, carryOwnStickAim());
+        else if (hasPuck || reach) applyStickAim(stick.current, carryStickAim());
+        else applyStickAim(stick.current, readyStickAim());
+        if (!slapping && !hasPuck && !reach) {
+          stick.current.updateWorldMatrix(true, false);
+          body.current.updateWorldMatrix(true, false);
+          _handTop.set(0, layout.len * SKATER_GRIP_TOP, 0);
+          stick.current.localToWorld(_handTop);
+          body.current.worldToLocal(_handTop);
+          _handBot.set(0, layout.len * SKATER_GRIP_BOT, 0);
+          stick.current.localToWorld(_handBot);
+          body.current.worldToLocal(_handBot);
+          gripSkaterHand(body.current, rArm.current, rFore.current, 0.24, 1.46, 0.06, _handTop.x, _handTop.y, _handTop.z, 1, true);
+          gripSkaterHand(body.current, lArm.current, lFore.current, -0.26, 1.46, 0.06, _handBot.x, _handBot.y, _handBot.z, -1, true);
+        } else {
+          stick.current.updateWorldMatrix(true, false);
+          body.current.updateWorldMatrix(true, false);
+          _handTop.set(0, layout.len * SKATER_GRIP_TOP, 0);
+          stick.current.localToWorld(_handTop);
+          body.current.worldToLocal(_handTop);
+          _handBot.set(0, layout.len * SKATER_GRIP_BOT, 0);
+          stick.current.localToWorld(_handBot);
+          body.current.worldToLocal(_handBot);
+          gripSkaterHand(body.current, rArm.current, rFore.current, 0.24, 1.46, 0.06, _handTop.x, _handTop.y, _handTop.z, 1, carryPose);
+          if (reach && !slapping) hangSkaterArm(lArm.current, lFore.current, -1);
+          else gripSkaterHand(body.current, lArm.current, lFore.current, -0.26, 1.46, 0.06, _handBot.x, _handBot.y, _handBot.z, -1, carryPose);
         }
       }
     }
@@ -1602,11 +1567,9 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         }
         keepGoalieStickOnIce(stick.current);
       } else if (cheer && s.hit <= 0 && !rage) {
-        if (rFore.current) poseStickOneHand(stick.current, g, rFore.current, layout);
+        if (lFore.current) poseStickOneHand(stick.current, g, lFore.current, layout);
       } else if (s.dive > 0.04) {
-        if (lFore.current && g) {
-          poseStickFromHands(stick.current, g, lFore.current, rFore.current, layout, true);
-        }
+        applyStickAim(stick.current, carryStickAim());
       }
     }
     if (
@@ -1620,6 +1583,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       lArm.current &&
       rArm.current
     ) {
+      bladeGrp.current.rotation.set(0, 0, 0);
       poseRage(
         s,
         g,
@@ -1643,6 +1607,20 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       shaftHold.current.position.set(0, layout.len * 0.5, 0);
       shaftHold.current.scale.set(1, layout.len, 1);
       bladeGrp.current.visible = true;
+      const idleReady =
+        !slapping &&
+        world.puck.owner !== index &&
+        !poke &&
+        !puckNearSkater(s) &&
+        !(cheer && s.hit <= 0) &&
+        s.dive <= 0.04 &&
+        !brawlPoseFor(s.id) &&
+        !!body.current &&
+        !!lArm.current &&
+        !!rArm.current &&
+        !!lFore.current &&
+        !!rFore.current;
+      bladeGrp.current.rotation.set(0, 0, carryPose ? CARRY_SHAFT_PITCH : idleReady ? READY_SHAFT_PITCH : 0);
       knobRef.current.visible = true;
       if (flyBlade.current) flyBlade.current.visible = false;
       if (flyShaft.current) flyShaft.current.visible = false;
@@ -1660,7 +1638,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       if (bp.celeb) {
         poseGloveAt(body.current, lArm.current, lFore.current, -0.26, 1.46, 0.06, -0.32, 1.94, 0.16, -1);
         poseGloveAt(body.current, rArm.current, rFore.current, 0.24, 1.46, 0.06, 0.28, 1.9, 0.18, 1);
-        if (!goalie && stick.current) poseStickOneHand(stick.current, g, rFore.current, layout);
+        if (!goalie && stick.current) poseStickOneHand(stick.current, g, lFore.current, layout);
       } else {
         poseBrawl(
           bp.kind,
@@ -1697,6 +1675,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         mats.ringFill.opacity = holding ? 0.55 : 0.3;
       }
     }
+    if (!goalie && head.current) head.current.rotation.x = carryPose ? -CARRY_HIP * 0.5 : 0;
   });
 
   return (
@@ -1725,7 +1704,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       </group>
       <group ref={body}>
         <mesh geometry={neckGeo} material={mats.jersey} position={[0, 1.52, 0.02]} />
-        <group position={[0, 1.54, 0.02]}>
+        <group ref={head} position={[0, 1.54, 0.02]}>
           <mesh geometry={helmetGeo} material={mats.helmet} position={[0, 0.08, 0]} scale={[1.05, 0.92, 1.12]} castShadow />
           {goalie ? (
             <>
