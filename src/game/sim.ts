@@ -1738,16 +1738,19 @@ function integrateSkater(
     return;
   }
   const stats = skateStats(s, burst || s.deke > 0);
-  let cap = stats.cap;
-  if (s.id === world.userId && s.kind !== "goalie" && userWinding) cap *= 0.5;
+  const cap = stats.cap;
+  const planting = s.id === world.userId && s.kind !== "goalie" && userWinding;
   const speed = Math.hypot(s.vx, s.vz);
 
-  if (mag <= 0.1) {
+  if (planting) {
+    s.vx *= Math.exp(-16 * dt);
+    s.vz *= Math.exp(-16 * dt);
+  } else if (mag <= 0.1) {
     s.vx *= Math.exp(-10 * dt);
     s.vz *= Math.exp(-10 * dt);
   }
 
-  if (mag > 0.12) {
+  if (!planting && mag > 0.12) {
     const inv = 1 / mag;
     const dx = wx * inv;
     const dz = wz * inv;
@@ -1786,7 +1789,7 @@ function integrateSkater(
   const now = Math.hypot(s.vx, s.vz);
   s.stride += now * 2.35 * dt;
   s.lean += ((now / WINGER_SPEED) * 0.22 - s.lean) * Math.min(1, 8 * dt);
-  const lat = mag > 0.12 ? wx * world.camRx + wz * world.camRz : 0;
+  const lat = !planting && mag > 0.12 ? wx * world.camRx + wz * world.camRz : 0;
   s.bank += (-lat * 0.5 - s.bank) * Math.min(1, 10 * dt);
   if (s.deke > 0) {
     s.bank += (0 - s.bank) * Math.min(1, 12 * dt);
@@ -10915,7 +10918,7 @@ function stepPlay(dt: number, act: Actions): void {
         world.windupCancel = true;
         user.windup = 0;
         world.shotWindupT = 0;
-      } else {
+      } else if (user.kind !== "goalie") {
         userWinding = true;
       }
     } else if (user.follow <= 0) {
@@ -10982,8 +10985,6 @@ function stepPlay(dt: number, act: Actions): void {
           world.windupCancel = true;
           user.windup = 0;
           world.shotWindupT = 0;
-        } else {
-          userWinding = true;
         }
       } else if (user.follow <= 0) {
         user.windup = Math.max(0, user.windup - dt * 3);
@@ -11007,14 +11008,12 @@ function stepPlay(dt: number, act: Actions): void {
     if (act.xHeld && !world.windupCancel) {
       world.oneTimerSlap = true;
       world.shotWindupT += dt;
-      userWinding = true;
       const t = oneTimerReceiver();
       if (t) t.windup = Math.min(1, world.shotWindupT / 1);
       if (act.bEdge) {
         world.windupCancel = true;
         world.oneTimerSlap = false;
         world.shotWindupT = 0;
-        userWinding = false;
         if (t) t.windup = 0;
       }
     }
@@ -11068,7 +11067,22 @@ function stepPlay(dt: number, act: Actions): void {
   for (const s of world.skaters) {
     if (s.id === world.userId || s.id === user.id) continue;
     if (s.id === world.wingL || s.id === world.wingR) {
-      integrateSkater(s, wx, wz, mag, false, dt);
+      let sx = wx;
+      let sz = wz;
+      let sm = mag;
+      if (userWinding) {
+        const sp = Math.hypot(s.vx, s.vz);
+        if (sp > 1) {
+          sx = (s.vx / sp) * 0.35;
+          sz = (s.vz / sp) * 0.35;
+          sm = 0.35;
+        } else {
+          sx = 0;
+          sz = 0;
+          sm = 0;
+        }
+      }
+      integrateSkater(s, sx, sz, sm, false, dt);
       keepInBowl(s);
       continue;
     }
