@@ -806,6 +806,7 @@ function resetSkaters(): void {
   world.lastPass = -10;
   world.lastPassTo = null;
   world.lastPasser = null;
+  passMeet = null;
   world.oneTimerUntil = -10;
   world.faceoff = skaters.length > 0;
   world.faceoffT = 0;
@@ -899,6 +900,7 @@ let rimRide: { sideZ: 1 | -1; attack: 1 | -1; until: number } | null = null;
 let boardRide: { dir: 1 | -1; speed: number; until: number; phase: "seek" | "glide" } | null = null;
 const overWall = new WeakSet<Puck>();
 let boardBank: { hx: number; hz: number; vx: number; vz: number; until: number; loft: boolean } | null = null;
+let passMeet: { x: number; z: number } | null = null;
 let userWinding = false;
 let userStickCommit = false;
 let slapMx = 0;
@@ -2145,6 +2147,13 @@ function homeDBluePatrol(
   return { tx, tz };
 }
 
+function clampPassMeet(tx: number, tz: number): { tx: number; tz: number } {
+  return {
+    tx: Math.max(-RINK_L / 2 + 1.1, Math.min(RINK_L / 2 - 1.1, tx)),
+    tz: Math.max(-RINK_W / 2 + 1.1, Math.min(RINK_W / 2 - 1.1, tz)),
+  };
+}
+
 function clampLane(tx: number, tz: number, attack: number, behindNet = false): { tx: number; tz: number } {
   const mouth = attack * GOAL_LINE_X;
   let x = tx;
@@ -2446,7 +2455,7 @@ function repulsion(s: Skater): { x: number; z: number } {
   let x = 0;
   let z = 0;
   const carrier = world.puck.owner;
-  const passTo = world.lastPassTo === s.id && world.time - world.lastPass < 1.85;
+  const passTo = world.lastPassTo === s.id && world.time - world.lastPass < 2.2;
   for (const o of world.skaters) {
     if (o.id === s.id) continue;
     const dx = s.x - o.x;
@@ -2585,7 +2594,7 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
     !holder &&
     world.lastPasser !== null &&
     world.skaters[world.lastPasser]?.side === s.side &&
-    world.time - world.lastPass < 1.85;
+    world.time - world.lastPass < 2.2;
   const passToMe = ourPassFlight && world.lastPassTo === s.id;
   const pivot = holder && weHave ? holder : ourPassFlight ? puck : null;
   const puckAtk = (pivot ? pivot.x : puck.x) * attack;
@@ -2643,11 +2652,15 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
       ozHoldSkate = true;
     }
     if (passToMe) {
-      const ix = puck.x + puck.vx * 0.2;
-      const iz = puck.z + puck.vz * 0.2;
-      const fromNet = (mouth - ix) * attack;
-      tx = mouth - attack * Math.max(3.8, Math.min(13.5, fromNet));
-      tz = Math.max(-7.3, Math.min(7.3, iz));
+      if (passMeet) {
+        tx = passMeet.x;
+        tz = passMeet.z;
+      } else {
+        const spd = Math.hypot(puck.vx, puck.vz);
+        const look = spd > 1 ? Math.max(2.4, Math.min(16, spd * 0.7)) : 0;
+        tx = puck.x + (spd > 1 ? (puck.vx / spd) * look : 0);
+        tz = puck.z + (spd > 1 ? (puck.vz / spd) * look : 0);
+      }
     }
   } else if (
     !wrapDeep &&
@@ -2714,13 +2727,21 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
       const wide = di === 0 ? -1 : 1;
       const holdAtk = holder.x * attack;
       if (s.side === "home") {
-        if (holdAtk > BLUE_X - 0.8) {
+        // Carrier skating back toward our net while still near the offensive blue.
+        const leavingOz = holder.vx * attack < -0.85 && holdAtk < BLUE_X + 5;
+        if (holdAtk > BLUE_X - 0.15 && !leavingOz) {
           const p = homeDBluePatrol(s, attack, wide, holder.z, false);
           tx = p.tx;
           tz = p.tz;
-        } else if (holdAtk > -BLUE_X - 1.1) {
-          tx = holder.x + attack * 2.3;
-          tz = holder.z * 0.62 + wide * 1.5;
+        } else if (holdAtk > -BLUE_X - 1.1 || leavingOz) {
+          const gap = 2.45 + di * 2.2;
+          tx = holder.x - attack * gap;
+          tz = holder.z * 0.35 + wide * 3.3;
+          if (leavingOz && holdAtk > BLUE_X - 0.5) {
+            const shelf = attack * (BLUE_X - 1.05 - di * 0.45);
+            if (attack > 0) tx = Math.min(tx, shelf);
+            else tx = Math.max(tx, shelf);
+          }
         } else {
           const deepest = ownMouth - own * 6.8;
           const highest = -attack * (BLUE_X + 0.2);
@@ -2751,6 +2772,11 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
       const side = s.id % 2 === 0 ? 1.15 : -1.15;
       tx = holder.x + own * (closeIdle ? 0.08 : 1.05);
       tz = holder.z + (closeIdle ? side * 0.18 : side);
+    } else if (s.side === "home" && rank <= 2) {
+      const back = rank === 1 ? 7.4 : 9.6;
+      tx = holder.x - attack * back;
+      const lane = rank === 1 ? -6.7 : 6.7;
+      tz = Math.max(-7.2, Math.min(7.2, holder.z * 0.34 + lane));
     } else {
       tx = (holder.x + ownMouth) * 0.5;
       tz = Math.max(-7.2, Math.min(7.2, slotAmong(s, "winger", 5.2)));
@@ -2779,12 +2805,23 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
         tz = puck.z * 0.65 + wide * 1.8;
       }
     } else {
-      const emptyNet = !world.skaters.some((p) => p.side === "away" && p.kind === "goalie");
-      tx = ownMouth - own * (emptyNet ? 2.5 : 5.2);
-      tz = slotAmong(s, "defense", 3.5) + puck.z * 0.2;
-      if (emptyNet && puck.vx * attack < -1.6) {
-        tx = puck.x * 0.28 + ownMouth * 0.72;
-        tz = puck.z * 0.58;
+      // Same goalside gap as a carrier outside the zone: stay with the puck,
+      // hold the blue until it actually enters, then sink.
+      const gap = 1.95;
+      tx = puck.x + own * gap;
+      const inOurZone = puck.x * own > BLUE_X - 0.4;
+      if (!inOurZone) {
+        if (own > 0) tx = Math.min(tx, BLUE_X + 2.2);
+        else tx = Math.max(tx, -BLUE_X - 2.2);
+      }
+      tz = slotAmong(s, "defense", 3.6) * 0.72 + puck.z * 0.18;
+      const ddx = tx - puck.x;
+      const ddz = tz - puck.z;
+      const gapNow = Math.hypot(ddx, ddz);
+      if (gapNow < 1.55) {
+        const k = 1.9 / (gapNow || 1);
+        tx = puck.x + ddx * k;
+        tz = puck.z + ddz * k;
       }
     }
   } else if (!wrapDeep) {
@@ -2825,7 +2862,9 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
   const c =
     retrieving && endLoose !== 0
       ? clampRetrieve(tx, tz, endLoose)
-      : clampLane(tx, tz, attack, wrapDeep);
+      : passToMe
+        ? clampPassMeet(tx, tz)
+        : clampLane(tx, tz, attack, wrapDeep);
   if (userPress === "on" && holder) {
     const line = own * GOAL_LINE_X;
     const deep = line - own * 1.05;
@@ -2842,10 +2881,6 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
   const dist = Math.hypot(dx, dz) || 1;
   let mag = dist < 0.85 ? 0 : dist < 1.7 ? 0.22 : dist < 2.8 ? 0.48 : 0.92;
   let burst = !weHave && rank === 0 && dist > 10 && s.kind !== "defense";
-  if (passToMe) {
-    mag = 0.82;
-    burst = dist > 4.5;
-  }
   if (wrapDeep) {
     mag = Math.max(mag, dist < 1.1 ? 0.42 : 0.96);
     if (dist > 5.5) burst = true;
@@ -2855,6 +2890,9 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
     if (inDz && s.kind === "winger") {
       mag = Math.max(mag, dist < 1.2 ? 0.55 : 0.97);
       burst = dist > 4.2;
+    }
+    if (s.kind === "winger" && rank >= 1 && rank <= 2 && (s.x - holder.x) * attack > 0.2) {
+      burst = true;
     }
   }
   if (weHave && s.kind === "winger" && dist > 3.2) mag = Math.max(mag, 0.98);
@@ -2885,6 +2923,9 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
       if (inOz) mag = Math.max(mag, 0.48);
       if (!weHave && dist > 5.5) burst = true;
       if (weHave && dist > 6.5) burst = true;
+      if (!weHave && holder && holder.side !== s.side && (s.x - holder.x) * attack > 0.2) {
+        burst = true;
+      }
     } else if (userPress !== "on" && userPress !== "peel") {
       const join = weHave && holder && holder.x * attackDir(s.side) > BLUE_X - 0.35;
       mag = Math.min(mag, join ? 0.9 : 0.72);
@@ -2930,18 +2971,24 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
     mag = dPuck < 0.9 ? 0.78 : 1;
     burst = dPuck > 1.5;
   }
+  if (passToMe && !retrieving) {
+    mag = dist < 0.45 ? 0 : dist < 1.15 ? 0.55 : 1;
+    burst = dist > 1.4;
+  }
   const rep = repulsion(s);
   const rw = stickChase
     ? 0.12
-    : ozHoldSkate
-      ? 0
-      : userPress === "on"
-        ? 0.05
-        : s.side === "home" && weHave && !passToMe
-          ? 1.15
-          : dist < 2
-            ? 0.55
-            : 1;
+    : passToMe
+      ? 0.06
+      : ozHoldSkate
+        ? 0
+        : userPress === "on"
+          ? 0.05
+          : s.side === "home" && weHave && !passToMe
+            ? 1.15
+            : dist < 2
+              ? 0.55
+              : 1;
   return {
     wx: dx / dist + rep.x * rw,
     wz: dz / dist + rep.z * rw,
@@ -3686,19 +3733,63 @@ function teammatesOf(from: Skater): Skater[] {
   return world.skaters.filter((s) => s.id !== from.id && s.side === from.side && s.kind !== "goalie");
 }
 
+const PASS_DRAG = 0.35;
+const PASS_CONE = 0.58;
+
+function tapePower(travel: number, saucer: boolean, cpuGoalie: boolean): number {
+  const cap = cpuGoalie ? 22 : saucer ? 28 : 24;
+  const floor = cpuGoalie ? 12.5 : 15.5;
+  const want = cpuGoalie ? 0.72 : 0.5;
+  return Math.min(cap, Math.max(floor, travel / want));
+}
+
+function flightSeconds(travel: number, power: number): number {
+  const asymptote = Math.max(0.5, power) / PASS_DRAG;
+  const reach = Math.min(Math.max(0.2, travel), asymptote * 0.8);
+  const cover = (PASS_DRAG * reach) / Math.max(0.5, power);
+  if (cover >= 0.97) return Math.max(0.16, reach / Math.max(0.5, power));
+  return Math.max(0.16, -Math.log(1 - cover) / PASS_DRAG);
+}
+
+function reachPoint(
+  ox: number,
+  oz: number,
+  tx: number,
+  tz: number,
+  power: number,
+): { x: number; z: number; eta: number } {
+  const dx = tx - ox;
+  const dz = tz - oz;
+  const travel = Math.hypot(dx, dz) || 1;
+  const asymptote = Math.max(0.5, power) / PASS_DRAG;
+  const reach = Math.min(travel, asymptote * 0.8);
+  const eta = flightSeconds(reach, power);
+  return { x: ox + (dx / travel) * reach, z: oz + (dz / travel) * reach, eta };
+}
+
 function bestPassTarget(from: Skater, ax: number, az: number, requireAim = false): Skater | null {
   const mates = teammatesOf(from);
   if (!mates.length) return null;
+  const cpuGoalie = from.kind === "goalie" && from.side !== "home";
   let best: Skater | null = null;
   let bestScore = -Infinity;
   for (const s of mates) {
-    const dx = s.x - from.x;
-    const dz = s.z - from.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist < 0.7) continue;
-    const nd = dist || 1;
-    const align = (dx * ax + dz * az) / nd;
-    if (requireAim && align < 0.58) continue;
+    const dx0 = s.x - from.x;
+    const dz0 = s.z - from.z;
+    const dist0 = Math.hypot(dx0, dz0);
+    if (dist0 < 0.7) continue;
+    const preview = flightSeconds(dist0, tapePower(dist0, false, cpuGoalie));
+    const lx = s.x + s.vx * preview - from.x;
+    const lz = s.z + s.vz * preview - from.z;
+    const distL = Math.hypot(lx, lz) || 1;
+    const alignBody = (dx0 * ax + dz0 * az) / dist0;
+    const alignLead = (lx * ax + lz * az) / distL;
+    const align = Math.max(alignBody, alignLead);
+    if (requireAim && align < PASS_CONE) continue;
+    const useLead = alignLead >= alignBody;
+    const dx = useLead ? lx : dx0;
+    const dz = useLead ? lz : dz0;
+    const dist = useLead ? distL : dist0;
     const perp = Math.abs(dx * -az + dz * ax);
     const along = dx * ax + dz * az;
     const cover = nearestFoe(s);
@@ -3712,7 +3803,7 @@ function bestPassTarget(from: Skater, ax: number, az: number, requireAim = false
       best = s;
     }
   }
-  if (requireAim) return best && bestScore > 5.5 ? best : null;
+  if (requireAim) return best;
   if (best && bestScore > -2) return best;
   let nearest = mates[0]!;
   let nd = Infinity;
@@ -3726,6 +3817,58 @@ function bestPassTarget(from: Skater, ax: number, az: number, requireAim = false
   return nearest;
 }
 
+function nearestLaneMate(from: Skater, ax: number, az: number): Skater | null {
+  let best: Skater | null = null;
+  let bestD = Infinity;
+  for (const s of teammatesOf(from)) {
+    const dx = s.x - from.x;
+    const dz = s.z - from.z;
+    const along = dx * ax + dz * az;
+    if (along < 2 || along > 44) continue;
+    const perp = Math.hypot(dx - ax * along, dz - az * along);
+    if (perp > 12) continue;
+    const d = Math.hypot(dx, dz);
+    if (d < bestD) {
+      bestD = d;
+      best = s;
+    }
+  }
+  return best;
+}
+
+function skaterReach(t: number): number {
+  const lag = 0.32;
+  if (t <= lag) return 2.2 * t;
+  return 2.2 * lag + 8.4 * (t - lag);
+}
+
+function laneLanding(
+  ox: number,
+  oz: number,
+  ax: number,
+  az: number,
+  power: number,
+  mate: Skater,
+): { x: number; z: number } {
+  let bestX = ox + ax * 3;
+  let bestZ = oz + az * 3;
+  let bestLate = Infinity;
+  for (let i = 1; i <= 28; i++) {
+    const t = (i / 28) * 1.7;
+    const reach = (Math.max(0.5, power) / PASS_DRAG) * (1 - Math.exp(-PASS_DRAG * t));
+    const x = ox + ax * reach;
+    const z = oz + az * reach;
+    const late = Math.hypot(x - mate.x, z - mate.z) - skaterReach(t);
+    if (late <= 0.2) return { x, z };
+    if (late < bestLate) {
+      bestLate = late;
+      bestX = x;
+      bestZ = z;
+    }
+  }
+  return { x: bestX, z: bestZ };
+}
+
 function passOrigin(s: Skater): { x: number; z: number } {
   if (s.kind === "goalie") {
     const attack = attackDir(s.side);
@@ -3737,20 +3880,47 @@ function passOrigin(s: Skater): { x: number; z: number } {
 function tapePass(s: Skater, mate: Skater, saucer: boolean): void {
   const blade = passOrigin(s);
   const cpuGoalie = s.kind === "goalie" && s.side !== "home";
-  const leadT = cpuGoalie
-    ? 0.34 + Math.min(0.4, Math.hypot(mate.x - s.x, mate.z - s.z) * 0.018)
-    : 0.22 + Math.min(0.32, Math.hypot(mate.x - s.x, mate.z - s.z) * 0.014);
-  const tx = mate.x + mate.vx * leadT;
-  const tz = mate.z + mate.vz * leadT;
+  const seed = Math.hypot(mate.x - blade.x, mate.z - blade.z) || 1;
+  let power = tapePower(seed, saucer, cpuGoalie);
+  let eta = flightSeconds(seed, power);
+  let tx = mate.x;
+  let tz = mate.z;
+  for (let i = 0; i < 4; i++) {
+    tx = mate.x + mate.vx * eta;
+    tz = mate.z + mate.vz * eta;
+    const travel = Math.hypot(tx - blade.x, tz - blade.z) || 1;
+    power = tapePower(travel, saucer, cpuGoalie);
+    const shot = reachPoint(blade.x, blade.z, tx, tz, power);
+    eta = shot.eta;
+    tx = shot.x;
+    tz = shot.z;
+  }
   const dx = tx - blade.x;
   const dz = tz - blade.z;
   const travel = Math.hypot(dx, dz) || 1;
-  const eta = Math.max(cpuGoalie ? 0.48 : 0.44, Math.min(cpuGoalie ? 0.92 : 0.66, travel / (cpuGoalie ? 22 : 24)));
-  const cap = saucer || cpuGoalie ? (cpuGoalie ? 22 : 28) : 24;
-  const floor = cpuGoalie ? 12.5 : 15.5;
-  const power = Math.min(cap, Math.max(floor, travel / eta));
   launchPuck(s, (dx / travel) * power, (dz / travel) * power, saucer ? 2.2 : cpuGoalie ? 0.42 : 0.03);
+  passMeet = { x: tx, z: tz };
   world.lastPassTo = mate.id;
+  world.oneTimerUntil = world.time + 2.2;
+  world.oneTimerArmed = false;
+  world.oneTimerSlap = false;
+  world.oneTimerPass = false;
+  world.oneTimerSaucer = false;
+}
+
+function freeAimToLane(s: Skater, ax: number, az: number, saucer: boolean): void {
+  const from = passOrigin(s);
+  const lane = nearestLaneMate(s, ax, az);
+  const power = saucer ? 17.6 : 16.4;
+  if (!lane) {
+    launchPuck(s, ax * power, az * power, saucer ? 3.4 : 0.06);
+    world.lastPassTo = null;
+    return;
+  }
+  const spot = laneLanding(from.x, from.z, ax, az, power, lane);
+  launchPuck(s, ax * power, az * power, saucer ? 3.4 : 0.06);
+  passMeet = spot;
+  world.lastPassTo = lane.id;
   world.oneTimerUntil = world.time + 2.2;
   world.oneTimerArmed = false;
   world.oneTimerSlap = false;
@@ -4426,9 +4596,11 @@ function settleBoardPass(): void {
 
 function doPass(s: Skater, mx: number, my: number, saucer: boolean): void {
   if (s.kind === "goalie") {
+    passMeet = null;
     doGoalieOutlet(s, mx, my, saucer);
     return;
   }
+  passMeet = null;
   const { ax, az } = aimDir(s, mx, my);
   const aimed = Math.hypot(mx, my) > 0.22;
   if (s.id === world.userId && aimed && userBoardPass(s, ax, az, saucer)) {
@@ -4442,6 +4614,8 @@ function doPass(s: Skater, mx: number, my: number, saucer: boolean): void {
   const mate = bestPassTarget(s, ax, az, aimed);
   if (mate) {
     tapePass(s, mate, saucer);
+  } else if (aimed) {
+    freeAimToLane(s, ax, az, saucer);
   } else {
     const power = saucer ? 17.6 : 16.4;
     launchPuck(s, ax * power, az * power, saucer ? 3.4 : 0.06);
@@ -8529,6 +8703,13 @@ function interceptGoalieFlight(puck: Puck, prevX: number, prevY: number, prevZ: 
   return false;
 }
 
+const DEAD_PUCK = 2.5;
+const SKATE_REACH = 0.22;
+
+function loosePuckDead(puck: Puck): boolean {
+  return Math.hypot(puck.vx, puck.vz) < DEAD_PUCK && puck.y < 0.38 && Math.abs(puck.vy) < 0.45;
+}
+
 function tryPickup(puck: Puck): void {
   if (world.time < stickLooseUntil) return;
   const intended = world.lastPassTo;
@@ -8561,26 +8742,28 @@ function tryPickup(puck: Puck): void {
           world.goalieSaveT < world.lastPass &&
           world.lastHitTime < world.lastPass;
         const along = puck.vx * dx + puck.vz * dz;
+        const closing = along / ((spd * dist) || 1);
         if (
           stillPass &&
-          along > 0 &&
+          closing > -0.22 &&
           dist > 0.2 &&
           spd > 0.9 &&
           puck.y < (passerIsGoalie ? 1.2 : 0.95)
         ) {
-          const maxH = passerIsGoalie ? 3.2 : t.id === world.userId ? 2.4 : 1.15;
+          const maxH = passerIsGoalie ? 3.2 : t.id === world.userId ? 3.1 : 2.15;
           if (dist < maxH) {
-            const k = passerIsGoalie
+            let k = passerIsGoalie
               ? dist < 1.6
                 ? 0.28
                 : 0.12
               : t.id === world.userId
-                ? dist < 1.2
+                ? dist < 1.35
+                  ? 0.34
+                  : 0.16
+                : dist < 0.9
                   ? 0.2
-                  : 0.08
-                : dist < 0.7
-                  ? 0.1
-                  : 0.04;
+                  : 0.1;
+            if (!passerIsGoalie && closing <= 0) k *= 0.45;
             const bx = puck.vx / spd;
             const bz = puck.vz / spd;
             const nx = bx + (dx / dist - bx) * k;
@@ -8625,6 +8808,8 @@ function tryPickup(puck: Puck): void {
   let best = -1;
   let bestD = 99;
   let userLooseWin = false;
+  let feetWin = false;
+  const dead = loosePuckDead(puck);
   const justReleased = userJustReleasedPuck();
   for (const s of world.skaters) {
     if (justReleased && s.side === "away") continue;
@@ -8645,7 +8830,9 @@ function tryPickup(puck: Puck): void {
       continue;
     }
     if (s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) continue;
-    if (passer === s.id && (sincePass < 0.62 || Math.hypot(s.x - puck.x, s.z - puck.z) < 2.8 && sincePass < 0.95)) continue;
+    const bodyD = Math.hypot(s.x - puck.x, s.z - puck.z);
+    const atSkates = dead && bodyD <= s.radius + SKATE_REACH;
+    if (passer === s.id && !dead && (sincePass < 0.62 || (bodyD < 2.8 && sincePass < 0.95))) continue;
     if (world.lastHitter === s.id && world.time - world.lastHitTime < 0.5) continue;
     if (world.lastShooter === s.id && sinceShot < (world.lastShotOneTimer ? 0.6 : 0.28)) continue;
     if (shooter && s.side === shooter.side && sinceShot < 0.55) continue;
@@ -8659,7 +8846,14 @@ function tryPickup(puck: Puck): void {
     const airbornePass =
       passLive && intended !== s.id && (puck.y > 0.12 || Math.abs(puck.vy) > 0.35);
     if (s.id === world.userId && airbornePass) continue;
-    if (ahead < -0.08 && !(intended === s.id && sincePass < 2.2) && s.id !== world.userId) continue;
+    if (
+      ahead < -0.08 &&
+      bodyD > s.radius &&
+      !atSkates &&
+      !(intended === s.id && sincePass < 2.2) &&
+      s.id !== world.userId
+    )
+      continue;
     let d = dBlade;
     const isIntended = intended === s.id && sincePass < 2.2;
     if (isIntended && sincePass < 0.04) continue;
@@ -8699,13 +8893,19 @@ function tryPickup(puck: Puck): void {
     if (userLoose) {
       const looseReach = moving > 10 ? 1.35 : 1.72;
       reach = Math.max(reach, looseReach);
-      const bodyD = Math.hypot(s.x - puck.x, s.z - puck.z);
       if (bodyD < d && dBlade <= looseReach) d = bodyD;
+    }
+    let feetClaim = false;
+    if (atSkates) {
+      d = Math.min(d, bodyD);
+      reach = Math.max(reach, s.radius + SKATE_REACH);
+      feetClaim = true;
     }
     if (d < reach && d < bestD) {
       bestD = d;
       best = s.id;
       userLooseWin = userLoose;
+      feetWin = feetClaim;
     }
   }
   if (best >= 0) {
@@ -8729,7 +8929,8 @@ function tryPickup(puck: Puck): void {
     }
     const intendedPickup = intended === best && sincePass < 2.2;
     let snapCap = sinceSave < 1.2 ? 0.55 : intendedPickup ? 2.6 : 1.28;
-    if (userLooseWin) snapCap = Math.max(snapCap, 1.72);
+    if (feetWin) snapCap = Math.max(snapCap, 1.8);
+    else if (userLooseWin) snapCap = Math.max(snapCap, 1.72);
     if (Math.hypot(blade.x - puck.x, blade.z - puck.z) > snapCap) return;
     puck.owner = best;
     puck.x = blade.x;
@@ -8751,7 +8952,7 @@ function stepWhistlePuck(dt: number): void {
   const puck = world.puck;
   if (puck.owner !== null) {
     const s = world.skaters[puck.owner];
-    if (!s || s.id !== world.offsideCarrier) {
+    if (!s) {
       puck.owner = null;
     } else {
       const blade = stickBlade(s);
@@ -8793,6 +8994,33 @@ function stepWhistlePuck(dt: number): void {
   }
   if (puck.y > 1.2) return;
   const since = world.time - world.lastShoot;
+  if (loosePuckDead(puck) && world.time >= stickLooseUntil) {
+    let claim: Skater | null = null;
+    let claimD = 99;
+    const shooter = world.lastShooter !== null ? world.skaters[world.lastShooter] : undefined;
+    for (const s of world.skaters) {
+      if (s.kind === "goalie" || s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) continue;
+      if (world.lastHitter === s.id && world.time - world.lastHitTime < 0.5) continue;
+      if (world.lastShooter === s.id && since < (world.lastShotOneTimer ? 0.6 : 0.28)) continue;
+      if (shooter && s.side === shooter.side && since < 0.55) continue;
+      if (world.oneTimerArmed && world.time - world.lastPass < 2.2 && s.side === "home") continue;
+      const dist = Math.hypot(s.x - puck.x, s.z - puck.z);
+      if (dist > s.radius + SKATE_REACH || dist >= claimD) continue;
+      claim = s;
+      claimD = dist;
+    }
+    if (claim) {
+      const blade = stickBlade(claim);
+      puck.owner = claim.id;
+      puck.x = blade.x;
+      puck.z = blade.z;
+      puck.y = PUCK_Y;
+      puck.vx = claim.vx;
+      puck.vz = claim.vz;
+      puck.vy = 0;
+      return;
+    }
+  }
   for (const s of world.skaters) {
     if (s.id === world.lastShooter && since < 0.22) continue;
     const dx = puck.x - s.x;
@@ -10744,7 +10972,9 @@ function stepPlay(dt: number, act: Actions): void {
           continue;
         }
         const deadShot =
-          world.whistle === "offside" && world.offsideCarrier !== null && world.puck.owner === null;
+          world.whistle === "offside" &&
+          world.offsideCarrier !== null &&
+          world.puck.owner !== world.offsideCarrier;
         if (deadShot) {
           s.vx *= Math.exp(-4 * dt);
           s.vz *= Math.exp(-4 * dt);
