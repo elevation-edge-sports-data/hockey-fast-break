@@ -21,6 +21,8 @@ import {
   subscribePauseDraft,
 } from "./sim";
 import {
+  GAME_MINUTES_MAX,
+  GAME_MINUTES_MIN,
   lineupTotal,
   modeLineupCap,
   patchLineup,
@@ -366,11 +368,11 @@ function GameMinutes() {
   const setMin = (n: number) => previewPausedMinutes(n);
   return (
     <div className="clock-mins">
-      <button type="button" aria-label="Fewer minutes" disabled={gameMinutes <= 1} onClick={() => setMin(gameMinutes - 1)}>
+      <button type="button" aria-label="Fewer minutes" disabled={gameMinutes <= GAME_MINUTES_MIN} onClick={() => setMin(gameMinutes - 1)}>
         −
       </button>
       <b>{gameMinutes}</b>
-      <button type="button" aria-label="More minutes" disabled={gameMinutes >= 5} onClick={() => setMin(gameMinutes + 1)}>
+      <button type="button" aria-label="More minutes" disabled={gameMinutes >= GAME_MINUTES_MAX} onClick={() => setMin(gameMinutes + 1)}>
         +
       </button>
       <span>minutes</span>
@@ -884,6 +886,7 @@ export function Overlay() {
   const awayScore = useGame((s) => s.awayScore);
   const whistle = useGame((s) => s.whistle);
   const delayedOffside = useGame((s) => s.delayedOffside);
+  const passChain = useGame((s) => s.passChain);
   const replay = useGame((s) => s.replay);
   const clockMode = useGame((s) => s.clockMode);
   const controlProfile = useGame((s) => s.controlProfile);
@@ -1043,6 +1046,7 @@ export function Overlay() {
             <span className={hasPuck ? "puck-chip" : "muted"}>
               {hasPuck ? "Puck on stick" : "Loose puck"}
             </span>
+            {passChain > 0 ? <span className="puck-chip">Chain {passChain}</span> : null}
             <span className="muted">{pad}</span>
             {chargeKind ? (
               <span className="charge">

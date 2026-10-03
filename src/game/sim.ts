@@ -31,7 +31,9 @@ import { skaterKnobLocal, skaterPlateLocal } from "./stickSide";
 import {
   CHAOS_CAP,
   LINEUP_CAP,
+  gameClockScale,
   lineupTotal,
+  clampGameMinutes,
   releaseFromBox,
   useGame,
   type CamMode,
@@ -306,6 +308,8 @@ export type World = {
   ppChaos: boolean;
   creasePokeN: number;
   creasePokeGoalie: number | null;
+  /** Completed home passes. Time never clears this; faceoff, goal, and away possession do. */
+  passChain: number;
   homeAttack: 1 | -1;
   benchDump: BenchDump | null;
   lineBrawl: LineBrawl | null;
@@ -595,6 +599,7 @@ export const world: World = {
   ppChaos: false,
   creasePokeN: 0,
   creasePokeGoalie: null,
+  passChain: 0,
   homeAttack: Math.random() < 0.5 ? 1 : -1,
   benchDump: null,
   lineBrawl: null,
@@ -870,6 +875,7 @@ function resetSkaters(): void {
   playLooseMem.clear();
   pressPeelAt.clear();
   pressPeelEnd.clear();
+  dekeCommit.clear();
   stickLooseUntil = -1;
   stickLooseBy = -1;
   stickLooseFrom = -1;
@@ -894,6 +900,7 @@ function resetSkaters(): void {
   world.goalBank = null;
   world.lastPassX = 0;
   world.lastPassZ = 0;
+  resetPassChain();
   world.lastOneTimerDanger = 0;
   world.reboundN = 0;
   world.reboundSoft = false;
@@ -917,6 +924,91 @@ let cpuOtYes = false;
 let otLinesPass = -1;
 let otLinesShooter = -1;
 let otLines = 0;
+/** world.time when this user's hold started. Null after they pass or lose the puck. */
+let passChainHold: number | null = null;
+let passChainHoldId = -1;
+/** lastPass timestamp already added, so one catch cannot count twice. */
+let passChainNoted = -1;
+
+function publishPassChain(): void {
+  const n = world.passChain;
+  const ui = useGame.getState();
+  if (ui.passChain !== n) ui.setPassChain(n);
+}
+
+function resetPassChain(): void {
+  passChainHold = null;
+  passChainHoldId = -1;
+  passChainNoted = -1;
+  if (world.passChain !== 0) world.passChain = 0;
+  publishPassChain();
+}
+
+function clearPassChain(): void {
+  passChainHold = null;
+  passChainHoldId = -1;
+  if (world.passChain !== 0) world.passChain = 0;
+  publishPassChain();
+}
+
+/** A home teammate who was the target takes a live pass. Time does not do this. */
+function noteChainReception(s: Skater): void {
+  if (world.stoppage || world.faceoff || world.whistle === "goal") return;
+  if (s.side !== "home" || world.lastPassTo !== s.id) return;
+  if (!(world.lastShoot < world.lastPass)) return;
+  const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : undefined;
+  if (!passer || passer.side !== "home" || passer.id === s.id) return;
+  if (passChainNoted === world.lastPass) return;
+  passChainNoted = world.lastPass;
+  world.passChain += 1;
+  publishPassChain();
+}
+
+/** Pass release ends the hold. Under 4s does not subtract. */
+function stopPassChainHold(id: number): void {
+  if (id !== world.userId) return;
+  passChainHold = null;
+  passChainHoldId = -1;
+}
+
+function syncPassChainHold(): void {
+  const owner = world.puck.owner !== null ? world.skaters[world.puck.owner] : undefined;
+  if (owner?.side === "away") {
+    clearPassChain();
+    return;
+  }
+  if (owner?.id !== world.userId) {
+    passChainHold = null;
+    passChainHoldId = -1;
+    return;
+  }
+  // Origin is the frame the user has the puck, never lastPass.
+  if (passChainHold === null || passChainHoldId !== owner.id) {
+    passChainHold = world.time;
+    passChainHoldId = owner.id;
+  }
+}
+
+function tickPassChainHold(): void {
+  if (passChainHold === null || passChainHoldId !== world.userId) return;
+  if (world.puck.owner !== world.userId) return;
+  const elapsed = world.time - passChainHold;
+  if (elapsed < 4) return;
+  const steps = Math.floor(elapsed / 4);
+  passChainHold += steps * 4;
+  const next = Math.max(0, world.passChain - steps);
+  if (next === world.passChain) return;
+  world.passChain = next;
+  publishPassChain();
+}
+
+function cpuPokeTune(): { reach: number; steal: number } {
+  const n = world.passChain;
+  if (n >= 3) return { reach: 0.55, steal: 0 };
+  if (n === 2) return { reach: 0.72, steal: 0.01 };
+  if (n === 1) return { reach: 0.95, steal: 0.05 };
+  return { reach: 1.22, steal: 0.11 };
+}
 let shotIron: { kind: "post" | "bar"; z: number; y: number } | null = null;
 let ironResolved: "in" | "back" | "out" | null = null;
 let drillPipeHit = false;
@@ -2610,6 +2702,8 @@ function pressingUserCarrier(s: Skater): boolean {
 }
 
 function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; burst: boolean } {
+  const bitten = dekeMissWish(s);
+  if (bitten) return bitten;
   const attack = attackDir(s.side);
   const own = -attack;
   const ownMouth = own * GOAL_LINE_X;
@@ -3464,6 +3558,8 @@ function thinkAi(s: Skater, dt: number): { wx: number; wz: number; mag: number; 
     thinkGoalie(s, dt);
     return { wx: 0, wz: 0, mag: 0, burst: false };
   }
+  const bitten = dekeMissWish(s);
+  if (bitten) return bitten;
   if (s.dive > 0) return { wx: 0, wz: 0, mag: 0, burst: false };
   if (world.puck.owner === s.id) return thinkCarrier(s);
   return thinkWithoutPuck(s);
@@ -3501,6 +3597,10 @@ function defendUserCarrier(s: Skater, holder: Skater): void {
 }
 
 function cpuDefend(s: Skater): void {
+  if (dekeCommitBlocks(s.id)) {
+    disarmDekeBite(s);
+    return;
+  }
   if (s.id === world.userId || s.kind === "goalie") return;
   if (s.side === "home" && s.kind !== "defense") return;
   if (s.stun > 0.04 || s.struck > 0.18) return;
@@ -4685,6 +4785,7 @@ function doGoalieOutlet(s: Skater, mx: number, my: number, saucer: boolean): voi
   world.lastPassZ = s.z;
   world.coverT = 0;
   s.coverPose = 0;
+  stopPassChainHold(s.id);
 }
 
 type BoardHit = { x: number; z: number; nx: number; nz: number; dist: number };
@@ -5035,6 +5136,7 @@ function doPass(s: Skater, mx: number, my: number, saucer: boolean): void {
     doGoalieOutlet(s, mx, my, saucer);
     return;
   }
+  stopPassChainHold(s.id);
   passMeet = null;
   const { ax, az } = aimDir(s, mx, my);
   const aimed = Math.hypot(mx, my) > 0.22;
@@ -5532,6 +5634,7 @@ function fireOneTimerPass(t: Skater): void {
   world.puck.vx = t.vx;
   world.puck.vz = t.vz;
   world.puck.vy = 0;
+  noteChainReception(t);
   doPass(t, mx, my, saucer);
   t.follow = 0.4;
   t.windup = 0;
@@ -6054,6 +6157,7 @@ function autoSwitchToHolder(): void {
 }
 
 function cpuIdlePoke(foe: Skater, holder: Skater): void {
+  if (dekeCommitBlocks(foe.id)) return;
   const dx = holder.x - foe.x;
   const dz = holder.z - foe.z;
   const d = Math.hypot(dx, dz) || 1;
@@ -6139,6 +6243,7 @@ function userJustReleasedPuck(): boolean {
 }
 
 function pokeCheck(user: Skater): void {
+  if (dekeCommitBlocks(user.id)) return;
   if (userPassInFlight() && (world.puck.owner === null || user.id === world.userId)) return;
   const puck = world.puck;
   if (puck.owner === user.id) return;
@@ -6181,14 +6286,15 @@ function pokeCheck(user: Skater): void {
     }
     const cpu = user.id !== world.userId;
     const dive = user.dive > 0.04;
-    const reach = (dive ? 3.15 : cpu ? 1.22 : 1.95) * (cpu ? 1 : reachMul);
+    const poke = cpuPokeTune();
+    const reach = (dive ? 3.15 : cpu ? poke.reach : 1.95) * (cpu ? 1 : reachMul);
     const bodyR = (dive ? 3.35 : cpu ? 0 : 2.25) * (cpu ? 1 : reachMul);
     const aheadMin = cpu && !dive ? 0.22 : -0.85;
     if ((dBlade < reach || (bodyR > 0 && dBody < bodyR)) && ahead > aheadMin) {
       const lx = -fz;
       const lz = fx;
       const side = Math.sign((holder.x - user.x) * lx + (holder.z - user.z) * lz) || 1;
-      if (cpu && !dive && Math.random() < 0.11) {
+      if (cpu && !dive && Math.random() < poke.steal) {
         noteControl(user, "play");
         puck.owner = user.id;
         puck.x = blade.x;
@@ -6245,6 +6351,7 @@ function pokeCheck(user: Skater): void {
       world.time - world.lastPass < 2.2 &&
       world.lastShoot < world.lastPass;
     noteControl(user, livePass ? "receive" : "play");
+    if (livePass) noteChainReception(user);
     if (!livePass) maybeLoadedSlap(user);
   }
 }
@@ -6286,6 +6393,151 @@ function defendersInLane(shooter: Skater): number {
   return n;
 }
 
+const DEKE_COMMIT_S = 0.45;
+const DEKE_COMMIT_REACH = 2.4;
+const DEKE_MISS_PAST = 1.05;
+const DEKE_MISS_WIDE = 1.15;
+
+type DekeCommit = {
+  until: number;
+  deker: number;
+  ox: number;
+  oz: number;
+  fx: number;
+  fz: number;
+  freeze: boolean;
+};
+
+const dekeCommit = new Map<number, DekeCommit>();
+
+function dekeCommitOf(id: number): DekeCommit | null {
+  const c = dekeCommit.get(id);
+  if (!c) return null;
+  if (world.time >= c.until) {
+    dekeCommit.delete(id);
+    return null;
+  }
+  return c;
+}
+
+function dekeCommitBlocks(id: number | null): boolean {
+  if (id === null) return false;
+  return dekeCommitOf(id) !== null;
+}
+
+function distToSegment(
+  px: number,
+  pz: number,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+): number {
+  const abx = bx - ax;
+  const abz = bz - az;
+  const ab2 = abx * abx + abz * abz;
+  let t = 0;
+  if (ab2 > 1e-8) t = ((px - ax) * abx + (pz - az) * abz) / ab2;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return Math.hypot(px - (ax + abx * t), pz - (az + abz * t));
+}
+
+function disarmDekeBite(s: Skater): void {
+  s.poke = 0;
+  s.dive = 0;
+  if (s.hit > 0) {
+    s.hit = 0;
+    endCheckSwing(s.id);
+  }
+}
+
+function dekeMissPoint(deker: Skater, c: DekeCommit, s: Skater): { x: number; z: number } {
+  const relX = s.x - deker.x;
+  const relZ = s.z - deker.z;
+  const along = relX * c.fx + relZ * c.fz;
+  const lat = relX * c.ox + relZ * c.oz;
+  const wantAlong = Math.max(DEKE_MISS_PAST, along + 0.4);
+  const wantLat = Math.max(DEKE_MISS_WIDE, lat);
+  return {
+    x: deker.x + c.fx * wantAlong + c.ox * wantLat,
+    z: deker.z + c.fz * wantAlong + c.oz * wantLat,
+  };
+}
+
+function dekeMissWish(s: Skater): { wx: number; wz: number; mag: number; burst: boolean } | null {
+  const c = dekeCommitOf(s.id);
+  if (!c) return null;
+  disarmDekeBite(s);
+  if (c.freeze) {
+    s.stun = Math.max(s.stun, c.until - world.time);
+    s.vx = 0;
+    s.vz = 0;
+    return { wx: 0, wz: 0, mag: 0, burst: false };
+  }
+  const deker = world.skaters[c.deker];
+  if (!deker) {
+    s.stun = Math.max(s.stun, c.until - world.time);
+    s.vx = 0;
+    s.vz = 0;
+    return { wx: 0, wz: 0, mag: 0, burst: false };
+  }
+  const toX = deker.x - s.x;
+  const toZ = deker.z - s.z;
+  const toD = Math.hypot(toX, toZ) || 1;
+  const closing = s.vx * (toX / toD) + s.vz * (toZ / toD);
+  if (closing > 0) {
+    s.vx -= (toX / toD) * closing;
+    s.vz -= (toZ / toD) * closing;
+  }
+  const miss = dekeMissPoint(deker, c, s);
+  const dx = miss.x - s.x;
+  const dz = miss.z - s.z;
+  const dist = Math.hypot(dx, dz) || 1;
+  return { wx: dx / dist, wz: dz / dist, mag: 1, burst: false };
+}
+
+function commitDekeDefenders(
+  user: Skater,
+  fx: number,
+  fz: number,
+  lx: number,
+  lz: number,
+  side: number,
+): void {
+  const ox = -lx * side;
+  const oz = -lz * side;
+  const near: { s: Skater; d: number }[] = [];
+  for (const s of world.skaters) {
+    if (s.id === user.id || s.side === user.side || s.kind === "goalie") continue;
+    const dx = s.x - user.x;
+    const dz = s.z - user.z;
+    const d = Math.hypot(dx, dz);
+    if (d > DEKE_COMMIT_REACH) continue;
+    if (dx * fx + dz * fz <= 0.05) continue;
+    near.push({ s, d });
+  }
+  near.sort((a, b) => a.d - b.d);
+  dekeCommit.clear();
+  const until = world.time + DEKE_COMMIT_S;
+  for (const { s, d } of near.slice(0, 2)) {
+    const c: DekeCommit = { until, deker: user.id, ox, oz, fx, fz, freeze: false };
+    const miss = dekeMissPoint(user, c, s);
+    const body = user.radius + s.radius;
+    const through = distToSegment(user.x, user.z, s.x, s.z, miss.x, miss.z) < body;
+    const closing = s.vx * (user.x - s.x) + s.vz * (user.z - s.z);
+    const soon = d < body + 0.45 && closing > 0;
+    c.freeze = through || soon || d < body;
+    dekeCommit.set(s.id, c);
+    disarmDekeBite(s);
+    if (c.freeze) {
+      s.stun = Math.max(s.stun, DEKE_COMMIT_S);
+      s.vx = 0;
+      s.vz = 0;
+    }
+  }
+}
+
 function applyDeke(user: Skater): void {
   const { fx, fz } = heading(user.yaw);
   const lx = -fz;
@@ -6293,6 +6545,7 @@ function applyDeke(user: Skater): void {
   const side = user.z >= 0 ? 1 : -1;
   user.vx += lx * side * 6.5 + fx * 1.4;
   user.vz += lz * side * 6.5 + fz * 1.4;
+  commitDekeDefenders(user, fx, fz, lx, lz, side);
   const rush = rushCounts(user.side);
   if (rush.defenders > 0) return;
   const g = world.skaters.find((p) => p.kind === "goalie" && p.side !== user.side);
@@ -8392,6 +8645,7 @@ function startStoppage(kind: "goal" | "cover" | "offside", net?: 1 | -1): void {
   world.puck.owner = keepCarrier ? holderId : null;
   if (keepCarrier) world.coverT = 0;
   if (kind === "goal") {
+    resetPassChain();
     world.goalPuckT = 0.62;
   } else if (!keepCarrier) {
     world.puck.vx *= 0.15;
@@ -8695,6 +8949,9 @@ function cpuSaveMiss(g: Skater, y: number, z: number): boolean {
   if (n >= 1) miss += n === 1 ? 0.22 : Math.min(0.64, 0.22 + (n - 1) * 0.2);
   if (body) miss *= 0.45;
   miss *= 1.55 - cpuMul("g");
+  const chain = world.passChain;
+  miss += chain >= 3 ? 0.38 : chain === 2 ? 0.24 : chain === 1 ? 0.12 : 0;
+  if (miss > 0.7) miss = 0.7;
   return Math.random() < miss;
 }
 
@@ -9133,6 +9390,7 @@ function checkCover(dt: number, act: Actions): void {
   if (covering) {
     puck.owner = covering.id;
     noteControl(covering, "play");
+    noteChainReception(covering);
     puck.vx = 0;
     puck.vz = 0;
     puck.vy = 0;
@@ -9268,6 +9526,7 @@ function grantFlightCarry(s: Skater): void {
     world.lastPassTo === s.id &&
     world.time - world.lastPass < 2.2 &&
     world.lastShoot < world.lastPass;
+  if (carriedPass) noteChainReception(s);
   world.lastPassTo = null;
   noteControl(s, carriedPass ? "receive" : "play");
 }
@@ -9293,6 +9552,7 @@ function interceptGoalieFlight(puck: Puck, prevX: number, prevY: number, prevZ: 
     let hit: Skater | null = null;
     for (const s of world.skaters) {
       if (s.kind === "goalie" || s.id === shooter.id) continue;
+      if (dekeCommitBlocks(s.id)) continue;
       if (!bodyTouch(s, x, y, z) && !shaftTouch(s, x, y, z)) continue;
       if (s.id === world.userId) {
         hit = s;
@@ -9326,7 +9586,7 @@ function tryPickup(puck: Puck): void {
 
   if (passLive) {
     const t = world.skaters[intended];
-    if (t && t.kind !== "goalie" && t.stun <= 0.04 && t.struck <= 0.18 && t.dive <= 0) {
+    if (t && !dekeCommitBlocks(t.id) && t.kind !== "goalie" && t.stun <= 0.04 && t.struck <= 0.18 && t.dive <= 0) {
       const justShot =
         sinceShot < 0.6 &&
         world.lastShoot >= world.lastPass &&
@@ -9383,12 +9643,14 @@ function tryPickup(puck: Puck): void {
         if (oneT) {
           if (!tooEarly && dist < 3 && puck.y < 1.45) {
             noteControl(t, "receive");
+            noteChainReception(t);
             if (world.oneTimerPass) fireOneTimerPass(t);
             else fireOneTimer(t);
             return;
           }
         } else if (!tooEarly && t.id !== world.userId && dist < 2.8 && puck.y < 1.35 && cpuOneTimerAttempt(t)) {
           noteControl(t, "receive");
+          noteChainReception(t);
           cpuOneTimerShot(t);
           return;
         } else if (!tooEarly && dist < reach && puck.y < (passerIsGoalie ? 1.15 : 0.9)) {
@@ -9400,6 +9662,7 @@ function tryPickup(puck: Puck): void {
           puck.vz = t.vz;
           puck.vy = 0;
           noteControl(t, "receive");
+          noteChainReception(t);
           return;
         }
       }
@@ -9420,6 +9683,7 @@ function tryPickup(puck: Puck): void {
   const dead = loosePuckDead(puck);
   const justReleased = userJustReleasedPuck();
   for (const s of world.skaters) {
+    if (dekeCommitBlocks(s.id)) continue;
     if (justReleased && s.side === "away") continue;
     if (s.kind === "goalie") {
       if (s.stun > 0.2 || s.struck > 0.3 || s.tumble !== 0) continue;
@@ -9530,6 +9794,7 @@ function tryPickup(puck: Puck): void {
       puck.vz = s.vz;
       puck.vy = 0;
       noteControl(s, "play");
+      noteChainReception(s);
       world.coverT = 0;
       world.goalieShot = null;
       s.follow = 0;
@@ -9550,6 +9815,7 @@ function tryPickup(puck: Puck): void {
     puck.vy = 0;
     const livePass = intended === s.id && sincePass < 2.2 && world.lastShoot < world.lastPass;
     noteControl(s, livePass ? "receive" : "play");
+    if (livePass) noteChainReception(s);
     if (livePass && s.id !== world.userId && cpuOneTimerAttempt(s)) {
       cpuOneTimerShot(s);
       return;
@@ -9609,7 +9875,7 @@ function stepWhistlePuck(dt: number): void {
     let claimD = 99;
     const shooter = world.lastShooter !== null ? world.skaters[world.lastShooter] : undefined;
     for (const s of world.skaters) {
-      if (s.kind === "goalie" || s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) continue;
+      if (s.kind === "goalie" || dekeCommitBlocks(s.id) || s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) continue;
       if (world.lastHitter === s.id && world.time - world.lastHitTime < 0.5) continue;
       if (world.lastShooter === s.id && since < (world.lastShotOneTimer ? 0.6 : 0.28)) continue;
       if (shooter && s.side === shooter.side && since < 0.55) continue;
@@ -10081,7 +10347,7 @@ export function previewPausedTargets(n: DrillTargets): void {
 }
 
 export function previewPausedMinutes(n: number): void {
-  const minutes = Math.max(1, Math.min(5, Math.round(n)));
+  const minutes = clampGameMinutes(n);
   const ui = useGame.getState();
   if (!(ui.playing && ui.paused)) {
     ui.setGameMinutes(minutes);
@@ -11458,6 +11724,9 @@ function stepPlay(dt: number, act: Actions): void {
     return;
   }
 
+  syncPassChainHold();
+  tickPassChainHold();
+
   stepBenchDump(dt);
   if (world.lineBrawl) {
     dropWingClaims();
@@ -11489,8 +11758,7 @@ function stepPlay(dt: number, act: Actions): void {
   }
 
   if (ui.clockMode === "game" && !world.stoppage && !world.faceoff) {
-    const minutes = Math.max(1, Math.min(5, ui.gameMinutes));
-    world.periodClock = Math.max(0, world.periodClock - dt * (20 / minutes));
+    world.periodClock = Math.max(0, world.periodClock - dt * gameClockScale(ui.gameMinutes));
     const shown = Math.floor(world.periodClock);
     if (shown !== ui.periodClock) ui.setPeriodClock(shown);
     if (world.periodClock <= 0) {
@@ -12157,6 +12425,7 @@ export function installControlsProbe(): void {
       s.vz = 0;
     },
     skipToLive: () => {
+      resetPassChain();
       world.faceoff = true;
       world.faceoffPhase = "live";
       world.faceoffT = 0;
