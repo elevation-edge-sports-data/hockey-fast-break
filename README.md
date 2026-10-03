@@ -39,7 +39,8 @@ Free online hockey game (3D). Compatible with keyboard and gamepad.
 
 | | Gamepad | Keyboard |
 |---|---|---|
-| Take your goalie | Hold LT | Hold G |
+| Defensive skate | Hold LB | Hold comma or N |
+| Take your goalie | Hold Select | Hold R |
 | Dive | RT | Shift |
 
 ### Wings profile
@@ -47,12 +48,15 @@ Free online hockey game (3D). Compatible with keyboard and gamepad.
 | | Gamepad | Keyboard |
 |---|---|---|
 | Steer nearest teammate left / right | Hold LT / RT | Hold G / Shift |
-| Take your goalie | Hold LB | Hold N or comma |
+| Defensive skate | Hold LB | Hold comma or N |
+| Take your goalie | Hold Select | Hold R |
 | Dive | RB | M |
+
+Defensive skate faces the puck, skates slower, and improves hits and intercepts. Hold Select or R to take your goalie on either profile.
 
 Pause is P or Esc. Camera is picked in the pause menu (classic, chase, broadcast, high, freestyle). Freestyle angle and zoom stay on when you resume.
 
-Replay (from pause, last 30 seconds): A play/pause, X / B zoom, stick pan, hold Y and stick to orbit, LT / RT or G / Shift scrub fast, LB / RB or N / M scrub slow, R to exit.
+Replay (from pause, last 30 seconds): A play/pause, X / B zoom, stick pan, hold Y and stick to orbit, LT / RT or G / Shift scrub fast, LB / RB or N / M scrub slow, Select or R to exit.
 
 ## What you can change
 

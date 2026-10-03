@@ -6,7 +6,7 @@ import { Arena } from "./Arena";
 import { Rink } from "./Rink.tsx";
 import { PlayerMesh, PuckMesh, RefereeMesh } from "./PlayerMesh";
 import { attachInput } from "./input";
-import { installControlsProbe, resetWorld, stepSim, world } from "./sim";
+import { installControlsProbe, stepSim, world } from "./sim";
 import { useGame, type CamMode } from "./store";
 import { BOARD_H, BLUE_X, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
 
@@ -783,17 +783,6 @@ export function World() {
     const detach = attachInput(window);
     installControlsProbe();
     return detach;
-  }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.code === "KeyR") {
-        if (world.replay && world.replayKind === "pause") return;
-        resetWorld();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   return (

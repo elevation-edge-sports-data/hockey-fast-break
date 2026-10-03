@@ -169,9 +169,7 @@ function saveLook(v: ArenaLook): void {
 
 function rollClockMode(): PlayMode {
   const r = Math.random();
-  if (r < 0.3) return "drill";
-  if (r < 0.4) return "practice";
-  if (r < 0.5) return "scrimmage";
+  if (r < 0.25) return "drill";
   return "game";
 }
 

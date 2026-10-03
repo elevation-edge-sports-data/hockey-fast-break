@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Pause, Play, RotateCcw } from "lucide-react";
-import { setTouchBurst, setTouchFace, setTouchLt, setTouchMove } from "./input";
+import { setTouchBurst, setTouchFace, setTouchLt, setTouchMove, setTouchView } from "./input";
 import {
   resetWorld,
   world,
@@ -501,8 +501,8 @@ function MainMenus() {
   const toggle = (id: MenuId) => setMenu((cur) => (cur === id ? null : id));
   const blurb =
     controlProfile === "wings"
-      ? "LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB takes goalie; RB dives."
-      : "Current map, LT goalie.";
+      ? "LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB defensive skate; hold Select or R for the goalie; RB dives."
+      : "LB defensive skate. Hold Select or R for the goalie.";
   const startReplay = () => {
     if (replay) {
       stopPauseReplay();
@@ -564,7 +564,7 @@ function MainMenus() {
               <button
                 type="button"
                 className={controlProfile === "classic" ? "is-on" : ""}
-                title="Current map, LT goalie."
+                title="LB defensive skate. Hold Select or R for the goalie."
                 onClick={() => setControlProfile("classic")}
               >
                 Classic
@@ -572,7 +572,7 @@ function MainMenus() {
               <button
                 type="button"
                 className={controlProfile === "wings" ? "is-on" : ""}
-                title="LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB takes goalie; RB dives."
+                title="LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB defensive skate; hold Select or R for the goalie; RB dives."
                 onClick={() => setControlProfile("wings")}
               >
                 Wings
@@ -712,8 +712,8 @@ function ControlsHelp() {
     <div className="help-tip">
       <p className="hint">
         {wings
-          ? "A / E start · WASD skate · F shot · Q deke/hit · Space burst · G left · Shift right · LB / N goalie · M / RB dive · P pause"
-          : "A / E start · WASD skate · F shot · Q deke/hit · Space burst · Shift / RT dive · G / LT net · P pause"}
+          ? "A / E start · WASD skate · F shot · Q deke/hit · Space burst · G left · Shift right · LB / N skate · Select / R goalie · M / RB dive · P pause"
+          : "A / E start · WASD skate · F shot · Q deke/hit · Space burst · Shift / RT dive · LB / N skate · Select / R goalie · P pause"}
       </p>
       <dl className="legend">
         <div>
@@ -729,17 +729,17 @@ function ControlsHelp() {
           </dd>
         </div>
         <div>
+          <dt>Skate</dt>
+          <dd>Hold LB, comma, or N — hips to the puck, slower, better hit and intercept</dd>
+        </div>
+        <div>
           <dt>Net</dt>
-          <dd>
-            {wings
-              ? "Hold LB, comma, or N — take your goalie (only if you don't have the puck)"
-              : "Hold LT or G — take your goalie (only if you don't have the puck)"}
-          </dd>
+          <dd>Hold Select or R — take your goalie (only if you don't have the puck)</dd>
         </div>
         {wings ? (
           <div>
             <dt>Wings</dt>
-            <dd>LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB takes goalie; RB dives.</dd>
+            <dd>LT/RT claim nearest teammate left/right of you; left stick steers you and them; RB dives.</dd>
           </div>
         ) : null}
       </dl>
@@ -1070,7 +1070,7 @@ export function Overlay() {
               <b>Replay</b>
               <span>
                 A pause/play · X / B zoom · N/M or LB/RB slow · G / Shift or LT/RT fast · stick pan · hold Y +
-                stick orbit · R exit
+                stick orbit · Select / R exit
               </span>
             </p>
             <div className="btn-row cam-adjust-btns">
@@ -1175,7 +1175,7 @@ export function Overlay() {
         <p className="hint hide-sm">
           {replay
             ? paused
-              ? "Replay · A pause/play · X/B zoom · LB/RB slow · LT/RT fast · stick pan · Y+stick orbit · R exit"
+              ? "Replay · A pause/play · X/B zoom · LB/RB slow · LT/RT fast · stick pan · Y+stick orbit · Select / R exit"
               : "Replay · A / B / X / Y skip"
             : CAMS.find((c) => c.id === camMode)?.blurb}
           {replay
@@ -1188,22 +1188,20 @@ export function Overlay() {
                   ? " · X jab · B uppercut"
                   : hasPuck
                 ? world.skaters[world.userId]?.kind === "goalie"
-                  ? controlProfile === "wings"
-                    ? " · A outlet pass · X dump · stick aims · hold LB / N goalie"
-                    : " · A outlet pass · X dump · stick aims · hold G / LT net"
+                  ? " · A outlet pass · X dump · stick aims · hold Select / R goalie"
                   : controlProfile === "wings"
-                    ? " · Stick aims · A pass · X shot · Y deke · B burst · G/LT left · Shift/RT right · LB goalie"
-                    : " · Stick aims · A pass · X shot · Y deke · B burst · hold G / LT net"
+                    ? " · Stick aims · A pass · X shot · Y deke · B burst · G/LT left · Shift/RT right · LB skate · Select/R goalie"
+                    : " · Stick aims · A pass · X shot · Y deke · B burst · LB skate · Select/R goalie"
                 : controlProfile === "wings"
-                  ? " · Stick skates · A switch · X poke · Y hit · B burst · G/LT left · Shift/RT right · LB goalie · RB/M dive"
-                  : " · Stick skates · A switch · X poke · Y hit · B burst · RT / Shift dive · hold G / LT net"}
+                  ? " · Stick skates · A switch · X poke · Y hit · B burst · G/LT left · Shift/RT right · LB skate · Select/R goalie · RB/M dive"
+                  : " · Stick skates · A switch · X poke · Y hit · B burst · RT / Shift dive · LB skate · Select/R goalie"}
         </p>
       </footer>
 
       {replay ? (
         <div className="whistle replay-hint">
           {paused
-            ? "A pause · X/B zoom · LB/RB slow · LT/RT fast · Y+stick orbit · R exit"
+            ? "A pause · X/B zoom · LB/RB slow · LT/RT fast · Y+stick orbit · Select / R exit"
             : "A/B/X/Y skip"}
         </div>
       ) : periodOver || world.drillWon ? (
@@ -1320,12 +1318,21 @@ export function Overlay() {
               <button
                 type="button"
                 className="net"
-                onPointerDown={() => setTouchLt(true)}
-                onPointerUp={() => setTouchLt(false)}
-                onPointerCancel={() => setTouchLt(false)}
+                onPointerDown={() => {
+                  if (controlProfile === "wings") setTouchLt(true);
+                  else setTouchView(true);
+                }}
+                onPointerUp={() => {
+                  setTouchLt(false);
+                  setTouchView(false);
+                }}
+                onPointerCancel={() => {
+                  setTouchLt(false);
+                  setTouchView(false);
+                }}
               >
-                <small>LT</small>
-                {controlProfile === "wings" ? "Left" : "Net"}
+                <small>{controlProfile === "wings" ? "LT" : "R"}</small>
+                {controlProfile === "wings" ? "Left" : "Goalie"}
               </button>
             </div>
           )}

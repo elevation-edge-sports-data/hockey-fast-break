@@ -26,6 +26,7 @@ export type Actions = {
   lbDown: boolean;
   rbDown: boolean;
   viewPress: boolean;
+  viewDown: boolean;
   aimX: number;
   aimY: number;
   zoomIn: boolean;
@@ -65,6 +66,7 @@ const faceLt = freshFace();
 const faceRt = freshFace();
 const faceView = freshFace();
 let touchLt = false;
+let touchView = false;
 
 const GAME_CODES = new Set([
   "KeyW",
@@ -120,6 +122,10 @@ export function setTouchBurst(v: boolean): void {
 
 export function setTouchLt(v: boolean): void {
   touchLt = v;
+}
+
+export function setTouchView(v: boolean): void {
+  touchView = v;
 }
 
 export function setTouchFace(btn: "a" | "x" | "y" | "b", v: boolean): void {
@@ -361,7 +367,7 @@ export function readActions(): Actions {
   const rtDown = k.has("ShiftLeft") || pad.rt;
   const lbDown = k.has("Comma") || k.has("KeyN") || pad.lb;
   const rbDown = k.has("Period") || k.has("KeyM") || pad.rb;
-  const viewDown = k.has("KeyR") || pad.view;
+  const viewDown = k.has("KeyR") || pad.view || touchView;
 
   track(faceA, aDown, now);
   track(faceX, xDown, now);
@@ -406,6 +412,7 @@ export function readActions(): Actions {
     lbDown,
     rbDown,
     viewPress: faceView.edge,
+    viewDown,
     aimX: pad.ax,
     aimY: pad.ay,
     zoomIn,
