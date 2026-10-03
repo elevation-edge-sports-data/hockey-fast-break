@@ -419,6 +419,58 @@ const WRIST_FOLLOW: WristKey = {
   kneeR: (22 * Math.PI) / 180,
   drop: -0.15,
 };
+const BH_LOAD: WristKey = {
+  bot: [0.12, 0.94, 0.12],
+  dir: [-0.75, 0.9, 0.11],
+  roll: (-8 * Math.PI) / 180,
+  yaw: (-34 * Math.PI) / 180,
+  hip: (8 * Math.PI) / 180,
+  aim: 0.15,
+  open: -0.45,
+  weight: -0.04,
+  kneeL: (50 * Math.PI) / 180,
+  kneeR: (42 * Math.PI) / 180,
+  drop: -0.18,
+};
+const BH_PLANT: WristKey = {
+  bot: [0.14, 1, 0.44],
+  dir: [-0.4, 0.75, 0],
+  roll: 0,
+  yaw: (-12 * Math.PI) / 180,
+  hip: (16 * Math.PI) / 180,
+  aim: 0.4,
+  open: -0.05,
+  weight: 0.01,
+  kneeL: (40 * Math.PI) / 180,
+  kneeR: (16 * Math.PI) / 180,
+  drop: -0.16,
+};
+const BH_RELEASE: WristKey = {
+  bot: [-0.22, 1.08, 0.45],
+  dir: [0.45, 0.75, 0.15],
+  roll: (-52 * Math.PI) / 180,
+  yaw: (36 * Math.PI) / 180,
+  hip: (22 * Math.PI) / 180,
+  aim: 1,
+  open: 0.2,
+  weight: 0.02,
+  kneeL: (34 * Math.PI) / 180,
+  kneeR: (22 * Math.PI) / 180,
+  drop: -0.16,
+};
+const BH_FOLLOW: WristKey = {
+  bot: [-0.08, 1.14, 0.14],
+  dir: [0.5, 0.7, 0.08],
+  roll: (-6 * Math.PI) / 180,
+  yaw: (16 * Math.PI) / 180,
+  hip: (12 * Math.PI) / 180,
+  aim: 0.55,
+  open: 0.28,
+  weight: 0,
+  kneeL: (28 * Math.PI) / 180,
+  kneeR: (24 * Math.PI) / 180,
+  drop: -0.14,
+};
 
 function lerpWrist(a: WristKey, b: WristKey, u: number): WristKey {
   const t = u * u * (3 - 2 * u);
@@ -2054,6 +2106,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
   const wristShotAt = useRef(-100);
   const wristFrom = useRef<WristKey | null>(null);
   const wristHold = useRef<WristKey | null>(null);
+  const wristBack = useRef(false);
   const pokeLeft = useRef(0);
   const pokeSnap = useRef<PokeSnap | null>(null);
 
@@ -2112,10 +2165,14 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     const slapLoad = follow <= 0.02 && wind > 0.5;
     const wristBlocked =
       goalie || poke || diving || tumbling || cheer || !!rage || s.hit > 0 || s.struck > 0.2 || !!brawlPoseFor(s.id);
-    if (world.windupCancel && follow <= 0.02 && wind <= 0.04) wristFrom.current = null;
+    if (world.windupCancel && follow <= 0.02 && wind <= 0.04) {
+      wristFrom.current = null;
+      wristBack.current = false;
+    }
     if (wristBlocked || slapRelease || slapLoad) {
       wristLeft.current = 0;
       if (slapLoad || slapRelease) wristFrom.current = null;
+      wristBack.current = false;
     } else if (
       world.lastShooter === s.id &&
       !world.lastShotSlap &&
@@ -2129,6 +2186,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       wristLeft.current = span;
       wristHold.current = wristFrom.current ?? WRIST_CARRY;
       wristFrom.current = null;
+      wristBack.current = world.lastShotBackhand;
     }
     if (wristLeft.current > 0) wristLeft.current = Math.max(0, wristLeft.current - Math.min(0.05, delta || 0));
     let wristKey: WristKey | null = null;
@@ -2139,9 +2197,12 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       const elapsed = wristSpan.current - wristLeft.current;
       const after = wristAfter(elapsed, wristSpan.current);
       const from = wristHold.current ?? WRIST_CARRY;
-      if (after.phase === "release") wristKey = lerpWrist(from, WRIST_RELEASE, after.u);
-      else if (after.phase === "follow") wristKey = lerpWrist(WRIST_RELEASE, WRIST_FOLLOW, after.u);
-      else wristKey = lerpWrist(WRIST_FOLLOW, ownsPuck ? WRIST_CARRY : WRIST_SETTLE, after.u);
+      const releaseKey = wristBack.current ? BH_RELEASE : WRIST_RELEASE;
+      const followKey = wristBack.current ? BH_FOLLOW : WRIST_FOLLOW;
+      const settleKey = wristBack.current ? WRIST_CARRY : ownsPuck ? WRIST_CARRY : WRIST_SETTLE;
+      if (after.phase === "release") wristKey = lerpWrist(from, releaseKey, after.u);
+      else if (after.phase === "follow") wristKey = lerpWrist(releaseKey, followKey, after.u);
+      else wristKey = lerpWrist(followKey, settleKey, after.u);
       wristIce = after.phase === "release";
       wristWatch = "net";
     } else if (
@@ -2154,9 +2215,12 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       ownsPuck &&
       !world.windupCancel
     ) {
+      const backhandWind = world.lastShotBackhand && s.id === world.userId;
+      const loadKey = backhandWind ? BH_LOAD : WRIST_LOAD;
+      const plantKey = backhandWind ? BH_PLANT : WRIST_PLANT;
       const prep = Math.min(1, wind / 0.28);
-      if (prep < 0.5) wristKey = lerpWrist(WRIST_CARRY, WRIST_LOAD, prep / 0.5);
-      else wristKey = lerpWrist(WRIST_LOAD, WRIST_PLANT, (prep - 0.5) / 0.5);
+      if (prep < 0.5) wristKey = lerpWrist(WRIST_CARRY, loadKey, prep / 0.5);
+      else wristKey = lerpWrist(loadKey, plantKey, (prep - 0.5) / 0.5);
       wristFrom.current = wristKey;
       wristIce = true;
       wristWatch = "puck";
