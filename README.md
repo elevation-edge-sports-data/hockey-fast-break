@@ -11,7 +11,7 @@ Free online hockey game (3D). Compatible with keyboard and gamepad.
 - **Drill**: 4, 8, 12, or 16 targets. One minute.
 - **Practice**: skater vs goalie
 - **Roller**: 4-on-4, no offsides, roller skates
-- **Game**: 5-on-5, offsides on, timed (1–5 minutes).
+- **Game**: 5-on-5, offsides on, timed (1–10 minutes, opens at 5). The clock still counts down from 20:00.
 
 ## Controls
 

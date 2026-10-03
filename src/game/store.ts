@@ -81,6 +81,7 @@ type GameUi = {
   awayScore: number;
   whistle: "goal" | "cover" | "offside" | "brawl" | null;
   delayedOffside: boolean;
+  passChain: number;
   goalSide: "home" | "away" | null;
   replay: boolean;
   clockMode: PlayMode;
@@ -127,6 +128,7 @@ type GameUi = {
   setAwayScore: (n: number) => void;
   setWhistle: (w: "goal" | "cover" | "offside" | "brawl" | null) => void;
   setDelayedOffside: (v: boolean) => void;
+  setPassChain: (n: number) => void;
   setGoalSide: (s: "home" | "away" | null) => void;
   setReplay: (v: boolean) => void;
   setClockMode: (m: PlayMode) => void;
@@ -168,8 +170,6 @@ function saveLook(v: ArenaLook): void {
 }
 
 function rollClockMode(): PlayMode {
-  const r = Math.random();
-  if (r < 0.25) return "drill";
   return "game";
 }
 
@@ -228,24 +228,25 @@ function saveControlProfile(v: ControlProfile): void {
   }
 }
 
-function loadGameMinutes(): number {
-  try {
-    const raw = localStorage.getItem("hfb-game-length");
-    if (raw == null || raw === "") return 2;
-    const n = Number(raw);
-    if (Number.isFinite(n) && n >= 1) return Math.max(1, Math.min(5, Math.round(n)));
-  } catch {
-    /* ignore */
-  }
-  return 2;
+export const GAME_MINUTES_MIN = 1;
+export const GAME_MINUTES_MAX = 10;
+export const GAME_MINUTES_DEFAULT = 5;
+/** The scoreboard always counts down a 20:00 period, scaled to the real length. */
+export const GAME_CLOCK_DISPLAY_MINUTES = 20;
+
+export function clampGameMinutes(n: number): number {
+  if (!Number.isFinite(n)) return GAME_MINUTES_DEFAULT;
+  return Math.max(GAME_MINUTES_MIN, Math.min(GAME_MINUTES_MAX, Math.round(n)));
 }
 
-function saveGameMinutes(n: number): void {
-  try {
-    localStorage.setItem("hfb-game-length", String(n));
-  } catch {
-    /* ignore */
-  }
+/** Displayed minutes elapsed per real minute. A 5-minute game runs the clock at 4×. */
+export function gameClockScale(minutes: number): number {
+  return GAME_CLOCK_DISPLAY_MINUTES / clampGameMinutes(minutes);
+}
+
+/** A full page load always starts at 5. The in-memory length survives the next game, not a refresh. */
+function loadGameMinutes(): number {
+  return GAME_MINUTES_DEFAULT;
 }
 
 function rollAwayKit(): number {
@@ -305,6 +306,7 @@ export const useGame = create<GameUi>((set, get) => ({
   awayScore: 0,
   whistle: null,
   delayedOffside: false,
+  passChain: 0,
   goalSide: null,
   replay: false,
   clockMode: INITIAL_MODE,
@@ -384,6 +386,7 @@ export const useGame = create<GameUi>((set, get) => ({
   setAwayScore: (n) => set({ awayScore: n }),
   setWhistle: (w) => set({ whistle: w }),
   setDelayedOffside: (v) => set({ delayedOffside: v }),
+  setPassChain: (n) => set({ passChain: n }),
   setGoalSide: (s) => set({ goalSide: s }),
   setReplay: (v) => set({ replay: v }),
   setControlProfile: (v) => {
@@ -407,9 +410,7 @@ export const useGame = create<GameUi>((set, get) => ({
     });
   },
   setGameMinutes: (n) => {
-    const minutes = Math.max(1, Math.min(5, Math.round(n)));
-    saveGameMinutes(minutes);
-    set({ gameMinutes: minutes });
+    set({ gameMinutes: clampGameMinutes(n) });
   },
   setPeriodClock: (n) => set({ periodClock: n }),
   setPeriodOver: (v) => set({ periodOver: v }),
