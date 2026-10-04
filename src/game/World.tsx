@@ -22,6 +22,38 @@ function LookSync() {
   return null;
 }
 
+function ReplayIceMark() {
+  const ref = useRef<THREE.Group>(null);
+  useFrame(() => {
+    const g = ref.current;
+    if (!g) return;
+    const on = world.replay && world.replayKind === "pause";
+    g.visible = on;
+    if (!on) return;
+    g.position.set(world.replayCam.lx, 0.08, world.replayCam.lz);
+  });
+  return (
+    <group ref={ref} name="replay-center" visible={false} frustumCulled={false}>
+      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, -0.01, 0]}>
+        <boxGeometry args={[1.9, 0.02, 0.28]} />
+        <meshBasicMaterial color="#1a1404" toneMapped={false} />
+      </mesh>
+      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, -0.01, 0]}>
+        <boxGeometry args={[1.9, 0.02, 0.28]} />
+        <meshBasicMaterial color="#1a1404" toneMapped={false} />
+      </mesh>
+      <mesh rotation={[0, Math.PI / 4, 0]}>
+        <boxGeometry args={[1.75, 0.035, 0.16]} />
+        <meshBasicMaterial color="#5a1021" toneMapped={false} />
+      </mesh>
+      <mesh rotation={[0, -Math.PI / 4, 0]}>
+        <boxGeometry args={[1.75, 0.035, 0.16]} />
+        <meshBasicMaterial color="#5a1021" toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
 function SimLoop() {
   const acc = useRef(0);
   useFrame((_, dt) => {
@@ -88,6 +120,28 @@ function writeCamBasis(camera: THREE.Camera) {
   world.camZ = camera.position.z;
 }
 
+const CLASSIC_MIN_BACK = 2;
+const CLASSIC_UP_COS = Math.cos((25 * Math.PI) / 180);
+
+function aimClassic(camera: THREE.PerspectiveCamera, look: THREE.Vector3): void {
+  const atk = world.homeAttack > 0 ? 1 : -1;
+  camera.up.set(atk, 0, 0);
+  camera.position.z = look.z;
+  let behind = (look.x - camera.position.x) * atk;
+  if (behind < CLASSIC_MIN_BACK) behind = CLASSIC_MIN_BACK;
+  camera.position.x = look.x - atk * behind;
+  const dy = look.y - camera.position.y;
+  const dz = look.z - camera.position.z;
+  const len = Math.hypot(behind, dy, dz);
+  if (!(len > 1e-4 && behind / len <= CLASSIC_UP_COS)) {
+    const minPerp = behind * Math.tan((25 * Math.PI) / 180);
+    const need = Math.sqrt(Math.max(0, minPerp * minPerp - dz * dz)) + 1e-3;
+    camera.position.y = look.y + need;
+  }
+  _pos.set(camera.position.x, camera.position.y, camera.position.z);
+  camera.lookAt(look);
+}
+
 function keepPuckFramed(
   camera: THREE.PerspectiveCamera,
   px: number,
@@ -112,12 +166,7 @@ function keepPuckFramed(
     const ox = nx > limX ? nx - limX : nx < -limX ? nx + limX : 0;
     const oy = ny > yMax ? ny - yMax : ny < yMin ? ny - yMin : 0;
     if (ox === 0 && oy === 0 && !behind) {
-      if (lockRoll) {
-        camera.up.set(world.homeAttack, 0, 0);
-        camera.position.z = _lookSmooth.z;
-        _pos.z = _lookSmooth.z;
-        camera.lookAt(_lookSmooth);
-      }
+      if (lockRoll) aimClassic(camera, _lookSmooth);
       return;
     }
 
@@ -158,12 +207,8 @@ function keepPuckFramed(
         _lookSmooth.copy(_puckWorld);
       }
     }
-    if (lockRoll) {
-      camera.up.set(world.homeAttack, 0, 0);
-      camera.position.z = _lookSmooth.z;
-      _pos.z = _lookSmooth.z;
-    }
-    camera.lookAt(_lookSmooth);
+    if (lockRoll) aimClassic(camera, _lookSmooth);
+    else camera.lookAt(_lookSmooth);
     camera.updateMatrixWorld();
   }
 }
@@ -234,12 +279,8 @@ function parkClassicAt(x: number, y: number, z: number, cam: THREE.PerspectiveCa
   _look.set(lookX, y + 0.16, fz);
   _pos.copy(_desired);
   _lookSmooth.copy(_look);
-  cam.up.set(atk, 0, 0);
   cam.position.copy(_pos);
-  cam.lookAt(_lookSmooth);
-  cam.position.z = _lookSmooth.z;
-  _pos.z = cam.position.z;
-  cam.lookAt(_lookSmooth);
+  aimClassic(cam, _lookSmooth);
 }
 
 function seedFreestyleCam(camera: THREE.PerspectiveCamera) {
@@ -453,6 +494,7 @@ function CameraRig() {
   const prevMode = useRef(mode);
   const wasTitle = useRef(true);
   const seenDrill = useRef(-1);
+  const seededTitle = useRef(false);
 
   useFrame((state, dt) => {
     const cam = state.camera as THREE.PerspectiveCamera;
@@ -467,6 +509,12 @@ function CameraRig() {
         seenDrill.current = world.drillView;
       } else {
         cam.up.set(0, 1, 0);
+        if (!seededTitle.current) {
+          const atk = world.homeAttack > 0 ? 1 : -1;
+          cam.position.set(-atk * 13.6, 9.6, 0);
+          cam.lookAt(atk * 1.4, 0.4, 0);
+          seededTitle.current = true;
+        }
       }
       writeCamBasis(cam);
       projectUser(cam);
@@ -520,6 +568,7 @@ function CameraRig() {
       return;
     }
     if (mode === "freestyle" && freeCamLive) {
+      world.freeCamReapply = false;
       const fc = world.freeCam;
       const puck = world.puck;
       const drillCam = drillFollow();
@@ -537,7 +586,10 @@ function CameraRig() {
       return;
     }
     if (mode === "freestyle") {
-      if (prevMode.current !== mode) seedFreestyleCam(cam);
+      if (world.freeCamReapply) {
+        applyFreeCam(cam);
+        world.freeCamReapply = false;
+      } else if (prevMode.current !== mode) seedFreestyleCam(cam);
       cam.up.set(0, 1, 0);
       _pos.copy(cam.position);
       writeCamBasis(cam);
@@ -693,14 +745,10 @@ function CameraRig() {
       state.camera.up.set(world.homeAttack, 0, 0);
     }
     state.camera.position.copy(_pos);
-    state.camera.lookAt(_lookSmooth);
+    if (mode === "classic") aimClassic(cam, _lookSmooth);
+    else state.camera.lookAt(_lookSmooth);
     if (!idle && zoneFov === null) keepPuckFramed(cam, px, Math.max(0.12, py), pz, mode === "classic");
-    if (mode === "classic") {
-      cam.up.set(world.homeAttack, 0, 0);
-      cam.position.z = _lookSmooth.z;
-      _pos.z = _lookSmooth.z;
-      cam.lookAt(_lookSmooth);
-    }
+    if (mode === "classic") aimClassic(cam, _lookSmooth);
     writeCamBasis(state.camera);
     projectUser(state.camera);
   });
@@ -720,6 +768,7 @@ function FreestyleControls() {
 
   useLayoutEffect(() => {
     if (!live || !useGame.getState().playing) return;
+    if (world.freeCam.captured || world.freeCamReapply) return;
     seedFreestyleCam(camera as THREE.PerspectiveCamera);
   }, [live, camera]);
 
@@ -793,6 +842,7 @@ export function World() {
       <fog attach="fog" args={[dark ? "#070b12" : "#1a2838", dark ? 48 : 64, dark ? 150 : 190]} />
       <Arena />
       <Rink />
+      <ReplayIceMark />
       {world.skaters.map((s) => (
         <PlayerMesh
           key={`${lineupRev}-${s.id}-${s.side === "home" ? homeKit : awayKit}`}

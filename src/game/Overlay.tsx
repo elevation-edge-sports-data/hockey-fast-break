@@ -10,6 +10,8 @@ import {
   beginPauseReplay,
   stopPauseReplay,
   replayHasFootage,
+  replayFootagePct,
+  subscribeReplayPct,
   drillMaxScore,
   previewPausedMode,
   previewPausedTargets,
@@ -333,6 +335,9 @@ function SideSliders({ who }: { who: "user" | "cpu" }) {
         ];
   return (
     <div className="hud-sliders">
+      <div className="hud-slider-row">
+        <span>{who === "user" ? "You" : "CPU"}</span>
+      </div>
       {rows.map((row) => (
         <label key={row.label} className="hud-slider-row">
           <span>{row.label}</span>
@@ -353,6 +358,33 @@ function SideSliders({ who }: { who: "user" | "cpu" }) {
 
 function usePauseDraft() {
   return useSyncExternalStore(subscribePauseDraft, getPauseDraft, getPauseDraft);
+}
+
+function useReplayPct() {
+  return useSyncExternalStore(subscribeReplayPct, replayFootagePct, replayFootagePct);
+}
+
+function ReplayBar() {
+  const replay = useGame((s) => s.replay);
+  const paused = useGame((s) => s.paused);
+  const pct = useReplayPct();
+  if (!replay || !paused) return null;
+  const shown = Math.round(Math.max(0, Math.min(1, pct)) * 100);
+  return (
+    <div
+      className="madden-replay"
+      role="meter"
+      aria-label="Replay position"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={shown}
+    >
+      <div className="madden-replay-track">
+        <div className="madden-replay-fill" style={{ width: `${shown}%` }} />
+      </div>
+      <span className="madden-replay-pct">{shown}%</span>
+    </div>
+  );
 }
 
 function chooseMode(m: "drill" | "practice" | "scrimmage" | "game"): void {
@@ -535,6 +567,12 @@ function MainMenus() {
           >
             Rink Dark
           </button>
+        </div>
+      ) : null}
+      {menu === "gameplay" ? (
+        <div className="settings-panel" aria-label="Settings">
+          <SideSliders who="user" />
+          <SideSliders who="cpu" />
         </div>
       ) : null}
       {menu === "mode" ? (
@@ -972,7 +1010,6 @@ export function Overlay() {
             {!playing || paused ? (
               <LineupStrip lineup={playing ? liveHome : homeLineup} onChange={applyHome} disabled={false} />
             ) : null}
-            {!playing || paused ? <SideSliders who="user" /> : null}
           </div>
           <div className="uni-cluster">
             <div className="uni-side">
@@ -1002,7 +1039,6 @@ export function Overlay() {
             {!playing || paused ? (
               <LineupStrip lineup={playing ? liveAway : awayLineup} onChange={applyAway} disabled={false} />
             ) : null}
-            {!playing || paused ? <SideSliders who="cpu" /> : null}
           </div>
         </div>
         )}
@@ -1073,10 +1109,11 @@ export function Overlay() {
             <p>
               <b>Replay</b>
               <span>
-                A pause/play · X / B zoom · N/M or LB/RB slow · G / Shift or LT/RT fast · stick pan · hold Y +
-                stick orbit · Select / R exit
+                A pause/play · tap Y lock · stick pan · hold Y+stick orbit · X/B zoom · LB/RB slow · LT/RT
+                fast · R3 or Select exits
               </span>
             </p>
+            <ReplayBar />
             <div className="btn-row cam-adjust-btns">
               <button type="button" className="btn-primary" onClick={() => stopPauseReplay()}>
                 Exit
@@ -1179,7 +1216,7 @@ export function Overlay() {
         <p className="hint hide-sm">
           {replay
             ? paused
-              ? "Replay · A pause/play · X/B zoom · LB/RB slow · LT/RT fast · stick pan · Y+stick orbit · Select / R exit"
+              ? "Replay · A pause/play · tap Y cycles puck then each skater · stick pans · hold Y+stick orbits · RT keeps play · LT/LB/RB release pauses · R3 exits"
               : "Replay · A / B / X / Y skip"
             : CAMS.find((c) => c.id === camMode)?.blurb}
           {replay
@@ -1205,7 +1242,7 @@ export function Overlay() {
       {replay ? (
         <div className="whistle replay-hint">
           {paused
-            ? "A pause · X/B zoom · LB/RB slow · LT/RT fast · Y+stick orbit · Select / R exit"
+            ? "A pause · Y lock · stick pan · LB/RB slow · LT/RT fast · R3 exits"
             : "A/B/X/Y skip"}
         </div>
       ) : periodOver || world.drillWon ? (
@@ -1284,7 +1321,7 @@ export function Overlay() {
           <StickPad />
           {paused && replay ? (
             <div className="face-pad">
-              <FaceBtn face="y" className="face-y" label="Orbit" hold />
+              <FaceBtn face="y" className="face-y" label="Lock" />
               <FaceBtn face="a" className="pass" label="Pause" />
               <FaceBtn face="x" className="dump" label="Zoom+" />
               <FaceBtn face="b" className="burst" label="Zoom−" />

@@ -154,19 +154,39 @@ function EndZoneMarks({ x, z }: { x: number; z: number }) {
 }
 
 function CenterIceLogo() {
-  const map = useMemo(() => {
-    const tex = new THREE.TextureLoader().load(centerIceUrl);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 8;
-    tex.wrapS = THREE.ClampToEdgeWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
-    return tex;
-  }, []);
-  useLayoutEffect(() => () => map.dispose(), [map]);
+  const mat = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: "#e4edf4",
+        toneMapped: false,
+        depthWrite: false,
+      }),
+    [],
+  );
+  useLayoutEffect(() => {
+    let alive = true;
+    const tex = new THREE.TextureLoader().load(centerIceUrl, () => {
+      if (!alive) return;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      mat.map = tex;
+      mat.color.set("#ffffff");
+      mat.needsUpdate = true;
+    });
+    return () => {
+      alive = false;
+      mat.map = null;
+      mat.needsUpdate = true;
+      tex.dispose();
+    };
+  }, [mat]);
+  useLayoutEffect(() => () => mat.dispose(), [mat]);
   return (
     <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={1}>
       <circleGeometry args={[FACEOFF_MARK_R, 64]} />
-      <meshBasicMaterial map={map} toneMapped={false} depthWrite={false} />
+      <primitive object={mat} attach="material" />
     </mesh>
   );
 }

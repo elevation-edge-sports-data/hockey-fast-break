@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNumberTexture } from "./iceTexture";
-import { attackDir, cheerFor, defendDir, drillFade, rageDraw, world, type Referee, type Skater } from "./sim";
+import { attackDir, cheerFor, defendDir, drillFade, faceYaw, rageDraw, world, type Referee, type Skater } from "./sim";
 import {
   SKATER_GRIP_BOT,
   SKATER_GRIP_TOP,
@@ -97,6 +97,14 @@ const _goalieBoardAxis = new THREE.Vector3(1, 0, 0).applyEuler(new THREE.Euler(0
 const _blendQ = new THREE.Quaternion();
 const _blendP = new THREE.Vector3();
 const _euler = new THREE.Euler();
+const _rinkShadowPos = new THREE.Vector3();
+const _rinkShadowScale = new THREE.Vector3();
+const _rinkShadowParentQ = new THREE.Quaternion();
+const _rinkShadowZ = new THREE.Vector3();
+const _rinkShadowX = new THREE.Vector3();
+const _rinkShadowWorld = new THREE.Matrix4();
+const _rinkShadowFlat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+const SHADOW_ICE_Y = 0.015;
 const STICK_ICE_Y = 0.03;
 const CARRY_HIP = (18 * Math.PI) / 180;
 const CARRY_KNEE = (40 * Math.PI) / 180;
@@ -168,9 +176,19 @@ type KitMats = {
   numberMap: THREE.CanvasTexture;
 };
 
+function goaliePadColor(kit: UniformKit): string {
+  const pants = kit.pants.toLowerCase();
+  const primary = kit.crowdPri.toLowerCase();
+  const secondary = kit.crowdSec.toLowerCase();
+  if (primary !== secondary && pants === primary) return kit.crowdSec;
+  if (primary !== secondary && pants === secondary) return kit.crowdPri;
+  return pants === kit.jersey.toLowerCase() ? kit.yoke : kit.jersey;
+}
+
 function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
   const numberMap = createNumberTexture(num, kit.number, kit.numberOutline);
   const pad = kit.jersey;
+  const legPad = goalie ? goaliePadColor(kit) : pad;
   return {
     helmet: mat(goalie ? pad : kit.helmet, {
       roughness: 0.26,
@@ -245,7 +263,7 @@ function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
       metalness: 0.12,
       wireframe: true,
     }),
-    pads: mat(pad, { roughness: 0.48, envMapIntensity: 1.25, emissive: pad, emissiveIntensity: 0.22 }),
+    pads: mat(legPad, { roughness: 0.48, envMapIntensity: 1.25, emissive: legPad, emissiveIntensity: 0.22 }),
     mask: mat("#121212", { roughness: 0.42, metalness: 0.18 }),
     numberMap,
   };
@@ -527,6 +545,20 @@ function seatBlade(stick: THREE.Group, blade: THREE.Group, lock = true) {
     }
   }
   if (minY < Infinity && (lock || minY < STICK_ICE_Y)) stick.position.y += STICK_ICE_Y - minY;
+}
+
+/** Possession ring on the puck. Root scale is 1.14, so this is not a raw offset. */
+export function seatGoalieRing(root: THREE.Object3D, ring: THREE.Object3D, puckX: number, puckZ: number): void {
+  root.updateWorldMatrix(true, false);
+  _corner.set(puckX, root.position.y, puckZ);
+  root.worldToLocal(_corner);
+  ring.position.set(_corner.x, 0, _corner.z);
+}
+
+/** Backskate chest points at the other end. Otherwise the sim yaw, which already does. */
+function meshYaw(s: Skater): number {
+  if (s.kind !== "goalie" && s.backskate) return faceYaw(s.side);
+  return s.yaw;
 }
 
 function wristHipYaw(s: Skater, aim: number, open: number): number {
@@ -1792,6 +1824,33 @@ function tumbleRoot(struck: number, tumble: number, yaw: number) {
   return { y, rx: pitch, ry: yaw + Math.PI + spin * 0.45, rz: roll };
 }
 
+/**
+ * Circle on the rink. `localX` / `localZ` are the offset in the parent's yaw frame
+ * before this replaces the mesh matrix. Pitch, roll, and a non-uniform parent scale
+ * shear a position/quaternion/scale, so the matrix is written directly.
+ */
+function plantRinkShadow(shadow: THREE.Object3D, localX: number, localZ: number, uniform: number) {
+  const parent = shadow.parent;
+  if (!parent) return;
+  parent.updateWorldMatrix(true, false);
+  parent.getWorldPosition(_rinkShadowPos);
+  parent.getWorldQuaternion(_rinkShadowParentQ);
+  // Parent local +Z, flattened. Ry maps that to (sin yaw, 0, cos yaw) and local +X to (fwd.z, 0, -fwd.x).
+  _rinkShadowZ.set(0, 0, 1).applyQuaternion(_rinkShadowParentQ);
+  _rinkShadowZ.y = 0;
+  if (_rinkShadowZ.lengthSq() < 1e-8) _rinkShadowZ.set(0, 0, 1);
+  else _rinkShadowZ.normalize();
+  _rinkShadowX.set(_rinkShadowZ.z, 0, -_rinkShadowZ.x);
+  _rinkShadowPos.x += (_rinkShadowX.x * localX + _rinkShadowZ.x * localZ) * uniform;
+  _rinkShadowPos.z += (_rinkShadowX.z * localX + _rinkShadowZ.z * localZ) * uniform;
+  _rinkShadowPos.y = SHADOW_ICE_Y;
+  _rinkShadowScale.set(uniform, uniform, uniform);
+  _rinkShadowWorld.compose(_rinkShadowPos, _rinkShadowFlat, _rinkShadowScale);
+  shadow.matrix.copy(parent.matrixWorld).invert().multiply(_rinkShadowWorld);
+  shadow.matrixAutoUpdate = false;
+  shadow.matrixWorldNeedsUpdate = true;
+}
+
 /** 0 when the fall finishes tipping, 1 when tumbling ends (struck just above 0.1). */
 function struckRise(u: number): number {
   const end = 1 - 0.1 / 1.68;
@@ -2096,6 +2155,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
   const flyBlade = useRef<THREE.Group>(null);
   const flyShaft = useRef<THREE.Group>(null);
   const ring = useRef<THREE.Group>(null);
+  const shadow = useRef<THREE.Mesh>(null);
   const skater = world.skaters[index]!;
   const kit = kitById(liveKitId);
   const goalie = skater.kind === "goalie";
@@ -2139,7 +2199,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         diving ? 0.12 : s.struck > 0.2 ? Math.max(0, 0.04 - 0.04 * Math.min(1, s.struck)) : 0,
         s.z,
       );
-      g.rotation.set(0, s.yaw + Math.PI, 0);
+      g.rotation.set(0, meshYaw(s) + Math.PI, 0);
     }
     if (goalie) g.scale.set(1.14, 1, 1.14);
     else g.scale.set(1, 1, 1);
@@ -2732,6 +2792,8 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         mats.ring.color.set("#f4f8ff");
         mats.ring.opacity = holding ? 1 : 0.88;
         mats.ringFill.opacity = holding ? 0.55 : 0.3;
+        if (holding) seatGoalieRing(g, ring.current, world.puck.x, world.puck.z);
+        else ring.current.position.set(0, 0, 0);
       }
     }
     if (!goalie && head.current) {
@@ -2747,15 +2809,17 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         head.current.rotation.x = carryPose ? -CARRY_HIP * 0.5 : 0;
       }
     }
+    if (shadow.current) plantRinkShadow(shadow.current, 0, 0, goalie ? 1.14 : 1);
   });
 
   return (
     <group ref={root}>
       <mesh
+        ref={shadow}
         geometry={shadowGeo}
         material={mats.shadow}
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, 0.015, 0]}
+        position={[0, SHADOW_ICE_Y, 0]}
       />
       <group ref={ring} visible={false}>
         {goalie ? (
@@ -2941,6 +3005,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         <group ref={lLeg} position={[goalie ? -0.14 : -0.2, goalie ? 0.88 : 0.86, 0]}>
           {goalie ? (
             <>
+              <GoalieThigh side={-1} mats={mats} />
               <mesh geometry={goaliePadThighGeo} material={mats.pads} position={[0, -0.16, 0.05]} scale={[1.42, 1.12, 1.55]} castShadow />
               <mesh geometry={goaliePadKneeGeo} material={mats.pads} position={[0, -0.34, 0.06]} scale={[1.42, 1.1, 1.5]} />
               <group ref={lShin} position={[0, -0.36, 0]}>
@@ -2968,6 +3033,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         <group ref={rLeg} position={[goalie ? 0.14 : 0.2, goalie ? 0.88 : 0.86, 0]}>
           {goalie ? (
             <>
+              <GoalieThigh side={1} mats={mats} />
               <mesh geometry={goaliePadThighGeo} material={mats.pads} position={[0, -0.16, 0.05]} scale={[1.42, 1.12, 1.55]} castShadow />
               <mesh geometry={goaliePadKneeGeo} material={mats.pads} position={[0, -0.34, 0.06]} scale={[1.42, 1.1, 1.5]} />
               <group ref={rShin} position={[0, -0.36, 0]}>
@@ -3027,6 +3093,21 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
   );
 }
 
+function GoalieThigh({ side, mats }: { side: -1 | 1; mats: Pick<KitMats, "pants" | "stripe"> }) {
+  return (
+    <>
+      <mesh
+        geometry={thighGeo}
+        material={mats.pants}
+        position={[side * -0.06, -0.06, 0.02]}
+        scale={[1.5, 1, 1]}
+        castShadow
+      />
+      <mesh geometry={thighStripeGeo} material={mats.stripe} position={[side * 0.062, -0.06, 0.02]} />
+    </>
+  );
+}
+
 function SeatedLeg({
   side,
   mats,
@@ -3039,6 +3120,7 @@ function SeatedLeg({
   if (goalie) {
     return (
       <group position={[side * 0.16, 0.12, 0.02]} rotation={[-Math.PI / 2, 0, side * 0.06]}>
+        <GoalieThigh side={side} mats={mats} />
         <mesh geometry={goaliePadThighGeo} material={mats.pads} position={[0, -0.16, 0.04]} scale={[1.42, 1.08, 1.5]} castShadow />
         <mesh geometry={goaliePadKneeGeo} material={mats.pads} position={[0, -0.34, 0.05]} scale={[1.42, 1.05, 1.45]} />
         <group position={[0, -0.36, 0]} rotation={[Math.PI / 2, 0, 0]}>
@@ -3321,7 +3403,7 @@ function restRefRig(body: THREE.Group, lLeg: THREE.Group, rLeg: THREE.Group, sha
   lLeg.rotation.set(0, 0, 0);
   rLeg.position.set(0.13, REF_HIP, 0);
   rLeg.rotation.set(0, 0, 0);
-  if (shadow) shadow.position.set(0, 0.015, 0);
+  if (shadow) shadow.position.set(0, SHADOW_ICE_Y, 0);
 }
 
 function writeRefSnap(
@@ -3474,7 +3556,7 @@ function poseRefRise(
     const lx = _refLand.x;
     const lz = _refLand.z;
     _refLand.copy(_refSoleLocal).applyQuaternion(rLeg.quaternion).add(rLeg.position);
-    shadow.position.set((lx + _refLand.x) * 0.5, 0.015, (lz + _refLand.z) * 0.5);
+    shadow.position.set((lx + _refLand.x) * 0.5, SHADOW_ICE_Y, (lz + _refLand.z) * 0.5);
   }
 }
 
@@ -3596,11 +3678,12 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
       if (rArm.current) rArm.current.rotation.set(0.1, 0, -1.35);
       if (lArm.current) lArm.current.rotation.set(0.1, 0, 1.35);
     }
+    if (shadow.current) plantRinkShadow(shadow.current, shadow.current.position.x, shadow.current.position.z, 1);
   });
 
   return (
     <group ref={root}>
-      <mesh ref={shadow} geometry={refShadowGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}>
+      <mesh ref={shadow} geometry={refShadowGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, SHADOW_ICE_Y, 0]}>
         <meshBasicMaterial color="#000000" transparent opacity={0.1} depthWrite={false} />
       </mesh>
       <group ref={body} position={[0, REF_HIP, 0]}>
@@ -3785,9 +3868,7 @@ export function PuckMesh() {
       g.rotation.y += 0.05 + spin;
     }
     if (mark.current) {
-      const owner = world.puck.owner !== null ? world.skaters[world.puck.owner] : undefined;
-      if (owner?.kind === "goalie") mark.current.position.set(owner.x, 0.021, owner.z);
-      else mark.current.position.set(world.puck.x, 0.018, world.puck.z);
+      mark.current.position.set(world.puck.x, 0.018, world.puck.z);
     }
   });
   return (

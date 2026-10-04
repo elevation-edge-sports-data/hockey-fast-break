@@ -21,8 +21,8 @@ export function GameCanvas() {
       camera={{ position: [-13.6, 9.6, 0], fov: 50, near: 0.15, far: 220 }}
       onCreated={({ gl, camera }) => {
         gl.setClearColor("#0c121c");
-        const atk = world.homeAttack;
-        camera.up.set(atk, 0, 0);
+        const atk = world.homeAttack > 0 ? 1 : -1;
+        camera.up.set(0, 1, 0);
         camera.position.set(-atk * 13.6, 9.6, 0);
         camera.lookAt(atk * 1.4, 0.4, 0);
       }}
