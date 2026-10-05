@@ -142,6 +142,51 @@ export function skaterPlateLocal(): V3 {
   return CARRY.plate;
 }
 
+/**
+ * 0 at the start of a deke (timer 1.05) and at the end (timer 0).
+ * 1 at the middle, which is where a held deke sits.
+ */
+export function dekePull(deke: number): number {
+  if (deke <= 0.02) return 0;
+  const u = Math.min(1, deke / 1.05);
+  const t = 1 - u;
+  const up = t < 0.5 ? t / 0.5 : (1 - t) / 0.5;
+  return up * up * (3 - 2 * up);
+}
+
+/**
+ * Owned puck in the yaw+π frame. Pull 0 is the forehand plate (local −X).
+ * Pull 1 is the same reach on the other side of the skater (local +X).
+ */
+export function dekePuckLocal(deke: number): V3 {
+  const plate = CARRY.plate;
+  const pull = dekePull(deke);
+  return { x: plate.x * (1 - 2 * pull), y: plate.y, z: plate.z };
+}
+
+/** Same 55° carry shaft the mesh rolls flat. Heel sweeps across the puck. */
+const DEKE_SHAFT = (55 * Math.PI) / 180;
+const DEKE_HEEL_X = -1.15;
+const DEKE_HEEL_Y = 0.03;
+const DEKE_HEEL_Z = 0.65;
+const DEKE_PLATE_AHEAD = 0.19;
+
+export function dekeStickAim(deke: number): StickAim {
+  const pull = dekePull(deke);
+  const puck = dekePuckLocal(deke);
+  const gap0 = DEKE_HEEL_X - CARRY.plate.x;
+  const lead = Math.min(1, pull * 1.35);
+  const gap = gap0 * (1 - 2 * lead);
+  const heelX = puck.x + gap;
+  const heelZ = DEKE_HEEL_Z + (puck.z - DEKE_PLATE_AHEAD - DEKE_HEEL_Z) * pull;
+  const heelY = DEKE_HEEL_Y + 0.036 * pull;
+  return {
+    heel: [heelX, heelY, heelZ],
+    shaft: [Math.sin(DEKE_SHAFT) * (1 - 2 * pull), Math.cos(DEKE_SHAFT), 0],
+    blade: [0, 0, 1],
+  };
+}
+
 export function skaterKnobLocal(): V3 {
   return CARRY.knob;
 }

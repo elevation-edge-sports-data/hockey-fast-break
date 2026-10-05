@@ -11,8 +11,10 @@ Desktop.ini
 .cursor/
 .claude/
 .grok/
+dev/reference/
 # Local Grok CLI map (tracked copy is dev/AGENTS.md)
 /AGENTS.md
+
 
 # Secrets
 .env

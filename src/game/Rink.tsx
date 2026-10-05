@@ -153,6 +153,39 @@ function EndZoneMarks({ x, z }: { x: number; z: number }) {
   );
 }
 
+/** Photo gap is 3px of white beside a 36px red band. DOT_R is wider than the red. */
+const CENTER_LOGO_GAP_W = CENTER_LINE_W / 12;
+
+function CenterLogoGaps() {
+  const gap = CENTER_LOGO_GAP_W;
+  const half = CENTER_LINE_W / 2;
+  const span = 2 * Math.sqrt(FACEOFF_MARK_R * FACEOFF_MARK_R - half * half);
+  return (
+    <>
+      {([-1, 1] as const).map((side) => (
+        <mesh
+          key={side}
+          position={[side * (half + gap / 2), 0.022, 0]}
+          rotation={[-Math.PI / 2, 0, 0]}
+          renderOrder={2}
+        >
+          <planeGeometry args={[gap, span]} />
+          <meshBasicMaterial color="#ffffff" toneMapped={false} />
+        </mesh>
+      ))}
+    </>
+  );
+}
+
+function CenterIceDot() {
+  return (
+    <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={2}>
+      <circleGeometry args={[CENTER_LINE_W / 2, 64]} />
+      <meshBasicMaterial color={LINE_BLUE} toneMapped={false} />
+    </mesh>
+  );
+}
+
 function CenterIceLogo() {
   const mat = useMemo(
     () =>
@@ -232,6 +265,8 @@ function FaceoffCircles() {
   return (
     <group>
       <CenterIceLogo />
+      <CenterLogoGaps />
+      <CenterIceDot />
       <FaceoffCircle x={0} z={0} r={FACEOFF_MARK_R} />
       <EndZoneMarks x={FACEOFF_EZ_X} z={FACEOFF_SPOT_Z} />
       <EndZoneMarks x={FACEOFF_EZ_X} z={-FACEOFF_SPOT_Z} />

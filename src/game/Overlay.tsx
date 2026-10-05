@@ -863,24 +863,36 @@ function PauseOrbit() {
     <div
       className="pause-orbit"
       onPointerDown={(e) => {
+        if (e.button !== 0) return;
         dragging.current = true;
         last.current = { x: e.clientX, y: e.clientY };
+        e.stopPropagation();
         (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
       }}
       onPointerMove={(e) => {
         if (!dragging.current) return;
+        if (e.pointerType === "mouse" && (e.buttons & 1) === 0) {
+          dragging.current = false;
+          return;
+        }
+        e.stopPropagation();
         const dx = e.clientX - last.current.x;
         const dy = e.clientY - last.current.y;
         last.current = { x: e.clientX, y: e.clientY };
+        if (dx === 0 && dy === 0) return;
         const fc = world.freeCam;
         fc.theta -= dx * 0.008;
         fc.phi = Math.max(0.12, Math.min(1.45, fc.phi + dy * 0.006));
         world.pauseDirty = true;
       }}
-      onPointerUp={() => {
+      onPointerUp={(e) => {
         dragging.current = false;
+        e.stopPropagation();
       }}
       onPointerCancel={() => {
+        dragging.current = false;
+      }}
+      onLostPointerCapture={() => {
         dragging.current = false;
       }}
       onWheel={(e) => {

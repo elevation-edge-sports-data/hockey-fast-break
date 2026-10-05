@@ -4,9 +4,9 @@ import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { Arena } from "./Arena";
 import { Rink } from "./Rink.tsx";
-import { PlayerMesh, PuckMesh, RefereeMesh } from "./PlayerMesh";
+import { PlayerMesh, PUCK_MARK_INNER, PuckMesh, RefereeMesh, USER_MARK_INNER } from "./PlayerMesh";
 import { attachInput } from "./input";
-import { installControlsProbe, stepSim, world } from "./sim";
+import { installControlsProbe, replayLockKind, stepSim, world } from "./sim";
 import { useGame, type CamMode } from "./store";
 import { BOARD_H, BLUE_X, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
 
@@ -22,15 +22,31 @@ function LookSync() {
   return null;
 }
 
+/** Under-stroke corner in group space. The burgundy bars are shorter. */
+const REPLAY_X_REACH = Math.hypot(1.9 / 2, 0.28 / 2);
+
 function ReplayIceMark() {
   const ref = useRef<THREE.Group>(null);
+  const wasOn = useRef(false);
   useFrame(() => {
     const g = ref.current;
     if (!g) return;
     const on = world.replay && world.replayKind === "pause";
     g.visible = on;
-    if (!on) return;
-    g.position.set(world.replayCam.lx, 0.08, world.replayCam.lz);
+    if (!on) {
+      wasOn.current = false;
+      return;
+    }
+    // Player ring hole, or the disc around the puck while that lock is held.
+    const hole = replayLockKind() === "puck" ? PUCK_MARK_INNER : USER_MARK_INNER;
+    const s = hole / REPLAY_X_REACH;
+    g.scale.set(s, 1, s);
+    if (!wasOn.current) {
+      g.position.set(world.puck.x, 0.08, world.puck.z);
+      wasOn.current = true;
+    } else {
+      g.position.set(world.replayCam.lx, 0.08, world.replayCam.lz);
+    }
   });
   return (
     <group ref={ref} name="replay-center" visible={false} frustumCulled={false}>
@@ -83,6 +99,21 @@ const _puckWorld = new THREE.Vector3();
 const _camRight = new THREE.Vector3();
 const _camUp = new THREE.Vector3();
 const _camFwd = new THREE.Vector3();
+const _pauseHoldPos = new THREE.Vector3();
+const _pauseHoldQuat = new THREE.Quaternion();
+const _pauseDolly = new THREE.Vector3();
+let _pauseHoldTheta = 0;
+let _pauseHoldPhi = 0;
+let _pauseHoldRadius = 0;
+let _pauseHolding = false;
+
+function stopPausedOrbit(controls: unknown) {
+  if (!controls || typeof controls !== "object") return;
+  const orbit = controls as { enabled?: boolean; autoRotate?: boolean; enableDamping?: boolean };
+  orbit.autoRotate = false;
+  orbit.enableDamping = false;
+  orbit.enabled = false;
+}
 
 function writeCamBasis(camera: THREE.Camera) {
   camera.updateMatrixWorld();
@@ -485,9 +516,38 @@ function widenChaseForReceiver(
   return null;
 }
 
+function holdPausedCam(cam: THREE.PerspectiveCamera) {
+  if (!_pauseHolding || !world.freeCam.captured) {
+    if (!world.freeCam.captured) captureFreeCam(cam);
+    _pauseHoldPos.copy(cam.position);
+    _pauseHoldQuat.copy(cam.quaternion);
+    _pauseHoldTheta = world.freeCam.theta;
+    _pauseHoldPhi = world.freeCam.phi;
+    _pauseHoldRadius = world.freeCam.radius;
+    _pauseHolding = true;
+  }
+  const fc = world.freeCam;
+  const turned =
+    Math.abs(fc.theta - _pauseHoldTheta) > 1e-5 || Math.abs(fc.phi - _pauseHoldPhi) > 1e-5;
+  if (turned) {
+    applyFreeCam(cam);
+    _pauseHoldPos.copy(cam.position);
+    _pauseHoldQuat.copy(cam.quaternion);
+    _pauseHoldTheta = fc.theta;
+    _pauseHoldPhi = fc.phi;
+    _pauseHoldRadius = fc.radius;
+  } else {
+    cam.quaternion.copy(_pauseHoldQuat);
+    cam.getWorldDirection(_pauseDolly);
+    cam.position.copy(_pauseHoldPos).addScaledVector(_pauseDolly, _pauseHoldRadius - fc.radius);
+  }
+  _pos.copy(cam.position);
+  writeCamBasis(cam);
+  projectUser(cam);
+}
+
 function CameraRig() {
   const playing = useGame((s) => s.playing);
-  const paused = useGame((s) => s.paused);
   const freeCamLive = useGame((s) => s.freeCamLive);
   const rawMode = useGame((s) => s.camMode);
   const mode: CamMode = rawMode === ("orbit" as CamMode) ? "classic" : rawMode;
@@ -496,9 +556,23 @@ function CameraRig() {
   const seenDrill = useRef(-1);
   const seededTitle = useRef(false);
 
+  useFrame((state) => {
+    const ui = useGame.getState();
+    if (!ui.playing || !ui.paused) {
+      _pauseHolding = false;
+      return;
+    }
+    if (world.replay) return;
+    stopPausedOrbit(state.controls);
+    holdPausedCam(state.camera as THREE.PerspectiveCamera);
+  }, -2);
+
   useFrame((state, dt) => {
     const cam = state.camera as THREE.PerspectiveCamera;
-    const drillNow = useGame.getState().clockMode === "drill";
+    const uiNow = useGame.getState();
+    const pausedNow = uiNow.playing && uiNow.paused;
+    if (pausedNow) stopPausedOrbit(state.controls);
+    const drillNow = uiNow.clockMode === "drill";
     const drillSnap = drillNow && world.drillView !== seenDrill.current;
     if (!playing) {
       wasTitle.current = true;
@@ -558,12 +632,11 @@ function CameraRig() {
       projectUser(cam);
       return;
     }
-    if (paused) {
-      if (drillSnap) world.freeCam.captured = false;
-      if (!world.freeCam.captured) captureFreeCam(cam);
-      applyFreeCam(cam);
-      writeCamBasis(cam);
-      projectUser(cam);
+    if (pausedNow) {
+      if (drillSnap) {
+        world.freeCam.captured = false;
+        _pauseHolding = false;
+      }
       prevMode.current = mode;
       return;
     }
@@ -599,7 +672,7 @@ function CameraRig() {
     }
     const d = Math.min(dt, 0.1);
     const puck = world.puck;
-    const idle = !playing || paused;
+    const idle = !playing || pausedNow;
     const drillCam = drillFollow();
     const scoring =
       !idle && world.whistle === "goal" && (world.goalSide === "home" || world.goalSide === "away");
@@ -775,8 +848,16 @@ function FreestyleControls() {
   useFrame(() => {
     const c = ref.current;
     const cam = camera as THREE.PerspectiveCamera;
+    const pausedNow = useGame.getState().paused && useGame.getState().playing;
+    if (c) c.autoRotate = false;
+    if (pausedNow) {
+      stopPausedOrbit(c);
+      return;
+    }
     if (live) cam.up.set(0, 1, 0);
     if (!c || !live) return;
+    c.enabled = true;
+    c.enableDamping = true;
     if (playing) {
       const drillCam = drillFollow();
       const p = world.puck;
@@ -803,6 +884,7 @@ function FreestyleControls() {
   return (
     <OrbitControls
       ref={ref}
+      autoRotate={false}
       enableDamping
       dampingFactor={0.08}
       minDistance={3.2}
