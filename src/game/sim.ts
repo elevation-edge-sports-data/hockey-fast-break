@@ -26,6 +26,7 @@ import {
   RINK_L,
   RINK_W,
 } from "./rink";
+import { goalieRaisedHandCovers } from "./goalieStance";
 import { readActions, setInjectedKeys, type Actions } from "./input";
 import { dekePuckLocal, skaterKnobLocal, skaterPlateLocal } from "./stickSide";
 import {
@@ -358,6 +359,11 @@ const GOALIE_HOLD = 0.5;
 const playLooseMem = new Map<number, { key: string; yes: boolean }>();
 /** Goalie is out for a loose puck that stops at the end-zone circle tops. */
 const goalieCircleChase = new Set<number>();
+/**
+ * Sim is skating this goalie to a loose puck.
+ * The play pose reads the set. It does not roll the chase itself.
+ */
+const goalieLooseSkate = new Set<number>();
 /** Time the goalie first sat behind his own goal line. Cleared once he is out. */
 const goalieBehindSince = new Map<number, number>();
 /** After the end-line shove, skate home before chasing behind the net again. */
@@ -853,6 +859,8 @@ function resetSkaters(): void {
   world.lastShotCornerSide = 0;
   shotIron = null;
   ironResolved = null;
+  ironStanceEnd = 0;
+  ironStanceT = -20;
   rimRide = null;
   boardRide = null;
   boardBank = null;
@@ -883,6 +891,7 @@ function resetSkaters(): void {
   world.goalieRecallT = 0;
   playLooseMem.clear();
   goalieCircleChase.clear();
+  goalieLooseSkate.clear();
   goalieBehindSince.clear();
   goalieNetEscape.clear();
   pressPeelAt.clear();
@@ -1095,6 +1104,9 @@ function cpuPokeTune(): { reach: number; steal: number } {
   return { reach: 1.22, steal: 0.11 };
 }
 let shotIron: { kind: "post" | "bar"; z: number; y: number } | null = null;
+/** Net that last rang, and when. Compact butterfly holds in that end for a short window. */
+let ironStanceEnd: 1 | -1 | 0 = 0;
+let ironStanceT = -20;
 let ironResolved: "in" | "back" | "out" | null = null;
 let drillPipeHit = false;
 let drillFromPass = false;
@@ -4232,7 +4244,8 @@ function attackerPressingNet(g: Skater): boolean {
   return false;
 }
 
-function goaliePlayLoose(g: Skater): boolean {
+/** Where a loose puck is a goalie play, before the chase roll. */
+function goalieLooseGeometry(g: Skater): boolean {
   const puck = world.puck;
   if (puck.owner !== null || world.stoppage || world.faceoff) return false;
   if (g.stun > 0.12 || g.struck > 0.18 || g.tumble !== 0) return false;
@@ -4250,6 +4263,15 @@ function goaliePlayLoose(g: Skater): boolean {
   const spd = Math.hypot(puck.vx, puck.vz);
   if (!behindLine && !nearNet && !atCircleTop) return false;
   if (!behindLine && (spd > 6.5 || (puck.vx * end > 4.5 && spd > 7))) return false;
+  return true;
+}
+
+function goaliePlayLoose(g: Skater): boolean {
+  if (!goalieLooseGeometry(g)) return false;
+  const puck = world.puck;
+  const end = defendDir(g.side);
+  const behindLine = puck.x * end > GOAL_LINE_X - 0.08;
+  const spd = Math.hypot(puck.vx, puck.vz);
   const lookX = puck.x + puck.vx * 0.18;
   const lookZ = puck.z + puck.vz * 0.18;
   const gD = Math.hypot(g.x - lookX, g.z - lookZ);
@@ -4273,6 +4295,25 @@ function goaliePlayLoose(g: Skater): boolean {
   else if (band === "risk") yes = !attackerPressingNet(g) && Math.random() < 0.65;
   playLooseMem.set(g.id, { key, yes });
   return yes;
+}
+
+/**
+ * The user is steering at a loose puck. Idle chases use goalieLooseSkate.
+ * This does not call goaliePlayLoose, so the chase roll stays where it was.
+ */
+function goalieUserChasingLoose(s: Skater): boolean {
+  if (s.id !== world.userId || s.kind !== "goalie") return false;
+  if (!goalieLooseGeometry(s)) return false;
+  const puck = world.puck;
+  const dx = puck.x - s.x;
+  const dz = puck.z - s.z;
+  const dist = Math.hypot(dx, dz);
+  const spd = Math.hypot(s.vx, s.vz);
+  if (spd >= 0.75 && dist > 0.2) {
+    const toward = (s.vx * dx + s.vz * dz) / (spd * dist);
+    if (toward > 0.28) return true;
+  }
+  return spd < 0.75 && goalieOutOfCrease(s) && dist < 5 && dist > 0.2;
 }
 
 function goalieFar(s: Skater): boolean {
@@ -4435,6 +4476,7 @@ function slideGoalieToPost(s: Skater, zPost: number, dt: number): void {
 }
 
 function thinkGoalie(s: Skater, dt: number): void {
+  if (s.id !== world.userId) goalieLooseSkate.delete(s.id);
   const netX = defendDir(s.side) * (GOAL_LINE_X - 0.85);
   const puck = world.puck;
   const holder = puck.owner !== null ? world.skaters[puck.owner] : null;
@@ -4485,7 +4527,10 @@ function thinkGoalie(s: Skater, dt: number): void {
     return;
   }
 
-  if (s.id !== world.userId && home && puck.owner !== s.id && chaseDumpIn(s, dt)) return;
+  if (s.id !== world.userId && home && puck.owner !== s.id && chaseDumpIn(s, dt)) {
+    goalieLooseSkate.add(s.id);
+    return;
+  }
 
   if (puck.owner === s.id) {
     if (s.gloveFlash > 0.12) {
@@ -4520,6 +4565,7 @@ function thinkGoalie(s: Skater, dt: number): void {
   }
 
   if (goaliePlayLoose(s)) {
+    goalieLooseSkate.add(s.id);
     if (puckAtGoalieCircleTop(s.side)) goalieCircleChase.add(s.id);
     const spot = goalieRetrievePoint(s);
     skateGoalieTo(s, spot.x, spot.z, dt);
@@ -4797,11 +4843,198 @@ function cpuDefend(s: Skater): void {
   }
 }
 
+/** yaw+π frame shared by skaterXZ and its inverse. ry = π/2: local +Z is world +X. */
+function yawBasis(yaw: number): { c: number; sn: number } {
+  const ry = yaw + Math.PI;
+  return { c: Math.cos(ry), sn: Math.sin(ry) };
+}
+
 function skaterXZ(s: Skater, lx: number, lz: number): { x: number; z: number } {
-  const ry = s.yaw + Math.PI;
-  const c = Math.cos(ry);
-  const sn = Math.sin(ry);
+  const { c, sn } = yawBasis(s.yaw);
   return { x: s.x + lx * c + lz * sn, z: s.z - lx * sn + lz * c };
+}
+
+function skaterLocal(s: Skater, x: number, z: number): { lx: number; lz: number } {
+  const { c, sn } = yawBasis(s.yaw);
+  const dx = x - s.x;
+  const dz = z - s.z;
+  return { lx: dx * c - dz * sn, lz: dx * sn + dz * c };
+}
+
+export type GoalieZKind = "upright" | "perimeter" | "mid" | "butterfly";
+
+/**
+ * A shot still traveling at this goalie's net. That pose is the blocker save, not mid,
+ * unless the compact butterfly owns this spot.
+ * No clock cutoff: a shot from the neutral zone is still a shot after it crosses the blue line.
+ * Speed and direction drop it once the puck is no longer in flight at this net.
+ */
+export function goalieShotSave(s: Skater): boolean {
+  if (s.kind !== "goalie") return false;
+  const puck = world.puck;
+  if (puck.owner !== null) return false;
+  if (world.lastShooter === null || world.lastShooter === s.id) return false;
+  if (world.lastPass > world.lastShoot) return false;
+  if (Math.hypot(puck.vx, puck.vz) < 7) return false;
+  return puck.vx * defendDir(s.side) > 5;
+}
+
+/**
+ * Where this shot crosses the goal line, with the same step as the post sweep.
+ * A top corner there is the raised blocker or glove, not the compact butterfly.
+ */
+function shotAimsTopCorner(s: Skater): boolean {
+  if (!goalieShotSave(s)) return false;
+  const puck = world.puck;
+  const end = (defendDir(s.side) > 0 ? 1 : -1) as 1 | -1;
+  const mouth = end * GOAL_LINE_X;
+  const along0 = (mouth - puck.x) * end;
+  if (along0 < -0.35 || along0 > 40) return false;
+  let x = puck.x;
+  let y = puck.y;
+  let z = puck.z;
+  let vx = puck.vx;
+  let vy = puck.vy;
+  let vz = puck.vz;
+  const dt = 1 / 60;
+  const steps = Math.min(140, Math.ceil(along0 / Math.max(3, puck.vx * end) / dt) + 6);
+  const soft = world.reboundSoft;
+  for (let i = 0; i < steps; i++) {
+    const px = x;
+    const py = y;
+    const pz = z;
+    x += vx * dt;
+    z += vz * dt;
+    y += vy * dt;
+    vy -= 12 * dt;
+    if (y <= PUCK_Y) {
+      y = PUCK_Y;
+      if (soft) {
+        if (vy < 0) vy *= -0.06;
+        if (Math.abs(vy) < 0.55) vy = 0;
+        vx *= 0.62;
+        vz *= 0.62;
+      } else {
+        if (vy < 0) vy *= -0.28;
+        if (Math.abs(vy) < 0.4) vy = 0;
+      }
+    }
+    const damp = Math.exp((soft ? -1.85 : -0.35) * dt);
+    vx *= damp;
+    vz *= damp;
+    if ((px - mouth) * end <= 0 && (x - mouth) * end >= 0) {
+      const span = x - px || 1;
+      const u = (mouth - px) / span;
+      const yAt = py + (y - py) * u;
+      const zAt = pz + (z - pz) * u;
+      const blockerDir = attackDir(s.side) > 0 ? 1 : -1;
+      return goalieRaisedHandCovers(yAt, (zAt - s.z) * blockerDir);
+    }
+    if (Math.hypot(vx, vz) < 2.2) break;
+  }
+  return false;
+}
+
+/** Low slot in front of this net. The rest of the defending zone stays mid. */
+const HIGH_DANGER_DEPTH = 4.9;
+const HIGH_DANGER_HALF = 3.15;
+
+function puckInHighDanger(side: "home" | "away"): boolean {
+  const from = goalieFromLine(side, world.puck.x);
+  if (from < -0.12 || from > HIGH_DANGER_DEPTH) return false;
+  return Math.abs(world.puck.z) <= HIGH_DANGER_HALF;
+}
+
+/**
+ * Compact butterfly. This end only: not the neutral zone, not the far end.
+ * High danger is the low slot. A rebound or iron keeps it for the scramble
+ * even when the puck slides out of that slot, until it leaves the end.
+ */
+function goalieCompactButterfly(s: Skater): boolean {
+  if (s.kind !== "goalie") return false;
+  if (s.dive > 0.04 || s.tumble !== 0 || s.celebrate > 0.05) return false;
+  if (world.stoppage || world.faceoff || world.goalieShot !== null) return false;
+  if (world.puck.owner === s.id) return false;
+  const end = defendDir(s.side) > 0 ? 1 : -1;
+  if (zoneAtX(world.puck.x) !== end) return false;
+  if (puckInHighDanger(s.side)) return true;
+  const sinceSave = world.time - world.goalieSaveT;
+  if (world.reboundN >= 1 && sinceSave >= 0 && sinceSave < 2.6) return true;
+  const sinceIron = world.time - ironStanceT;
+  if (ironStanceEnd === end && sinceIron >= 0 && sinceIron < 2.6) return true;
+  return false;
+}
+
+/**
+ * Raised blocker save, or a full butterfly with the hands at the posts.
+ * A top-corner shot uses this instead of the compact butterfly.
+ * Other shots in flight still use it, except in the compact-butterfly window.
+ * A length clear sets goalieShot and leaves both butterflies, so the zone stance returns.
+ */
+export function goalieButterflyPose(s: Skater): boolean {
+  if (s.kind !== "goalie") return false;
+  if (s.dive > 0.04 || s.tumble !== 0 || s.celebrate > 0.05) return false;
+  if (world.goalieShot !== null) return false;
+  if (goalieShotSave(s)) {
+    if (shotAimsTopCorner(s)) return true;
+    if (goalieCompactButterfly(s)) return false;
+    return true;
+  }
+  if (goalieCompactButterfly(s)) return false;
+  return s.coverPose >= 0.35;
+}
+
+/**
+ * Upright, perimeter, mid, or the compact butterfly.
+ * A dive, a tumble, a celebration, and a raised save stay on their own poses.
+ * Perimeter is the neutral zone. Upright is the other end.
+ * Mid is the rest of this defending zone. Butterfly is the low slot, a rebound, or iron.
+ */
+export function goalieZKind(s: Skater): GoalieZKind | null {
+  if (s.kind !== "goalie") return null;
+  if (s.dive > 0.04 || s.tumble !== 0 || s.celebrate > 0.05) return null;
+  if (goalieShotSave(s) && (shotAimsTopCorner(s) || !goalieCompactButterfly(s))) return null;
+  if (s.coverPose > 0.08 && !goalieCompactButterfly(s)) return null;
+  const zone = zoneAtX(world.puck.x);
+  const end = defendDir(s.side) > 0 ? 1 : -1;
+  if (zone === 0) return "perimeter";
+  if (zone !== end) return "upright";
+  if (goalieCompactButterfly(s)) return "butterfly";
+  return "mid";
+}
+
+/** Puck is in this goalie's defending zone, the goalie is up, and no shot is in flight. */
+export function goalieInMid(s: Skater): boolean {
+  return goalieZKind(s) === "mid";
+}
+
+/**
+ * Handling a loose puck, or skating out to one.
+ * The body stays in the perimeter Z. Zone kind is unchanged: a shot in flight,
+ * a rebound, and iron keep the save poses. A cover or a clear leaves this.
+ */
+export function goaliePlaysPuck(s: Skater): boolean {
+  if (s.kind !== "goalie") return false;
+  if (s.dive > 0.04 || s.tumble !== 0 || s.celebrate > 0.05) return false;
+  if (s.gloveFlash > 0.12 || s.coverPose > 0.08) return false;
+  if (world.stoppage || world.faceoff || world.goalieShot !== null) return false;
+  if (world.puck.owner === s.id) return true;
+  if (goalieShotSave(s)) return false;
+  const end = (defendDir(s.side) > 0 ? 1 : -1) as 1 | -1;
+  if (zoneAtX(world.puck.x) === end) {
+    const sinceSave = world.time - world.goalieSaveT;
+    if (world.reboundN >= 1 && sinceSave >= 0 && sinceSave < 2.6) return false;
+    const sinceIron = world.time - ironStanceT;
+    if (ironStanceEnd === end && sinceIron >= 0 && sinceIron < 2.6) return false;
+  }
+  return goalieLooseSkate.has(s.id) || goalieUserChasingLoose(s);
+}
+
+/** Mid ice-blade center in the yaw+π frame, sampled from the posed mesh. */
+const goalieMidBlade = new Map<number, { lx: number; lz: number }>();
+
+export function noteGoalieMidBlade(s: Skater, x: number, z: number): void {
+  goalieMidBlade.set(s.id, skaterLocal(s, x, z));
 }
 
 export function stickBlade(s: Skater): { x: number; z: number } {
@@ -4809,6 +5042,8 @@ export function stickBlade(s: Skater): { x: number; z: number } {
   // Facing +X (yaw −π/2) that lands at world +Z, classic-camera screen-right.
   // Goalie sample is on the ice blade: blocker side, in front of the pads.
   // It stays inside that blade from butterfly pitch 0.2 through a hit pitch of 0.5.
+  // Upright, perimeter, mid, and the compact butterfly replace that sample with the posed blade center.
+  // The raised butterfly, the dive, and a shot save keep the fixed sample.
   // A deke carries the skater plate across to local +X. The mesh blade crosses it.
   const plate = s.kind === "goalie" ? null : skaterPlateLocal();
   let lx = plate ? plate.x : -0.73;
@@ -4817,6 +5052,12 @@ export function stickBlade(s: Skater): { x: number; z: number } {
     const across = dekePuckLocal(s.deke);
     lx = across.x;
     lz = across.z;
+  } else if (s.kind === "goalie" && goalieZKind(s)) {
+    const noted = goalieMidBlade.get(s.id);
+    if (noted) {
+      lx = noted.lx;
+      lz = noted.lz;
+    }
   }
   return skaterXZ(s, lx, lz);
 }
@@ -9647,6 +9888,8 @@ function applyShotIron(
   yHit: number,
 ): void {
   shotIron = null;
+  ironStanceEnd = side;
+  ironStanceT = world.time;
   const fate = rollIronFate();
   if (useGame.getState().clockMode === "drill") {
     ironResolved = fate;
@@ -10372,7 +10615,15 @@ function equipmentCovers(g: Skater, puckY: number, puckZ: number): boolean {
   const onBlocker =
     Math.abs(dz - blockerZ) <= (home ? 0.15 : 0.1) && puckY > 0.2 && puckY < (home ? 0.7 : 0.58);
 
-  return leftPad || rightPad || fiveHole || onGlove || onBlocker;
+  return leftPad || rightPad || fiveHole || onGlove || onBlocker || butterflyHandSave(g, puckY, puckZ);
+}
+
+/** Raised blocker or glove at the top corner. Not a length clear, and not a pad. */
+function butterflyHandSave(g: Skater, puckY: number, puckZ: number): boolean {
+  if (world.goalieShot !== null) return false;
+  if (!goalieButterflyPose(g)) return false;
+  const blockerDir = attackDir(g.side) > 0 ? 1 : -1;
+  return goalieRaisedHandCovers(puckY, (puckZ - g.z) * blockerDir);
 }
 
 function equipmentHits(g: Skater, x: number, y: number, z: number): boolean {
@@ -10384,6 +10635,7 @@ function equipmentHits(g: Skater, x: number, y: number, z: number): boolean {
 }
 
 function cpuSaveMiss(g: Skater, y: number, z: number): boolean {
+  if (butterflyHandSave(g, y, z)) return false;
   const n = world.reboundN;
   if (g.side === "home") {
     const idle = userIdle();
@@ -13918,6 +14170,8 @@ function stepPlay(dt: number, act: Actions): void {
     userStickIdle &&
     !userLoose &&
     (goalieLineDepth(user) > 0.05 || goalieAgainstCage(user));
+  if (userGoalie && userLoose && !userEscape) goalieLooseSkate.add(user.id);
+  else goalieLooseSkate.delete(user.id);
   if (userEscape || userNet) {
     skateGoalieBack(user, dt);
   } else if (userLoose) {
