@@ -548,7 +548,7 @@ function holdPausedCam(cam: THREE.PerspectiveCamera) {
   projectUser(cam);
 }
 
-/** Look at the puck in the stands. Rink clamps would leave this camera on the ice. */
+/** Look at the live puck in the stands, every frame. Rink clamps would leave this camera on the ice. */
 function snapCrowdFollow(cam: THREE.PerspectiveCamera, mode: CamMode): void {
   const px = world.puck.x;
   const py = world.puck.y;

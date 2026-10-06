@@ -1,4 +1,4 @@
-import { CORNER_R, RINK_L, RINK_W } from "./rink";
+import { CORNER_R, resolveRink, RINK_L, RINK_W } from "./rink";
 import { rinkPerimeter } from "./rinkGeom";
 
 /** Seat mesh in Arena SeatDeck. Spacing along a row is wider than this box. */
@@ -36,6 +36,8 @@ const THIRD_GAP = 21.8;
 const THIRD_Y0 = 10.9;
 const THIRD_ROW_D = 0.56;
 const THIRD_RISE = 0.28;
+/** Boards to the outer face of the last seat. The ring is the seat center, so add half the depth. */
+const STAND_REACH = THIRD_GAP + (THIRD_ROWS - 1) * THIRD_ROW_D + SEAT_D / 2;
 
 export type SeatSpot = { x: number; y: number; z: number; rot: number; awayFan: boolean };
 
@@ -124,6 +126,8 @@ export function fasciaRing(inset: number): { x: number; z: number }[] {
   return rinkPerimeter(inset + 0.08, 48).map((p) => ({ x: p.x, z: p.z }));
 }
 
+type CrowdNormal = { nx: number; ny: number; nz: number; push: number };
+
 type Solid = {
   minX: number;
   minY: number;
@@ -132,7 +136,44 @@ type Solid = {
   maxY: number;
   maxZ: number;
   dist2: (px: number, py: number, pz: number) => number;
+  /** Outward unit normal. `push` is how far to move the center so a sphere of `radius` clears the solid. */
+  outward: (px: number, py: number, pz: number, radius: number) => CrowdNormal;
 };
+
+function boxOutward(
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number,
+  px: number,
+  py: number,
+  pz: number,
+  radius: number,
+): CrowdNormal {
+  const cx = Math.max(minX, Math.min(maxX, px));
+  const cy = Math.max(minY, Math.min(maxY, py));
+  const cz = Math.max(minZ, Math.min(maxZ, pz));
+  const dx = px - cx;
+  const dy = py - cy;
+  const dz = pz - cz;
+  const dist = Math.hypot(dx, dy, dz);
+  if (dist > 1e-8) {
+    return { nx: dx / dist, ny: dy / dist, nz: dz / dist, push: Math.max(0, radius - dist) };
+  }
+  const faces = [
+    { d: px - minX, nx: -1, ny: 0, nz: 0 },
+    { d: maxX - px, nx: 1, ny: 0, nz: 0 },
+    { d: py - minY, nx: 0, ny: -1, nz: 0 },
+    { d: maxY - py, nx: 0, ny: 1, nz: 0 },
+    { d: pz - minZ, nx: 0, ny: 0, nz: -1 },
+    { d: maxZ - pz, nx: 0, ny: 0, nz: 1 },
+  ];
+  let best = faces[0]!;
+  for (const face of faces) if (face.d < best.d) best = face;
+  return { nx: best.nx, ny: best.ny, nz: best.nz, push: best.d + radius };
+}
 
 const CELL = 4;
 const solids: Solid[] = [];
@@ -158,6 +199,7 @@ function worldBox(minX: number, minY: number, minZ: number, maxX: number, maxY: 
       const dz = pz - z;
       return dx * dx + dy * dy + dz * dz;
     },
+    outward: (px, py, pz, radius) => boxOutward(minX, minY, minZ, maxX, maxY, maxZ, px, py, pz, radius),
   };
 }
 
@@ -222,6 +264,15 @@ function addSeat(p: SeatSpot): void {
       const ez = lz - qz;
       return ex * ex + ey * ey + ez * ez;
     },
+    outward: (px, py, pz, radius) => {
+      const dx = px - p.x;
+      const dy = py - p.y;
+      const dz = pz - p.z;
+      const lx = dx * c - dz * s;
+      const lz = dx * s + dz * c;
+      const n = boxOutward(-hx, -hy, -hz, hx, hy, hz, lx, dy, lz, radius);
+      return { nx: n.nx * c + n.nz * s, ny: n.ny, nz: -n.nx * s + n.nz * c, push: n.push };
+    },
   });
   const cy = p.y + PERSON_LIFT;
   const hh = PERSON_H / 2;
@@ -239,6 +290,32 @@ function addSeat(p: SeatSpot): void {
       const dr = Math.max(0, radial - pr);
       const dy = py - y;
       return dr * dr + dy * dy;
+    },
+    outward: (px, py, pz, radius) => {
+      const dx = px - p.x;
+      const dz = pz - p.z;
+      const radial = Math.hypot(dx, dz);
+      const y0 = cy - hh;
+      const y1 = cy + hh;
+      const clampedY = Math.max(y0, Math.min(y1, py));
+      const clampedR = Math.min(radial, pr);
+      const cdx = radial > 1e-8 ? (dx / radial) * clampedR : 0;
+      const cdz = radial > 1e-8 ? (dz / radial) * clampedR : 0;
+      const ox = dx - cdx;
+      const oy = py - clampedY;
+      const oz = dz - cdz;
+      const dist = Math.hypot(ox, oy, oz);
+      if (dist > 1e-8) {
+        return { nx: ox / dist, ny: oy / dist, nz: oz / dist, push: Math.max(0, radius - dist) };
+      }
+      const side = pr - radial;
+      const top = y1 - py;
+      const bot = py - y0;
+      if (radial > 1e-8 && side <= top && side <= bot) {
+        return { nx: dx / radial, ny: 0, nz: dz / radial, push: side + radius };
+      }
+      if (top <= bot) return { nx: 0, ny: 1, nz: 0, push: top + radius };
+      return { nx: 0, ny: -1, nz: 0, push: bot + radius };
     },
   });
 }
@@ -300,7 +377,25 @@ function buildCrowd(): void {
 }
 buildCrowd();
 
-export type CrowdHit = { x: number; y: number; z: number; t: number };
+export type CrowdHit = {
+  x: number;
+  y: number;
+  z: number;
+  t: number;
+  nx: number;
+  ny: number;
+  nz: number;
+  /** Meters to move the center along the normal so the puck sphere clears the solid. */
+  push: number;
+};
+
+/**
+ * Past the outer face of the last seat row.
+ * A negative radius grows resolveRink's outline; the corner centers stay put.
+ */
+export function outsideStandFootprint(x: number, z: number): boolean {
+  return resolveRink(x, z, -STAND_REACH).hit;
+}
 
 /** First contact of a puck-radius sphere swept along the segment. A miss returns null. */
 export function sweepCrowd(
@@ -329,6 +424,7 @@ export function sweepCrowd(
     queryStamp = 1;
   }
   let bestT = Infinity;
+  let bestSolid: Solid | null = null;
   const ix0 = Math.floor(minX / CELL);
   const ix1 = Math.floor(maxX / CELL);
   const iz0 = Math.floor(minZ / CELL);
@@ -367,10 +463,26 @@ export function sweepCrowd(
           }
           tHit = b;
         }
-        if (tHit < bestT) bestT = tHit;
+        if (tHit < bestT) {
+          bestT = tHit;
+          bestSolid = s;
+        }
       }
     }
   }
-  if (bestT === Infinity) return null;
-  return { x: ax + dx * bestT, y: ay + dy * bestT, z: az + dz * bestT, t: bestT };
+  if (bestT === Infinity || !bestSolid) return null;
+  const x = ax + dx * bestT;
+  const y = ay + dy * bestT;
+  const z = az + dz * bestT;
+  const n = bestSolid.outward(x, y, z, radius);
+  let nx = n.nx;
+  let ny = n.ny;
+  let nz = n.nz;
+  if (nx * nx + ny * ny + nz * nz < 0.25) {
+    const m = Math.hypot(dx, dy, dz) || 1;
+    nx = -dx / m;
+    ny = -dy / m;
+    nz = -dz / m;
+  }
+  return { x, y, z, t: bestT, nx, ny, nz, push: n.push };
 }

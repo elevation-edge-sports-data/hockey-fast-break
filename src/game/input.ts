@@ -111,6 +111,14 @@ export function setInjectedKeys(codes: string[]): void {
   for (const c of codes) injected.add(c);
 }
 
+let injectedAimX = 0;
+let injectedAimY = 0;
+
+export function setInjectedAim(x: number, y: number): void {
+  injectedAimX = x;
+  injectedAimY = y;
+}
+
 export function setTouchMove(x: number, y: number): void {
   touchX = x;
   touchY = y;
@@ -384,6 +392,14 @@ export function readActions(): Actions {
   const zoomOut =
     faceB.down || k.has("Minus") || k.has("NumpadSubtract") || k.has("BracketLeft");
 
+  let ax = pad.ax + injectedAimX;
+  let ay = pad.ay + injectedAimY;
+  const am = Math.hypot(ax, ay);
+  if (am > 1) {
+    ax /= am;
+    ay /= am;
+  }
+
   return {
     moveX: mx,
     moveY: my,
@@ -413,8 +429,8 @@ export function readActions(): Actions {
     rbDown,
     viewPress: faceView.edge,
     viewDown,
-    aimX: pad.ax,
-    aimY: pad.ay,
+    aimX: ax,
+    aimY: ay,
     zoomIn,
     zoomOut,
     padKind: pad.connected ? "Gamepad" : "Keyboard",

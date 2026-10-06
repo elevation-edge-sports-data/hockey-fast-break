@@ -7,7 +7,8 @@ export type ArenaLook = "light" | "dark";
 export type Lineup = { g: number; d: number; o: number };
 export type PlayMode = "practice" | "scrimmage" | "game" | "drill";
 export type DrillTargets = 4 | 8 | 12 | 16;
-export type ControlProfile = "classic" | "wings";
+export type ControlProfile = "classic" | "wings" | "stick";
+export type ShotKind = "wrist" | "snap" | "slap" | "backhand";
 export type WhistleKind = "goal" | "cover" | "offside" | "brawl" | "crowd" | null;
 
 export const LINEUP_CAP = 6;
@@ -72,6 +73,7 @@ type GameUi = {
   powerPlay: boolean;
   chaos: boolean;
   speed: number;
+  shotKind: ShotKind | null;
   quality: "high" | "low";
   arenaLook: ArenaLook;
   pad: "Keyboard" | "Gamepad";
@@ -120,6 +122,7 @@ type GameUi = {
   setPowerPlay: (v: boolean) => void;
   setChaos: (v: boolean) => void;
   setSpeed: (n: number) => void;
+  setShotKind: (k: ShotKind | null) => void;
   setQuality: (q: "high" | "low") => void;
   setArenaLook: (v: ArenaLook) => void;
   setPad: (s: "Keyboard" | "Gamepad") => void;
@@ -214,7 +217,7 @@ export function persistClockMode(v: PlayMode): void {
 function loadControlProfile(): ControlProfile {
   try {
     const raw = localStorage.getItem("hfb-control-profile");
-    if (raw === "classic" || raw === "wings") return raw;
+    if (raw === "classic" || raw === "wings" || raw === "stick") return raw;
   } catch {
     /* ignore */
   }
@@ -297,6 +300,7 @@ export const useGame = create<GameUi>((set, get) => ({
   powerPlay: loadFlag("hfb-power-play", true),
   chaos: loadFlag("hfb-chaos", false),
   speed: 0,
+  shotKind: null,
   quality: "high",
   arenaLook: loadLook(),
   pad: "Keyboard",
@@ -375,6 +379,7 @@ export const useGame = create<GameUi>((set, get) => ({
     set({ chaos: v });
   },
   setSpeed: (n) => set({ speed: n }),
+  setShotKind: (k) => set({ shotKind: k }),
   setQuality: (q) => set({ quality: q }),
   setArenaLook: (v) => {
     saveLook(v);

@@ -6,7 +6,7 @@ import {
   world,
   attackCompass,
   cycleAimCompass,
-  beginPauseCam,
+  pauseGame,
   beginPauseReplay,
   stopPauseReplay,
   replayHasFootage,
@@ -530,23 +530,21 @@ function MainMenus() {
   const clockMode = useGame((s) => s.clockMode);
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
-  const setPaused = useGame((s) => s.setPaused);
   const replay = useGame((s) => s.replay);
   const toggle = (id: MenuId) => setMenu((cur) => (cur === id ? null : id));
   const blurb =
     controlProfile === "wings"
       ? "LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB defensive skate; hold Select or R for the goalie; RB dives."
-      : "LB defensive skate. Hold Select or R for the goalie.";
+      : controlProfile === "stick"
+        ? "Right stick shoots: up snap, right then up wrist, left then up backhand, pull back slap. Left stick aims. X tap wrist, hold slap. LB defensive skate. Hold Select or R for the goalie."
+        : "LB defensive skate. Hold Select or R for the goalie.";
   const startReplay = () => {
     if (replay) {
       stopPauseReplay();
       return;
     }
     if (!playing || !replayHasFootage()) return;
-    if (!paused) {
-      beginPauseCam(camMode);
-      setPaused(true);
-    }
+    if (!paused) pauseGame();
     beginPauseReplay();
   };
   return (
@@ -616,6 +614,14 @@ function MainMenus() {
                 onClick={() => setControlProfile("wings")}
               >
                 Wings
+              </button>
+              <button
+                type="button"
+                className={controlProfile === "stick" ? "is-on" : ""}
+                title="Right stick shoots. Left stick aims. X tap wrist, hold slap. LB defensive skate. Hold Select or R for the goalie."
+                onClick={() => setControlProfile("stick")}
+              >
+                Skill Stick
               </button>
               <p className="hint menu-blurb">{blurb}</p>
             </>
@@ -747,18 +753,26 @@ function MainMenus() {
 }
 
 function ControlsHelp() {
-  const wings = useGame((s) => s.controlProfile) === "wings";
+  const controlProfile = useGame((s) => s.controlProfile);
+  const wings = controlProfile === "wings";
+  const stick = controlProfile === "stick";
   return (
     <div className="help-tip">
       <p className="hint">
         {wings
           ? "A / E start · WASD skate · F shot · Q deke/hit · Space burst · G left · Shift right · LB / N skate · Select / R goalie · M / RB dive · P pause"
-          : "A / E start · WASD skate · F shot · Q deke/hit · Space burst · Shift / RT dive · LB / N skate · Select / R goalie · P pause"}
+          : stick
+            ? "A / E start · WASD skate · right stick shots · F shot · Q deke/hit · Space burst · Shift / RT dive · LB / N skate · Select / R goalie · P pause"
+            : "A / E start · WASD skate · F shot · Q deke/hit · Space burst · Shift / RT dive · LB / N skate · Select / R goalie · P pause"}
       </p>
       <dl className="legend">
         <div>
           <dt>With puck</dt>
-          <dd>A pass / hold saucer · X wrist / hold slap · B cancel slap · Y deke</dd>
+          <dd>
+            {stick
+              ? "A pass / hold saucer · right stick snap, wrist, backhand, slap · X tap wrist / hold slap · B cancel · Y deke · left stick aims"
+              : "A pass / hold saucer · X wrist / hold slap · B cancel slap · Y deke"}
+          </dd>
         </div>
         <div>
           <dt>No puck</dt>
@@ -780,6 +794,12 @@ function ControlsHelp() {
           <div>
             <dt>Wings</dt>
             <dd>LT/RT claim nearest teammate left/right of you; left stick steers you and them; RB dives.</dd>
+          </div>
+        ) : null}
+        {stick ? (
+          <div>
+            <dt>Skill Stick</dt>
+            <dd>Right stick up snaps, right then up is a wrist, left then up is a backhand, pull back then up is a slap. Left stick aims. X is tap wrist or hold slap.</dd>
           </div>
         ) : null}
       </dl>
@@ -928,6 +948,17 @@ export function Overlay() {
   const liveHome = useGame((s) => s.liveHome);
   const liveAway = useGame((s) => s.liveAway);
   const speed = useGame((s) => s.speed);
+  const shotKind = useGame((s) => s.shotKind);
+  const shotName =
+    shotKind === "wrist"
+      ? "Wrist"
+      : shotKind === "snap"
+        ? "Snap"
+        : shotKind === "slap"
+          ? "Slap"
+          : shotKind === "backhand"
+            ? "Backhand"
+            : "Shot";
   const pad = useGame((s) => s.pad);
   const hasPuck = useGame((s) => s.hasPuck);
   const charge = useGame((s) => s.charge);
@@ -947,7 +978,6 @@ export function Overlay() {
   const pauseDraft = usePauseDraft();
   const periodOver = useGame((s) => s.periodOver);
   const setPlaying = useGame((s) => s.setPlaying);
-  const setPaused = useGame((s) => s.setPaused);
   const setHomeKit = useGame((s) => s.setHomeKit);
   const setAwayKit = useGame((s) => s.setAwayKit);
   const setHomeLineup = useGame((s) => s.setHomeLineup);
@@ -992,7 +1022,7 @@ export function Overlay() {
     <div className={playing ? "hud" : "hud is-title"}>
       <VersionArchive />
       <div className="hud-top-stack">
-        {playing && !paused && clockMode === "drill" ? null : (
+        {(playing && !paused && clockMode === "drill") || replay ? null : (
         <div className="uni-banner">
           <div className="uni-cluster">
             <div className="uni-side">
@@ -1088,7 +1118,7 @@ export function Overlay() {
               )}
             </span>
             <span>
-              Shot <b>{speed.toFixed(0)}</b>
+              {shotName} <b>{speed.toFixed(0)}</b>
               <small> mph</small>
             </span>
             <span className={hasPuck ? "puck-chip" : "muted"}>
@@ -1193,12 +1223,8 @@ export function Overlay() {
               type="button"
               aria-label={paused ? "Resume" : "Pause"}
               onClick={() => {
-                if (paused) {
-                  resumePausedGame();
-                } else {
-                  beginPauseCam(camMode);
-                  setPaused(true);
-                }
+                if (paused) resumePausedGame();
+                else pauseGame();
               }}
             >
               {paused ? <Play size={16} /> : <Pause size={16} />}
@@ -1244,7 +1270,9 @@ export function Overlay() {
                   ? " · A outlet pass · X dump · stick aims · hold Select / R goalie"
                   : controlProfile === "wings"
                     ? " · Stick aims · A pass · X shot · Y deke · B burst · G/LT left · Shift/RT right · LB skate · Select/R goalie"
-                    : " · Stick aims · A pass · X shot · Y deke · B burst · LB skate · Select/R goalie"
+                    : controlProfile === "stick"
+                      ? " · Left stick aims · right stick snap, wrist, backhand, slap · A pass · X shot · Y deke · B burst · LB skate · Select/R goalie"
+                      : " · Stick aims · A pass · X shot · Y deke · B burst · LB skate · Select/R goalie"
                 : controlProfile === "wings"
                   ? " · Stick skates · A switch · X poke · Y hit · B burst · G/LT left · Shift/RT right · LB skate · Select/R goalie · RB/M dive"
                   : " · Stick skates · A switch · X poke · Y hit · B burst · RT / Shift dive · LB skate · Select/R goalie"}

@@ -1,0 +1,29 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hockey Fast Break</title>
+    <link rel="icon" href="./favicon.svg" />
+    <link rel="stylesheet" href="./style.css" />
+    <style>
+      .lab-versions{position:fixed;top:max(8px,env(safe-area-inset-top,0px));right:max(10px,env(safe-area-inset-right,0px));z-index:40;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;align-items:center;max-width:calc(100% - 20px);margin:0;font-family:"IBM Plex Sans","Segoe UI",sans-serif;font-size:0.72rem;color:#8b97a4;pointer-events:auto}
+      .lab-versions-label{letter-spacing:0.14em;text-transform:uppercase;font-size:0.68rem}
+      .lab-versions a{color:#e8ece6;text-decoration:none;border:1px solid #243040;background:#10161f;border-radius:6px;padding:4px 8px;min-height:32px;display:inline-flex;align-items:center}
+      .lab-versions a:hover,.lab-versions a[aria-current="page"]{border-color:#7eb8d4;color:#7eb8d4}
+      .hud{padding-top:max(48px,calc(42px + env(safe-area-inset-top,0px)))!important}
+    </style>
+  </head>
+  <body>
+    <nav class="lab-versions" aria-label="Version archive">
+      <span class="lab-versions-label">Archive</span>
+      <a href="../v0/index.html">v0</a>
+      <a href="../v1/index.html">v1</a>
+      <a href="../v2/index.html">v2</a>
+      <a href="./" aria-current="page">v3</a>
+    </nav>
+    <div id="app"></div>
+    <script type="module" src="./game.js"></script>
+  </body>
+</html>
+

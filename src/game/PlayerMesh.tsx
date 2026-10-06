@@ -2661,8 +2661,9 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     const wrist = wristKey !== null;
     const slap = !wrist && (slapLoad || slapRelease) ? slapStick(wind, follow) : null;
     const carryPose = !goalie && world.puck.owner === index && !slapping && !wrist && !diving && !tumbling && !cheer && !rage && s.struck <= 0.2 && !brawlPoseFor(s.id);
-    const dekeAmt = carryPose ? dekePull(s.deke) : 0;
     const dekePose = carryPose && s.deke > 0.02;
+    const sidePose = carryPose && !dekePose && s.stickPull > 0.02;
+    const dekeAmt = dekePose ? dekePull(s.deke) : sidePose ? dekePull(0.525 * Math.min(1, s.stickPull)) : 0;
     const pokeReach = !goalie && world.puck.owner !== index && (poke || puckNearSkater(s)) && !slapping && !wrist && !diving && !tumbling && !cheer && !rage && s.hit <= 0 && s.struck <= 0.2 && !brawlPoseFor(s.id);
     let pokePosed = false;
     let pokeToeX = 0;
@@ -2921,7 +2922,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
           pokePosed = true;
         } else if (tumbleRise && hasPuck) applyStickAim(stick.current, carryOwnStickAim());
         else if (tumbleRise) applyStickAim(stick.current, readyStickAim());
-        else if (carryPose) applyStickAim(stick.current, dekePose ? dekeStickAim(s.deke) : carryOwnStickAim());
+        else if (carryPose) applyStickAim(stick.current, dekePose ? dekeStickAim(s.deke) : sidePose ? dekeStickAim(0.525 * Math.min(1, s.stickPull)) : carryOwnStickAim());
         else if (hasPuck || reach) applyStickAim(stick.current, carryStickAim());
         else applyStickAim(stick.current, readyStickAim());
         if (!fallHand && !wrist && !slapping && !hasPuck && !reach) {
@@ -3000,7 +3001,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       const idleReady = !slapping && world.puck.owner !== index && !poke && !puckNearSkater(s) && !(cheer && s.hit <= 0) && !tumbling && s.dive <= 0.04 && !brawlPoseFor(s.id) && !!body.current && !!lArm.current && !!rArm.current && !!lFore.current && !!rFore.current;
       if (pokePosed) posePokeBlade(bladeGrp.current, stick.current, pokeToeX, pokeToeZ);
       else if (tumbling || (!wrist && !slap)) {
-        let bladeYaw = dekePose ? -DEKE_BLADE_YAW * dekeAmt : 0;
+        let bladeYaw = dekePose || sidePose ? -DEKE_BLADE_YAW * dekeAmt : 0;
         let bladeZ = carryPose ? CARRY_SHAFT_PITCH : idleReady ? READY_SHAFT_PITCH : 0;
         if (tumbling) {
           bladeYaw = 0;
@@ -3131,7 +3132,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         head.current.position.set(0, 1.54, 0.02);
         if (wristWatch === "puck") watchPoint(head.current, body.current, world.puck.x, world.puck.y, world.puck.z);
         else watchPoint(head.current, body.current, attackDir(s.side) * GOAL_LINE_X, GOAL_H * 0.45, 0);
-      } else if (dekePose && body.current) {
+      } else if ((dekePose || sidePose) && body.current) {
         head.current.position.set(0, 1.54, 0.02);
         watchPoint(head.current, body.current, attackDir(s.side) * GOAL_LINE_X, GOAL_H * 0.45, 0);
       } else {
