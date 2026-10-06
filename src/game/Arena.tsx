@@ -8,94 +8,45 @@ import {
   createScoreboardCanvas,
   mixHex,
 } from "./iceTexture";
-import { BOARD_H, CORNER_R, FT, GLASS_H, GOAL_LINE_X, RINK_L, RINK_W } from "./rink";
+import { BOARD_H, FT, GLASS_H, GOAL_LINE_X, RINK_W } from "./rink";
 import { rinkPerimeter } from "./rinkGeom";
 import { kitById } from "./uniforms";
 import { useGame, type ArenaLook } from "./store";
 import { benchGoalieNumber, defendDir, jumboReplayView, penaltyNumbers, stepJumboReplay, world } from "./sim";
 import { SeatedPlayer } from "./PlayerMesh";
+import {
+  FASCIA_D,
+  FASCIA_DROP,
+  FASCIA_H,
+  FASCIA_W,
+  fasciaRing,
+  JUMBO_FACE_SCALE,
+  JUMBO_HH,
+  JUMBO_HW,
+  JUMBO_SHELL_SHRINK,
+  JUMBO_Y,
+  PERSON_H,
+  PERSON_LIFT,
+  PERSON_RB,
+  PERSON_RT,
+  PRESS_BAYS,
+  PRESS_GLASS,
+  PRESS_GLASS_X,
+  PRESS_ROOF,
+  PRESS_SHELL,
+  pressBoxFrame,
+  RIBBON_INSET,
+  RIBBON_INSET2,
+  RIBBON_Y,
+  RIBBON_Y2,
+  SEAT_D,
+  SEAT_H,
+  SEAT_W,
+  STANDS,
+} from "./crowd";
 
-const seatGeo = new THREE.BoxGeometry(0.48, 0.36, 0.44);
-const personGeo = new THREE.CylinderGeometry(0.1, 0.12, 0.34, 5);
-
-type SeatSpot = { x: number; y: number; z: number; rot: number; awayFan: boolean };
-
-function skipRinkside(x: number, z: number): boolean {
-  if (Math.abs(x) > RINK_L / 2 - CORNER_R + 0.6) return false;
-  const out = Math.abs(z) - RINK_W / 2;
-  if (out < 0.15 || out > 3.4) return false;
-  if (z < 0 && Math.abs(x) < 10.6) return true;
-  if (z > 0 && Math.abs(x) < 4.1) return true;
-  return false;
-}
-
-function buildStands(
-  rows: number,
-  gap: number,
-  y0: number,
-  rowD: number,
-  rise: number,
-  skip?: (x: number, z: number) => boolean,
-): SeatSpot[] {
-  const spots: SeatSpot[] = [];
-  const seatW = 0.72;
-
-  for (let row = 0; row < rows; row++) {
-    const y = y0 + row * rise;
-    const offset = gap + row * rowD;
-    const ring = rinkPerimeter(-offset, 128);
-    const n = ring.length;
-    let dist = 0;
-    let nextSeat = seatW * 0.45;
-    for (let i = 0; i < n; i++) {
-      const a = ring[i]!;
-      const b = ring[(i + 1) % n]!;
-      const dx = b.x - a.x;
-      const dz = b.z - a.z;
-      const len = Math.hypot(dx, dz);
-      if (len < 0.04) continue;
-      const tx = dx / len;
-      const tz = dz / len;
-      const nx = -tz;
-      const nz = tx;
-      const rot = Math.atan2(nx, nz);
-      while (nextSeat <= dist + len) {
-        const t = (nextSeat - dist) / len;
-        const x = a.x + dx * t;
-        const z = a.z + dz * t;
-        if (!skip?.(x, z)) spots.push({ x, y, z, rot, awayFan: false });
-        nextSeat += seatW;
-      }
-      dist += len;
-    }
-  }
-  return spots;
-}
-
-const GLASS = buildStands(2, 0.52, 0.96, 0.52, 0.1, skipRinkside);
-const INNER = buildStands(2, 1.56, 1.16, 0.5, 0.08, skipRinkside);
-const LOWER = buildStands(21, 2.5, 1.28, 0.51, 0.18, skipRinkside);
-const UPPER = buildStands(14, 13.8, 6.35, 0.54, 0.27);
-const THIRD = buildStands(12, 21.8, 10.9, 0.56, 0.28).filter(
-  (p) => !(p.z > RINK_W / 2 + 25.6 && p.x > -9.4 && p.x < 28.2 && p.y > 13.4),
-);
-const STANDS = [...GLASS, ...INNER, ...LOWER, ...UPPER, ...THIRD];
-(() => {
-  const nAway = Math.round(STANDS.length * 0.05);
-  const pocket = STANDS.map((p, i) => ({ p, i }))
-    .filter(({ p }) => p.y >= 10.9 && p.x > 0 && p.z < 0)
-    .sort((a, b) => a.p.z - b.p.z || Math.abs(a.p.x - 5) - Math.abs(b.p.x - 5));
-  const away = new Set<number>();
-  for (const { i } of pocket) {
-    if (away.size >= nAway) break;
-    away.add(i);
-  }
-  for (const i of away) STANDS[i]!.awayFan = true;
-})();
-const RIBBON_Y = 5.55;
-const RIBBON_INSET = -12.55;
-const RIBBON_Y2 = 10.18;
-const RIBBON_INSET2 = -21.15;
+const seatGeo = new THREE.BoxGeometry(SEAT_W, SEAT_H, SEAT_D);
+const personGeo = new THREE.CylinderGeometry(PERSON_RT, PERSON_RB, PERSON_H, 5);
 const _crowdDummy = new THREE.Object3D();
 
 function SeatDeck() {
@@ -134,7 +85,7 @@ function SeatDeck() {
       color.offsetHSL(0, 0, ((i * 13) % 9) * 0.012 - 0.05);
       seats.setColorAt(i, color);
 
-      dummy.position.y = p.y + 0.32;
+      dummy.position.y = p.y + PERSON_LIFT;
       dummy.updateMatrix();
       crowd.setMatrixAt(i, dummy.matrix);
       const jersey = p.awayFan
@@ -199,7 +150,7 @@ function SeatDeck() {
       dummy.scale.setScalar(sc);
       dummy.updateMatrix();
       seats.setMatrixAt(i, dummy.matrix);
-      dummy.position.y = p.y + 0.32 + hop;
+      dummy.position.y = p.y + PERSON_LIFT + hop;
       dummy.updateMatrix();
       crowd.setMatrixAt(i, dummy.matrix);
     }
@@ -291,10 +242,7 @@ function StadiumRibbon({
   }, [inset]);
   useLayoutEffect(() => () => segs.forEach((s) => s.geo.dispose()), [segs]);
 
-  const fascia = useMemo(() => {
-    const ring = rinkPerimeter(inset + 0.08, 48);
-    return ring;
-  }, [inset]);
+  const fascia = useMemo(() => fasciaRing(inset), [inset]);
 
   const boards = useMemo(() => {
     const longs = segs.filter((s) => Math.abs(s.z) > 16);
@@ -356,8 +304,8 @@ function StadiumRibbon({
   return (
     <group>
       {fascia.map((p, i) => (
-        <mesh key={`fascia-${i}`} position={[p.x, y - 0.52, p.z]} material={shell}>
-          <boxGeometry args={[0.55, 0.22, 0.55]} />
+        <mesh key={`fascia-${i}`} position={[p.x, y - FASCIA_DROP, p.z]} material={shell}>
+          <boxGeometry args={[FASCIA_W, FASCIA_H, FASCIA_D]} />
         </mesh>
       ))}
       {segs.map((s, i) => (
@@ -464,10 +412,6 @@ function LightRig({ look }: { look: ArenaLook }) {
     </group>
   );
 }
-
-const JUMBO_Y = 27.4;
-const JUMBO_HW = 5.15;
-const JUMBO_HH = 2.42;
 
 function segmentHitsBox(
   ax: number,
@@ -632,7 +576,7 @@ function Jumbotron() {
   return (
     <group position={[0, JUMBO_Y, 0]} ref={root} visible={false}>
       <mesh material={shell}>
-        <boxGeometry args={[hw * 2 - 0.12, hh * 2 - 0.12, hd * 2 - 0.12]} />
+        <boxGeometry args={[hw * 2 - JUMBO_SHELL_SHRINK, hh * 2 - JUMBO_SHELL_SHRINK, hd * 2 - JUMBO_SHELL_SHRINK]} />
       </mesh>
       {[0, 1, 2, 3].map((i) => (
         <mesh
@@ -645,7 +589,7 @@ function Jumbotron() {
             Math.cos((i * Math.PI) / 2) * hd,
           ]}
         >
-          <planeGeometry args={[hw * 1.92, hh * 1.92]} />
+          <planeGeometry args={[hw * JUMBO_FACE_SCALE, hh * JUMBO_FACE_SCALE]} />
         </mesh>
       ))}
     </group>
@@ -673,30 +617,27 @@ function PressBox() {
       }),
     [],
   );
-  const deckTopY = 10.9 + 11 * 0.28;
-  const boxH = 3.7;
-  const y = deckTopY + 0.62 + boxH / 2;
-  const z = RINK_W / 2 + 21.8 + 11 * 0.56 - 0.2;
+  const frame = pressBoxFrame();
+  const { y, z, boxH } = frame;
   if (cam === "high") return null;
   const bay = (ox: number) => (
     <group key={ox} position={[ox, 0, 0]}>
-      <mesh material={shell} position={[0, 0, 0.2]}>
-        <boxGeometry args={[18.4, boxH, 4.6]} />
+      <mesh material={shell} position={[0, 0, PRESS_SHELL.z]}>
+        <boxGeometry args={[PRESS_SHELL.w, boxH, PRESS_SHELL.d]} />
       </mesh>
-      <mesh material={roof} position={[0, boxH / 2 + 0.16, 0.12]}>
-        <boxGeometry args={[19.2, 0.28, 5.1]} />
+      <mesh material={roof} position={[0, boxH / 2 + PRESS_ROOF.lift, PRESS_ROOF.z]}>
+        <boxGeometry args={[PRESS_ROOF.w, PRESS_ROOF.h, PRESS_ROOF.d]} />
       </mesh>
-      {[-6.4, -3.2, 0, 3.2, 6.4].map((x) => (
-        <mesh key={x} material={glass} position={[x, 0.08, -2.22]}>
-          <boxGeometry args={[2.7, 2.15, 0.08]} />
+      {PRESS_GLASS_X.map((x) => (
+        <mesh key={x} material={glass} position={[x, PRESS_GLASS.y, PRESS_GLASS.z]}>
+          <boxGeometry args={[PRESS_GLASS.w, PRESS_GLASS.h, PRESS_GLASS.d]} />
         </mesh>
       ))}
     </group>
   );
   return (
     <group position={[0, y, z]}>
-      {bay(0)}
-      {bay(18.4)}
+      {PRESS_BAYS.map((ox) => bay(ox))}
     </group>
   );
 }

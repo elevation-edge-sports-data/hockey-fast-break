@@ -1123,7 +1123,8 @@ h2 {
 }
 
 .whistle.cover,
-.whistle.offside {
+.whistle.offside,
+.whistle.crowd {
   color: var(--color-fg);
 }
 

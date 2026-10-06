@@ -1290,7 +1290,9 @@ export function Overlay() {
               ? "Offsides"
               : whistle === "brawl"
                 ? "Line Brawl"
-                : "Goalie Covered"}
+                : whistle === "crowd"
+                  ? "Puck in the crowd"
+                  : "Goalie Covered"}
         </div>
       ) : playing && delayedOffside && !replay ? (
         <div

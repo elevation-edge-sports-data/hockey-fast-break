@@ -41,7 +41,9 @@ import {
   type DrillTargets,
   type Lineup,
   type PlayMode,
+  type WhistleKind,
 } from "./store";
+import { CROWD_PUCK_R, sweepCrowd } from "./crowd";
 
 export type SkaterKind = "winger" | "defense" | "goalie";
 export type FaceoffPhase = "hold" | "lower" | "fake" | "drop" | "live";
@@ -230,7 +232,7 @@ export type World = {
   stoppage: boolean;
   stoppageT: number;
   coverT: number;
-  whistle: "goal" | "cover" | "offside" | "brawl" | null;
+  whistle: WhistleKind;
   userSx: number;
   userSy: number;
   userVisible: boolean;
@@ -10310,6 +10312,56 @@ function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number)
   if (soft) clampDrillScoreSpeed(puck);
 }
 
+function chooseCrowdFaceoff(exitX: number, exitZ: number): void {
+  const dots: [number, number][] = [
+    [0, 0],
+    [FACEOFF_EZ_X, FACEOFF_SPOT_Z],
+    [FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
+    [-FACEOFF_EZ_X, FACEOFF_SPOT_Z],
+    [-FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
+    [FACEOFF_NZ_X, FACEOFF_SPOT_Z],
+    [FACEOFF_NZ_X, -FACEOFF_SPOT_Z],
+    [-FACEOFF_NZ_X, FACEOFF_SPOT_Z],
+    [-FACEOFF_NZ_X, -FACEOFF_SPOT_Z],
+  ];
+  let bestX = 0;
+  let bestZ = 0;
+  let bestD = Infinity;
+  for (const [x, z] of dots) {
+    const d = (x - exitX) * (x - exitX) + (z - exitZ) * (z - exitZ);
+    if (d < bestD) {
+      bestD = d;
+      bestX = x;
+      bestZ = z;
+    }
+  }
+  world.faceX = bestX;
+  world.faceZ = bestZ;
+}
+
+function crowdWhistleBlocked(): boolean {
+  const mode = useGame.getState().clockMode;
+  if (mode === "drill" || mode === "practice") return true;
+  if (world.stoppage || world.lineBrawl || world.periodOver) return true;
+  if (world.faceoffPhase !== "live") return true;
+  const w = world.whistle;
+  return w === "goal" || w === "cover" || w === "offside" || w === "brawl";
+}
+
+function maybeCrowdStoppage(prevX: number, prevY: number, prevZ: number): boolean {
+  const puck = world.puck;
+  if (puck.owner !== null) return false;
+  if (crowdWhistleBlocked()) return false;
+  const hit = sweepCrowd(prevX, prevY, prevZ, puck.x, puck.y, puck.z, CROWD_PUCK_R);
+  if (!hit) return false;
+  puck.x = hit.x;
+  puck.y = hit.y;
+  puck.z = hit.z;
+  chooseCrowdFaceoff(hit.x, hit.z);
+  startStoppage("crowd");
+  return true;
+}
+
 function chooseCoverFaceoff(coverer: Skater | undefined): void {
   const puck = world.puck;
   let g = coverer && coverer.kind === "goalie" ? coverer : undefined;
@@ -10338,7 +10390,7 @@ function chooseCoverFaceoff(coverer: Skater | undefined): void {
   else world.faceZ = z >= 0 ? FACEOFF_SPOT_Z : -FACEOFF_SPOT_Z;
 }
 
-function startStoppage(kind: "goal" | "cover" | "offside", net?: 1 | -1): void {
+function startStoppage(kind: "goal" | "cover" | "offside" | "crowd", net?: 1 | -1): void {
   clearDelayedOffside();
   if (world.stoppage) return;
   rimRide = null;
@@ -12033,6 +12085,7 @@ function stepPuck(dt: number): void {
     return;
   }
   ejectFromCage(puck, prevX);
+  if (maybeCrowdStoppage(prevX, prevY, prevZ)) return;
   tryPickup(puck);
   checkOffside();
 }
@@ -13900,7 +13953,12 @@ function stepPlay(dt: number, act: Actions): void {
     stepRef(dt);
     updateCoverPose(dt);
     if (world.whistle === "goal") recordReplay();
-    if (world.stoppageT > 3.2) {
+    if (world.whistle === "crowd") {
+      if (world.stoppageT >= 3) {
+        if (world.periodOver) return;
+        resetWorld({ keepScore: true });
+      }
+    } else if (world.stoppageT > 3.2) {
       if (world.periodOver) return;
       resetWorld({ keepScore: true });
     }

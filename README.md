@@ -13,6 +13,8 @@ Free online hockey game (3D). Compatible with keyboard and gamepad.
 - **Roller**: 4-on-4, no offsides, roller skates
 - **Game**: 5-on-5, offsides on, timed (1–10 minutes, opens at 5). The clock still counts down from 20:00.
 
+A puck that hits the crowd or stands stops the clock; the camera follows it for 3 seconds, then cuts to the nearest faceoff dot for the drop.
+
 ## Controls
 
 ### With the puck

@@ -106,6 +106,8 @@ let _pauseHoldTheta = 0;
 let _pauseHoldPhi = 0;
 let _pauseHoldRadius = 0;
 let _pauseHolding = false;
+let _crowdCam = false;
+let _crowdCut = false;
 
 function stopPausedOrbit(controls: unknown) {
   if (!controls || typeof controls !== "object") return;
@@ -546,6 +548,42 @@ function holdPausedCam(cam: THREE.PerspectiveCamera) {
   projectUser(cam);
 }
 
+/** Look at the puck in the stands. Rink clamps would leave this camera on the ice. */
+function snapCrowdFollow(cam: THREE.PerspectiveCamera, mode: CamMode): void {
+  const px = world.puck.x;
+  const py = world.puck.y;
+  const pz = world.puck.z;
+  _follow.set(px, py, pz);
+  _look.set(px, py, pz);
+  _lookSmooth.copy(_look);
+  const atk = world.homeAttack > 0 ? 1 : -1;
+  if (mode === "classic") {
+    cam.up.set(atk, 0, 0);
+    cam.position.set(px - atk * 13.2, py + 6.4, pz);
+    aimClassic(cam, _lookSmooth);
+  } else if (mode === "high") {
+    cam.up.set(atk, 0, 0);
+    cam.position.set(px, Math.max(32, py + 8), pz);
+    cam.lookAt(_lookSmooth);
+  } else {
+    let ox = -px;
+    let oz = -pz;
+    let om = Math.hypot(ox, oz);
+    if (om < 0.75) {
+      ox = -atk;
+      oz = 0;
+      om = 1;
+    }
+    const back = mode === "chase" ? 6.5 : 8;
+    const lift = mode === "chase" ? 2.6 : 4.2;
+    cam.up.set(0, 1, 0);
+    cam.position.set(px + (ox / om) * back, py + lift, pz + (oz / om) * back);
+    cam.lookAt(_lookSmooth);
+  }
+  _desired.copy(cam.position);
+  _pos.copy(cam.position);
+}
+
 function CameraRig() {
   const playing = useGame((s) => s.playing);
   const freeCamLive = useGame((s) => s.freeCamLive);
@@ -640,6 +678,32 @@ function CameraRig() {
       prevMode.current = mode;
       return;
     }
+    if (world.whistle === "crowd") {
+      _crowdCam = true;
+      snapCrowdFollow(cam, mode);
+      writeCamBasis(cam);
+      projectUser(cam);
+      prevMode.current = mode;
+      return;
+    }
+    let crowdSnap = false;
+    if (_crowdCam) {
+      _crowdCam = false;
+      crowdSnap = true;
+      _follow.set(world.faceX, Math.max(0.35, world.puck.y), world.faceZ);
+      world.freeCam.tx = world.faceX;
+      world.freeCam.ty = Math.max(0.45, world.puck.y);
+      world.freeCam.tz = world.faceZ;
+      _crowdCut = mode === "freestyle" && !freeCamLive;
+    }
+    if (crowdSnap && mode === "freestyle") {
+      applyFreeCam(cam);
+      _pos.copy(cam.position);
+      writeCamBasis(cam);
+      projectUser(cam);
+      prevMode.current = mode;
+      return;
+    }
     if (mode === "freestyle" && freeCamLive) {
       world.freeCamReapply = false;
       const fc = world.freeCam;
@@ -687,7 +751,7 @@ function CameraRig() {
     const skater = drillCam ? world.skaters[world.userId] : undefined;
     const puckSpd = skater ? Math.hypot(skater.vx, skater.vz) : Math.hypot(puck.vx, puck.vz);
     const rate = puckJump > 9 ? 14 : 4.6 + Math.min(9, puckSpd * 0.42);
-    const followK = idle || switched || puckJump > 16 ? 1 : 1 - Math.exp(-rate * d);
+    const followK = idle || switched || crowdSnap || puckJump > 16 ? 1 : 1 - Math.exp(-rate * d);
     _follow.x += (px - _follow.x) * followK;
     _follow.z += (pz - _follow.z) * followK;
     _follow.y += (py - _follow.y) * followK;
@@ -807,10 +871,10 @@ function CameraRig() {
 
     if (mode !== "high") {
       const dist = _pos.distanceTo(_desired);
-      const k = switched || dist > 18 || zoneUrgent ? 1 : 1 - Math.exp(-2.4 * d);
+      const k = switched || crowdSnap || dist > 18 || zoneUrgent ? 1 : 1 - Math.exp(-2.4 * d);
       _pos.lerp(_desired, k);
     }
-    const lookK = switched || zoneUrgent ? 1 : 1 - Math.exp(-3.2 * d);
+    const lookK = switched || crowdSnap || zoneUrgent ? 1 : 1 - Math.exp(-3.2 * d);
     _lookSmooth.lerp(_look, lookK);
     if (mode === "classic") {
       _pos.z = _lookSmooth.z;
@@ -856,6 +920,11 @@ function FreestyleControls() {
     }
     if (live) cam.up.set(0, 1, 0);
     if (!c || !live) return;
+    if (playing && world.whistle === "crowd") {
+      c.enabled = false;
+      c.target.set(world.puck.x, world.puck.y, world.puck.z);
+      return;
+    }
     c.enabled = true;
     c.enableDamping = true;
     if (playing) {
@@ -866,7 +935,9 @@ function FreestyleControls() {
       const ty = drillCam ? drillCam.y : Math.max(0.45, p.y);
       const snap = drillCam !== null && world.drillView !== seenDrill.current;
       if (snap) seenDrill.current = world.drillView;
-      const k = snap ? 1 : 0.12;
+      const cut = _crowdCut;
+      if (cut) _crowdCut = false;
+      const k = snap || cut ? 1 : 0.12;
       c.target.x += (tx - c.target.x) * k;
       c.target.z += (tz - c.target.z) * k;
       c.target.y += (ty - c.target.y) * k;

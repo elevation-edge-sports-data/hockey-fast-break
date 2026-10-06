@@ -8,6 +8,7 @@ export type Lineup = { g: number; d: number; o: number };
 export type PlayMode = "practice" | "scrimmage" | "game" | "drill";
 export type DrillTargets = 4 | 8 | 12 | 16;
 export type ControlProfile = "classic" | "wings";
+export type WhistleKind = "goal" | "cover" | "offside" | "brawl" | "crowd" | null;
 
 export const LINEUP_CAP = 6;
 export const CHAOS_CAP = 11;
@@ -79,7 +80,7 @@ type GameUi = {
   chargeKind: "pass" | "shot" | null;
   homeScore: number;
   awayScore: number;
-  whistle: "goal" | "cover" | "offside" | "brawl" | null;
+  whistle: WhistleKind;
   delayedOffside: boolean;
   passChain: number;
   goalSide: "home" | "away" | null;
@@ -126,7 +127,7 @@ type GameUi = {
   setCharge: (n: number, kind: "pass" | "shot" | null) => void;
   setHomeScore: (n: number) => void;
   setAwayScore: (n: number) => void;
-  setWhistle: (w: "goal" | "cover" | "offside" | "brawl" | null) => void;
+  setWhistle: (w: WhistleKind) => void;
   setDelayedOffside: (v: boolean) => void;
   setPassChain: (n: number) => void;
   setGoalSide: (s: "home" | "away" | null) => void;
