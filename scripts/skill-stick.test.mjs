@@ -54,11 +54,17 @@ function user() {
   return world.skaters[world.userId];
 }
 
-function localX(s = user()) {
+function localXZ(s = user()) {
   const ry = s.yaw + Math.PI;
   const dx = world.puck.x - s.x;
   const dz = world.puck.z - s.z;
-  return dx * Math.cos(ry) - dz * Math.sin(ry);
+  const c = Math.cos(ry);
+  const sn = Math.sin(ry);
+  return { x: dx * c - dz * sn, z: dx * sn + dz * c };
+}
+
+function localX(s = user()) {
+  return localXZ(s).x;
 }
 
 function speed() {
@@ -174,10 +180,40 @@ test("up from neutral is a snap", () => {
 
 test("right then up is a wrist, and a deeper roll is a harder wrist", () => {
   fresh();
+  const rest = localXZ();
+  assert.ok(Math.abs(rest.x) < 0.12, `neutral x ${rest.x}`);
+  assert.ok(rest.z > 0.4, `neutral z ${rest.z}`);
+  assert.equal(user().stickPull, 0);
+  assert.equal(user().deke, 0);
+  assert.equal(world.lastShotKind, null);
+
+  hold(0.9, 0);
+  const fore = localX();
+  assert.ok(fore < rest.x - 0.45, `forehand ${fore} from ${rest.x}`);
+  assert.equal(user().stickPull, -1);
+  assert.equal(user().deke, 0);
+  assert.equal(world.lastShotKind, null);
+  assert.equal(world.puck.owner, user().id);
+  assert.equal(world.lastShoot, -10);
+
+  hold(-0.9, 0);
+  const back = localX();
+  assert.ok(back > rest.x + 0.45, `backhand ${back} from ${rest.x}`);
+  assert.equal(user().stickPull, 1);
+  assert.equal(user().deke, 0);
+  assert.equal(world.lastShotKind, null);
+
+  setInjectedAim(0, 0);
+  step(2);
+  assert.ok(Math.abs(localX()) < 0.12, `release ${localX()}`);
+  assert.equal(user().stickPull, 0);
+  assert.equal(world.lastShotKind, null);
+
+  fresh();
   hold(0.9, -0.25);
   assert.equal(world.puck.owner, user().id);
   assert.equal(world.lastShoot, -10);
-  assert.ok(localX() < 0);
+  assert.ok(localX() < rest.x - 0.45, `wrist load ${localX()}`);
   release(0, 1);
   const soft = shotOf();
   assert.equal(soft.kind, "wrist");
@@ -224,6 +260,7 @@ test("pull back and a toe drag are slap, only on the forehand", () => {
   hold(0.39, -0.92, 3);
   assert.ok(user().windup > 0.5);
   assert.equal(user().stickPull, 0);
+  assert.ok(localX() < -0.4, `slap load ${localX()}`);
   release(0, 1);
   const solid = shotOf();
   assert.equal(solid.kind, "slap");
@@ -270,16 +307,16 @@ test("a side hold does not shoot, and a resting stick does not plant", () => {
 
 test("the left stick aims and the right stick does not", () => {
   fresh();
-  centerBlade();
   hold(0.9, -0.2, 3);
+  centerBlade();
   release(-0.2, 0.98, ["KeyD"]);
   const right = world.puck.vz;
   assert.equal(world.lastShotKind, "wrist");
   assert.ok(right > 0.4, `ls right vz ${right}`);
 
   fresh();
-  centerBlade();
   hold(0.9, -0.2, 3);
+  centerBlade();
   release(-0.2, 0.98, ["KeyA"]);
   const left = world.puck.vz;
   assert.ok(left < -0.4, `ls left vz ${left}`);
@@ -296,10 +333,10 @@ test("the left stick aims and the right stick does not", () => {
   assert.ok(classic > 0.4, `classic rs vz ${classic}`);
 
   fresh("stick");
-  centerBlade();
   setInjectedAim(1, 0);
   setInjectedKeys(["KeyF"]);
   step(2);
+  centerBlade();
   setInjectedKeys([]);
   step(1);
   assert.equal(world.lastShotKind, "wrist");
@@ -765,6 +802,328 @@ test("skill stick RB plus right stick pokes once along the stick", () => {
   step(1);
   assert.ok(user().dive > 1, "Wings RB still dives");
   assert.equal(user().hit, 0);
+});
+
+test("sideways aim pokes and does not set the check struck impulse; stick-up still checks and does not poke", () => {
+  fresh("stick", "scrimmage");
+  const foe = placeCarrier(0.5, 2);
+  foe.yaw = Math.PI;
+  user().yaw = -Math.PI / 2;
+  const hitAt = world.lastHitTime;
+  setInjectedAim(1, 0);
+  step(1);
+  const face = headingOf(user());
+  assert.ok(Math.abs(face.fx) < 0.2 && face.fz > 0.9, `stick right faces +Z ${face.fx} ${face.fz}`);
+  assert.ok(user().poke > 0.2, "sideways pokes");
+  assert.equal(user().hit, 0);
+  assert.equal(user().dive, 0);
+  assert.equal(world.lastHitTime, hitAt, "no check");
+  assert.equal(world.lastShotKind, null);
+  assert.equal(world.puck.owner, null, "carried puck knocked free");
+  assert.ok(foe.struck < 1, `check struck impulse ${foe.struck}`);
+  assert.ok(Math.hypot(foe.vx, foe.vz) < 6, `knockback ${foe.vx} ${foe.vz}`);
+  step(40);
+  assert.equal(user().poke, 0, "holding the stick does not poke again");
+  assert.equal(user().hit, 0);
+  assert.equal(world.lastHitTime, hitAt);
+
+  setInjectedAim(0, 0);
+  step(2);
+  setInjectedAim(1, 0);
+  step(1);
+  assert.ok(user().poke > 0.2, "a new sideways push pokes again");
+  assert.equal(user().hit, 0);
+  assert.equal(world.lastHitTime, hitAt);
+
+  fresh("stick", "scrimmage");
+  placeCarrier(12, 8).stun = 30;
+  user().yaw = -Math.PI / 2;
+  world.puck.owner = null;
+  world.puck.x = 0.4;
+  world.puck.z = 1.7;
+  world.puck.y = 0.042;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  const looseHit = world.lastHitTime;
+  setInjectedAim(1, 0);
+  step(1);
+  assert.ok(user().poke > 0.2, "sideways pokes at a loose puck");
+  assert.equal(user().hit, 0);
+  assert.equal(world.lastHitTime, looseHit);
+  assert.equal(world.puck.owner, null, "loose puck stays free");
+  assert.ok(world.puck.vz > 4 && Math.abs(world.puck.vx) < 2, `loose knock ${world.puck.vx} ${world.puck.vz}`);
+
+  fresh("stick", "scrimmage");
+  placeCarrier(12, 8).stun = 30;
+  user().yaw = Math.PI;
+  world.puck.owner = null;
+  world.puck.x = -0.4;
+  world.puck.z = -1.7;
+  world.puck.y = 0.042;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  setInjectedAim(-1, 0);
+  step(1);
+  const left = headingOf(user());
+  assert.ok(Math.abs(left.fx) < 0.2 && left.fz < -0.9, `stick left faces -Z ${left.fx} ${left.fz}`);
+  assert.equal(world.puck.owner, null);
+  assert.ok(world.puck.vz < -4 && Math.abs(world.puck.vx) < 2, `left knock ${world.puck.vx} ${world.puck.vz}`);
+  assert.equal(user().hit, 0);
+
+  fresh("stick", "scrimmage");
+  const upFoe = placeCarrier(1.1, 0);
+  setInjectedAim(0, 1);
+  step(1);
+  const up = headingOf(user());
+  assert.ok(up.fx > 0.9 && Math.abs(up.fz) < 0.2, `stick up faces +X ${up.fx} ${up.fz}`);
+  assert.equal(user().poke, 0, "stick up does not poke");
+  assert.ok(user().hit > 0, "stick up checks");
+  assert.ok(upFoe.struck > 1, `check struck ${upFoe.struck}`);
+  assert.ok(upFoe.vx > 6 && Math.abs(upFoe.vz) < 4, `check knock ${upFoe.vx} ${upFoe.vz}`);
+
+  fresh("stick", "scrimmage");
+  const yFoe = placeCarrier(1.1, 0);
+  user().yaw = -Math.PI / 2;
+  setInjectedKeys(["KeyQ"]);
+  setInjectedAim(1, 0);
+  step(1);
+  assert.equal(user().poke, 0, "Y does not poke");
+  assert.ok(user().hit > 0, "Y still checks");
+  assert.ok(yFoe.struck > 1, "Y still lays down the check");
+  setInjectedKeys([]);
+
+  fresh("stick", "scrimmage");
+  placeCarrier(12, 8).stun = 30;
+  const blade = stickBlade(user());
+  world.puck.owner = null;
+  world.puck.x = blade.x;
+  world.puck.z = blade.z;
+  world.puck.y = 0.042;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  setInjectedKeys(["KeyF"]);
+  setInjectedAim(0, 0);
+  step(1);
+  assert.equal(world.puck.owner, user().id, "X still picks up a loose puck");
+  setInjectedKeys([]);
+
+  fresh("classic", "scrimmage");
+  const classicFoe = placeCarrier(0, 1.1);
+  setInjectedAim(1, 0);
+  step(1);
+  assert.equal(user().poke, 0);
+  assert.equal(user().hit, 0);
+  assert.equal(classicFoe.struck, 0);
+
+  fresh("wings", "scrimmage");
+  const wingsFoe = placeCarrier(0, 1.1);
+  setInjectedAim(1, 0);
+  step(1);
+  assert.equal(user().poke, 0);
+  assert.equal(user().hit, 0);
+  assert.equal(wingsFoe.struck, 0);
+});
+
+test("classic and wings still carry on the forehand", () => {
+  fresh("classic");
+  assert.ok(localX() < -0.5, `classic ${localX()}`);
+  fresh("wings");
+  assert.ok(localX() < -0.5, `wings ${localX()}`);
+});
+
+function worldFromLocal(s, lx, lz) {
+  const ry = s.yaw + Math.PI;
+  const c = Math.cos(ry);
+  const sn = Math.sin(ry);
+  return { x: s.x + lx * c + lz * sn, z: s.z - lx * sn + lz * c };
+}
+
+function bodyLocal(s, x, z) {
+  const ry = s.yaw + Math.PI;
+  const c = Math.cos(ry);
+  const sn = Math.sin(ry);
+  const dx = x - s.x;
+  const dz = z - s.z;
+  return { x: dx * c - dz * sn, z: dx * sn + dz * c };
+}
+
+function parkExcept(ids) {
+  const keep = new Set(ids);
+  for (const o of world.skaters) {
+    if (keep.has(o.id)) continue;
+    o.x = (o.side === "home" ? -1 : 1) * (16 + (o.id % 3));
+    o.z = ((o.id % 9) - 4) * 1.5;
+    o.vx = 0;
+    o.vz = 0;
+    o.stun = 60;
+    o.hit = 0;
+    o.poke = 0;
+    o.struck = 0;
+    o.dive = 0;
+    o.tumble = 0;
+  }
+}
+
+function awayWinger() {
+  const foe = world.skaters.find((p) => p.side === "away" && p.kind === "winger");
+  assert.ok(foe);
+  return foe;
+}
+
+/**
+ * Checker body on wantSign of the carrier's local X, stick within a CPU poke.
+ * wantSign +1 is local +X. The blade that reaches is the checker's own forehand.
+ */
+function seekChecker(holder, px, pz, wantSign) {
+  const foe = awayWinger();
+  let best = null;
+  let closest = 99;
+  let closestAhead = 99;
+  for (let lx = 0.45; lx <= 2.05; lx += 0.1) {
+    for (let lz = -1.2; lz <= 2.4; lz += 0.1) {
+      const pos = worldFromLocal(holder, wantSign * lx, lz);
+      for (let i = 0; i < 36; i++) {
+        foe.x = pos.x;
+        foe.z = pos.z;
+        foe.yaw = (i / 36) * Math.PI * 2 - Math.PI;
+        foe.stickPull = 0;
+        foe.deke = 0;
+        const blade = stickBlade(foe);
+        const d = Math.hypot(blade.x - px, blade.z - pz);
+        const face = headingOf(foe);
+        const ahead = (holder.x - foe.x) * face.fx + (holder.z - foe.z) * face.fz;
+        const rel = bodyLocal(holder, foe.x, foe.z);
+        if (Math.sign(rel.x) !== wantSign || Math.abs(rel.x) < 0.35) continue;
+        if (d < closest) closest = d;
+        if (ahead > 0.3 && d < closestAhead) closestAhead = d;
+        if (d < 1.15 && ahead > 0.3 && (!best || d < best.d)) {
+          best = { d, ahead, x: foe.x, z: foe.z, yaw: foe.yaw, lx: rel.x };
+        }
+      }
+    }
+  }
+  assert.ok(best, `no poke on local-x sign ${wantSign} closest ${closest} ahead ${closestAhead}`);
+  return best;
+}
+
+function armChecker(spot) {
+  const foe = awayWinger();
+  foe.x = spot.x;
+  foe.z = spot.z;
+  foe.yaw = spot.yaw;
+  foe.vx = 0;
+  foe.vz = 0;
+  foe.stun = 2;
+  foe.struck = 0;
+  foe.hit = 0;
+  foe.poke = 0.5;
+  foe.dive = 0;
+  foe.tumble = 0;
+  foe.deke = 0;
+  foe.stickPull = 0;
+  return foe;
+}
+
+test("skill stick held deke protects the far side only", () => {
+  function setup(profile = "stick") {
+    fresh(profile, "scrimmage");
+    parkExcept([user().id]);
+    settleUser();
+    user().yaw = -Math.PI / 2;
+    const blade = stickBlade(user());
+    world.puck.x = blade.x;
+    world.puck.z = blade.z;
+    world.passChain = 0;
+  }
+
+  function pokeFrom(wantSign) {
+    const holder = user();
+    const spot = seekChecker(holder, world.puck.x, world.puck.z, wantSign);
+    const foe = armChecker(spot);
+    step(1);
+    const rel = bodyLocal(holder, foe.x, foe.z);
+    return { foe, rel, d: spot.d, ahead: spot.ahead, owner: world.puck.owner };
+  }
+
+  setup();
+  hold(0.9, 0);
+  const forePuck = localX();
+  assert.ok(forePuck < -0.5, `forehand blade ${forePuck}`);
+  assert.equal(user().stickPull, -1);
+  assert.equal(user().deke, 0);
+  assert.equal(world.lastShotKind, null);
+  const foreSign = Math.sign(forePuck);
+  const far = pokeFrom(-foreSign);
+  assert.equal(Math.sign(far.rel.x), -foreSign);
+  assert.ok(far.d < 1.2, `far reach ${far.d}`);
+  assert.ok(far.ahead > 0.22, `far ahead ${far.ahead}`);
+  assert.equal(far.owner, user().id, "far-side poke should not take the puck");
+  assert.equal(far.foe.struck, 0);
+  assert.equal(world.lastShotKind, null);
+  assert.equal(user().deke, 0);
+
+  setup();
+  hold(0.9, 0);
+  const bladeSign = Math.sign(localX());
+  const near = pokeFrom(bladeSign);
+  assert.equal(Math.sign(near.rel.x), bladeSign);
+  assert.ok(near.d < 1.2, `blade reach ${near.d}`);
+  assert.notEqual(near.owner, user().id, "blade-side poke should take the puck");
+  assert.equal(world.lastShotKind, null);
+
+  setup();
+  hold(-0.9, 0);
+  const backPuck = localX();
+  assert.ok(backPuck > 0.5, `backhand blade ${backPuck}`);
+  assert.equal(user().stickPull, 1);
+  assert.equal(user().deke, 0);
+  const backSign = Math.sign(backPuck);
+  const backFar = pokeFrom(-backSign);
+  assert.equal(backFar.owner, user().id, "backhand far side still protects");
+  assert.equal(world.lastShotKind, null);
+  setup();
+  hold(-0.9, 0);
+  const backNear = pokeFrom(Math.sign(localX()));
+  assert.notEqual(backNear.owner, user().id, "backhand blade side still steals");
+
+  setup();
+  hold(0.9, 0);
+  const heldSign = Math.sign(localX());
+  setInjectedAim(0, 0);
+  step(6);
+  const rested = localXZ();
+  assert.ok(Math.abs(rested.x) < 0.12, `release x ${rested.x}`);
+  assert.ok(rested.z > 0.4, `release z ${rested.z}`);
+  assert.equal(user().stickPull, 0);
+  assert.equal(world.lastShotKind, null);
+  const tail = pokeFrom(-heldSign);
+  assert.equal(tail.owner, user().id, "release tail still denies the far side");
+  parkExcept([user().id]);
+  settleUser();
+  user().yaw = -Math.PI / 2;
+  const home = stickBlade(user());
+  world.puck.owner = user().id;
+  world.puck.x = home.x;
+  world.puck.z = home.z;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  setInjectedAim(0, 0);
+  step(30);
+  assert.equal(user().stickPull, 0);
+  const open = pokeFrom(-heldSign);
+  assert.notEqual(open.owner, user().id, "tail has ended");
+
+  for (const profile of ["classic", "wings"]) {
+    setup(profile);
+    hold(0.9, 0);
+    assert.equal(user().stickPull, 0);
+    assert.equal(world.lastShotKind, null);
+    const openSide = pokeFrom(Math.sign(localX()) || -1);
+    assert.notEqual(openSide.owner, user().id, `${profile} side hold does not protect`);
+  }
 });
 
 test("classic up on the right stick does not snap", () => {

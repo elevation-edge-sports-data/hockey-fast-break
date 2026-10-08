@@ -799,7 +799,7 @@ function ControlsHelp() {
         {stick ? (
           <div>
             <dt>Skill Stick</dt>
-            <dd>Right stick up snaps, right then up is a wrist, left then up is a backhand, pull back then up is a slap. Left stick aims. X is tap wrist or hold slap.</dd>
+            <dd>Right stick up snaps, hold right or left keeps the puck on that side and protects it from a poke on the other side, right then up is a wrist, left then up is a backhand, pull back then up is a slap. Without the puck, stick up checks and a sideways push pokes along the blade. Left stick aims. X is tap wrist or hold slap.</dd>
           </div>
         ) : null}
       </dl>
@@ -923,20 +923,6 @@ function PauseOrbit() {
   );
 }
 
-function VersionArchive() {
-  return (
-    <nav className="lab-versions" aria-label="Version archive">
-      <span className="lab-versions-label">Archive</span>
-      <a href="archive/v0/index.html">v0</a>
-      <a href="archive/v1/index.html">v1</a>
-      <a href="archive/v2/index.html">v2</a>
-      <a href="./" aria-current="page">
-        v3
-      </a>
-    </nav>
-  );
-}
-
 export function Overlay() {
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
@@ -1020,7 +1006,6 @@ export function Overlay() {
 
   return (
     <div className={playing ? "hud" : "hud is-title"}>
-      <VersionArchive />
       <div className="hud-top-stack">
         {(playing && !paused && clockMode === "drill") || replay ? null : (
         <div className="uni-banner">

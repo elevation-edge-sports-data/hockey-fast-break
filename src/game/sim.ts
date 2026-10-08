@@ -28,7 +28,7 @@ import {
 } from "./rink";
 import { goalieRaisedHandCovers } from "./goalieStance";
 import { readActions, setInjectedKeys, type Actions } from "./input";
-import { dekePuckLocal, skaterKnobLocal, skaterPlateLocal } from "./stickSide";
+import { dekePuckLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal } from "./stickSide";
 import {
   CHAOS_CAP,
   LINEUP_CAP,
@@ -85,7 +85,7 @@ export type Skater = {
   gloveFlash: number;
   /** LB stance. Torso faces the other end; vx/vz still carry the skates. */
   backskate: boolean;
-  /** 0 forehand plate, 1 full backhand. Skill Stick side hold only. Not a deke. */
+  /** Skill Stick aimed deke. −1 forehand, 0 neutral, +1 backhand. Not the Y auto-deke. */
   stickPull: number;
 };
 
@@ -996,6 +996,8 @@ let boardBank: {
 let passMeet: { x: number; z: number } | null = null;
 let userWinding = false;
 let skillStickLoading = false;
+/** This frame is a left/right aimed deke, so the 3s X shield must not arm. */
+let skillStickSideHold = false;
 let userStickCommit = false;
 
 /** Larger than shotAim's 0.16 so a resting right stick does not shoot or plant. */
@@ -1042,6 +1044,13 @@ let skillHitYaw: number | null = null;
 let skillPokePush = false;
 /** Facing for that poke. The X poke reads heading(yaw) and the blade. */
 let skillPokeYaw: number | null = null;
+/**
+ * Sideways push with no RB. The poke still runs, but a loose puck in the stick
+ * lane is knocked free instead of collected. Cleared when that poke ends.
+ */
+let skillSweepPoke = false;
+/** This sweep already touched the puck, so the rest of the poke does not collect it. */
+let skillSweepBat = false;
 
 function clearSkillStickHit(): void {
   skillRsNeutral = true;
@@ -1050,6 +1059,8 @@ function clearSkillStickHit(): void {
   skillHitYaw = null;
   skillPokePush = false;
   skillPokeYaw = null;
+  skillSweepPoke = false;
+  skillSweepBat = false;
 }
 
 function trackSkillStick(act: Actions): void {
@@ -1066,8 +1077,49 @@ function trackSkillStick(act: Actions): void {
  * Poke shield while A or X is held with the puck.
  * One window per button per possession, from the first frame that button is down.
  * The window is a hard cap: it does not auto-pass or auto-shoot, and a later press does not refresh it.
+ * A Skill Stick left/right hold does not use this. That protect is skillProtectSide.
  */
 const USER_A_PROTECT_S = 3;
+/**
+ * Aimed-deke protect. While the right stick is held left or right the blade stays
+ * on that side, and a poke from the other side does not take the puck.
+ * Releasing the stick returns the blade to the center plate. The denial keeps
+ * the side it had for this long, well under a second, then ends.
+ * −1 is the forehand (body local −X). +1 is the backhand (body local +X).
+ */
+const SKILL_PROTECT_TAIL = 0.4;
+let skillProtectSide = 0;
+let skillProtectUntil = -1;
+
+function clearSkillProtect(): void {
+  skillProtectSide = 0;
+  skillProtectUntil = -1;
+}
+
+/** Side hold of the aimed deke. Each frame pushes the short release tail out. */
+function holdSkillProtect(side: -1 | 1): void {
+  skillProtectSide = side;
+  skillProtectUntil = world.time + SKILL_PROTECT_TAIL;
+  skillStickSideHold = true;
+}
+
+function skillProtectLive(): boolean {
+  return skillProtectSide !== 0 && world.time < skillProtectUntil;
+}
+
+/**
+ * Checker body in the carrier's yaw+π frame.
+ * Blade local X has the same sign as skillProtectSide, so the other sign is the exposed side.
+ * A checker nearly on the center line is not on either side.
+ */
+function skillProtectBlocks(holder: Skater, poker: Skater): boolean {
+  if (!skillProtectLive()) return false;
+  if (holder.id !== world.userId) return false;
+  if (useGame.getState().controlProfile !== "stick") return false;
+  const rel = skaterLocal(holder, poker.x, poker.z);
+  if (Math.abs(rel.lx) < 0.25) return false;
+  return Math.sign(rel.lx) !== skillProtectSide;
+}
 let userAProtectId = -1;
 let userAProtectUntil = -1;
 let userXProtectId = -1;
@@ -1934,6 +1986,7 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
   ui.setShotKind(null);
   freshSkillGesture();
   clearSkillStickHit();
+  clearSkillProtect();
   ui.setReplay(false);
   beginUserCheck();
   if (holdLive || holdOrbit) {
@@ -2452,8 +2505,11 @@ function updateCoverPose(dt: number): void {
     const crash = creaseCrash(s);
     const moving = Math.hypot(s.vx, s.vz) > 1.5;
     const scoredOn = world.whistle === "goal" && !!world.goalSide && s.side !== world.goalSide;
-    const freezeHold = holding && !moving && (s.side === "home" || crash <= 2.15);
+    const coverZone = goalieDefendZone(s.side, puck.x);
+    const freezeHold =
+      coverZone && holding && !moving && (s.side === "home" || crash <= 2.15);
     const nearLoose =
+      coverZone &&
       !scoredOn &&
       puck.owner === null &&
       world.coverT > 0.12 &&
@@ -2526,10 +2582,15 @@ function updateGoaliePads(s: Skater, dt: number): void {
     return;
   }
   const postPlay = postContact(goalieOwnEnd(s));
+  const barPlay = postPlay ? null : barContact(goalieOwnEnd(s));
   if (postPlay && s.tumble === 0 && s.struck <= 0.18) {
     const onBlocker = (Math.sign(postPlay.zPost) || 1) === (attackDir(s.side) > 0 ? 1 : -1);
     lWant = onBlocker ? 0.62 : 0.24;
     rWant = onBlocker ? 0.24 : 0.62;
+    leanWant = 0.3;
+  } else if (barPlay && s.tumble === 0 && s.struck <= 0.18) {
+    lWant = 0.55;
+    rWant = 0.55;
     leanWant = 0.3;
   } else if (s.coverPose > 0.35) {
     lWant = 0.52;
@@ -5057,7 +5118,8 @@ function postSaveAnchor(g: Skater, zPost: number): { x: number; z: number } {
 
 /**
  * Shot path that meets a post, including a high corner.
- * A clear miss outside the pipe, and a crossbar that is not on a post, return null.
+ * A clear miss outside the pipe returns null.
+ * A crossbar that is not on a post is barContact, not this sweep.
  * Same horizontal step as stepPuck so the call and the collision agree.
  */
 function postContact(side: 1 | -1): PostContact | null {
@@ -5163,6 +5225,130 @@ function slideGoalieToPost(s: Skater, zPost: number, dt: number): void {
   } else {
     s.rPad = Math.max(s.rPad, 0.62);
   }
+  collideSkater(s);
+  const rest = faceYaw(s.side);
+  s.yaw = turnToward(s.yaw, -Math.sin(rest), -Math.cos(rest), 6, dt);
+}
+
+type BarContact = { z: number; y: number };
+
+let barMemoKey = "";
+const barMemo = new Map<number, BarContact | null>();
+
+/**
+ * Body just in front of the crossbar, inside the posts.
+ * Same depth as the post stack: not clamped to crease zMax.
+ */
+function barSaveAnchor(g: Skater, zBar: number): { x: number; z: number } {
+  const end = goalieOwnEnd(g);
+  const mouth = end * GOAL_LINE_X;
+  const hw = GOAL_W / 2 - 0.2;
+  const z = Math.max(-hw, Math.min(hw, zBar));
+  return { x: mouth - end * 0.62, z };
+}
+
+/**
+ * Shot path that meets the crossbar.
+ * A clear miss over the bar returns null, so the goalie may keep watching.
+ * Same step as findPostContact and stepPuck. A post is not this sweep.
+ */
+function barContact(side: 1 | -1): BarContact | null {
+  const puck = world.puck;
+  const key = [
+    world.time,
+    puck.owner ?? -1,
+    puck.x,
+    puck.y,
+    puck.z,
+    puck.vx,
+    puck.vy,
+    puck.vz,
+    world.lastShoot,
+    world.lastShooter ?? -1,
+    world.lastPass,
+    world.reboundSoft ? 1 : 0,
+  ].join("|");
+  if (key !== barMemoKey) {
+    barMemoKey = key;
+    barMemo.clear();
+  }
+  if (barMemo.has(side)) return barMemo.get(side) ?? null;
+  const hit = findBarContact(side);
+  barMemo.set(side, hit);
+  return hit;
+}
+
+function findBarContact(side: 1 | -1): BarContact | null {
+  const puck = world.puck;
+  if (puck.owner !== null || world.whistle || world.stoppage || world.goalBank) return null;
+  if (!shotAtThisNet(side) || puck.vx * side < 4.5) return null;
+  const mouth = side * GOAL_LINE_X;
+  const along0 = (mouth - puck.x) * side;
+  if (along0 < -0.25 || along0 > 48) return null;
+  let x = puck.x;
+  let y = puck.y;
+  let z = puck.z;
+  let vx = puck.vx;
+  let vy = puck.vy;
+  let vz = puck.vz;
+  const hw = GOAL_W / 2;
+  const dt = 1 / 60;
+  const steps = Math.min(150, Math.ceil(along0 / Math.max(3, puck.vx * side) / dt) + 8);
+  const soft = world.reboundSoft;
+  const barRad = CROSSBAR_R + PUCK_R;
+  for (let i = 0; i < steps; i++) {
+    const px = x;
+    const py = y;
+    const pz = z;
+    x += vx * dt;
+    z += vz * dt;
+    y += vy * dt;
+    vy -= 12 * dt;
+    if (y <= PUCK_Y) {
+      y = PUCK_Y;
+      if (soft) {
+        if (vy < 0) vy *= -0.06;
+        if (Math.abs(vy) < 0.55) vy = 0;
+        vx *= 0.62;
+        vz *= 0.62;
+      } else {
+        if (vy < 0) vy *= -0.28;
+        if (Math.abs(vy) < 0.4) vy = 0;
+      }
+    }
+    const damp = Math.exp((soft ? -1.85 : -0.35) * dt);
+    vx *= damp;
+    vz *= damp;
+    const swept = segmentCircle(px, py, x, y, mouth, GOAL_H, barRad);
+    if (swept) {
+      const zHit = pz + (z - pz) * swept.t;
+      if (Math.abs(zHit) <= hw + 0.02) return { z: zHit, y: GOAL_H };
+    }
+    if ((px - mouth) * side < 0.2 && (x - mouth) * side > 0.28) break;
+    if (Math.hypot(vx, vz) < 2.2) break;
+  }
+  return null;
+}
+
+/** Slide onto the crossbar. No poke: that flare must not beat the inbound save. */
+function slideGoalieToBar(s: Skater, zBar: number, dt: number): void {
+  const spot = barSaveAnchor(s, zBar);
+  const dx = spot.x - s.x;
+  const dz = spot.z - s.z;
+  const dist = Math.hypot(dx, dz);
+  const rate = s.side === "home" ? 7.2 : 6.4;
+  const step = Math.min(dist, rate * dt);
+  if (dist > 1e-5) {
+    s.x += (dx / dist) * step;
+    s.z += (dz / dist) * step;
+  }
+  s.trackZ = spot.z;
+  s.trackVz = 0;
+  s.vx = 0;
+  s.vz = 0;
+  s.lean = 0.26;
+  s.lPad = Math.max(s.lPad, 0.55);
+  s.rPad = Math.max(s.rPad, 0.55);
   collideSkater(s);
   const rest = faceYaw(s.side);
   s.yaw = turnToward(s.yaw, -Math.sin(rest), -Math.cos(rest), 6, dt);
@@ -5275,6 +5461,11 @@ function thinkGoalie(s: Skater, dt: number): void {
   const postPlay = postContact(goalieOwnEnd(s));
   if (postPlay) {
     slideGoalieToPost(s, postPlay.zPost, dt);
+    return;
+  }
+  const barPlay = barContact(goalieOwnEnd(s));
+  if (barPlay) {
+    slideGoalieToBar(s, barPlay.z, dt);
     return;
   }
 
@@ -5658,8 +5849,18 @@ function goalieCompactButterfly(s: Skater): boolean {
 }
 
 /**
+ * A crossbar on this net. Same flight gates as barContact, not the 7 m/s shot-save cutoff,
+ * so a slowing long shot still holds the raised save. A miss over the bar is not a threat.
+ */
+function shotThreatensBar(s: Skater): boolean {
+  if (s.kind !== "goalie") return false;
+  return barContact(goalieOwnEnd(s)) !== null;
+}
+
+/**
  * Raised blocker save, or a full butterfly with the hands at the posts.
  * A top-corner shot uses this instead of the compact butterfly.
+ * A crossbar threat does too: the compact butterfly must not take the crease back.
  * Other shots in flight still use it, except in the compact-butterfly window.
  * A length clear sets goalieShot and leaves both butterflies, so the zone stance returns.
  */
@@ -5667,6 +5868,7 @@ export function goalieButterflyPose(s: Skater): boolean {
   if (s.kind !== "goalie") return false;
   if (s.dive > 0.04 || s.tumble !== 0 || s.celebrate > 0.05) return false;
   if (world.goalieShot !== null) return false;
+  if (shotThreatensBar(s)) return true;
   if (goalieShotSave(s)) {
     if (shotAimsTopCorner(s)) return true;
     if (goalieCompactButterfly(s)) return false;
@@ -5685,6 +5887,7 @@ export function goalieButterflyPose(s: Skater): boolean {
 export function goalieZKind(s: Skater): GoalieZKind | null {
   if (s.kind !== "goalie") return null;
   if (s.dive > 0.04 || s.tumble !== 0 || s.celebrate > 0.05) return null;
+  if (world.goalieShot === null && shotThreatensBar(s)) return null;
   if (goalieShotSave(s) && (shotAimsTopCorner(s) || !goalieCompactButterfly(s))) return null;
   if (s.coverPose > 0.08 && !goalieCompactButterfly(s)) return null;
   const zone = zoneAtX(world.puck.x);
@@ -5711,7 +5914,7 @@ export function goaliePlaysPuck(s: Skater): boolean {
   if (s.gloveFlash > 0.12 || s.coverPose > 0.08) return false;
   if (world.stoppage || world.faceoff || world.goalieShot !== null) return false;
   if (world.puck.owner === s.id) return true;
-  if (goalieShotSave(s)) return false;
+  if (goalieShotSave(s) || shotThreatensBar(s)) return false;
   const end = (defendDir(s.side) > 0 ? 1 : -1) as 1 | -1;
   if (zoneAtX(world.puck.x) === end) {
     const sinceSave = world.time - world.goalieSaveT;
@@ -5729,6 +5932,19 @@ export function noteGoalieMidBlade(s: Skater, x: number, z: number): void {
   goalieMidBlade.set(s.id, skaterLocal(s, x, z));
 }
 
+/**
+ * Skill Stick user who is carrying. −1 forehand, 0 center, +1 backhand.
+ * null keeps the classic forehand plate, including a slap load.
+ */
+function skillStickCarryPull(s: Skater): number | null {
+  if (s.kind === "goalie" || s.id !== world.userId) return null;
+  if (world.puck.owner !== s.id || s.deke > 0.02) return null;
+  if (useGame.getState().controlProfile !== "stick") return null;
+  if (s.stickPull > 0.02 || s.stickPull < -0.02) return Math.max(-1, Math.min(1, s.stickPull));
+  if (s.windup > 0.5) return null;
+  return 0;
+}
+
 export function stickBlade(s: Skater): { x: number; z: number } {
   // Skater plate is the shooter's right in this yaw+π frame (same point as the mesh).
   // Facing +X (yaw −π/2) that lands at world +Z, classic-camera screen-right.
@@ -5737,6 +5953,8 @@ export function stickBlade(s: Skater): { x: number; z: number } {
   // Upright, perimeter, mid, and the compact butterfly replace that sample with the posed blade center.
   // The raised butterfly, the dive, and a shot save keep the fixed sample.
   // A deke carries the skater plate across to local +X. The mesh blade crosses it.
+  // Skill Stick possession with the stick centered uses the center line, in front of the skates.
+  // A side hold pulls that plate to the forehand or the backhand. A slap load keeps this plate.
   const plate = s.kind === "goalie" ? null : skaterPlateLocal();
   let lx = plate ? plate.x : -0.73;
   let lz = plate ? plate.z : 1.35;
@@ -5744,11 +5962,19 @@ export function stickBlade(s: Skater): { x: number; z: number } {
     const across = dekePuckLocal(s.deke);
     lx = across.x;
     lz = across.z;
-  } else if (plate && s.stickPull > 0.02 && world.puck.owner === s.id) {
-    const across = dekePuckLocal(0.525 * Math.min(1, s.stickPull));
-    lx = across.x;
-    lz = across.z;
-  } else if (s.kind === "goalie" && goalieZKind(s)) {
+  } else if (plate) {
+    const skillPull = skillStickCarryPull(s);
+    if (skillPull !== null) {
+      const at = skillCarryLocal(skillPull);
+      lx = at.x;
+      lz = at.z;
+    } else if (s.stickPull > 0.02 && world.puck.owner === s.id) {
+      const across = dekePuckLocal(0.525 * Math.min(1, s.stickPull));
+      lx = across.x;
+      lz = across.z;
+    }
+  }
+  if (s.kind === "goalie" && goalieZKind(s)) {
     const noted = goalieMidBlade.get(s.id);
     if (noted) {
       lx = noted.lx;
@@ -5851,6 +6077,16 @@ function zoneAtX(x: number): 0 | 1 | -1 {
   if (x > edge) return 1;
   if (x < -edge) return -1;
   return 0;
+}
+
+/**
+ * Puck x is in this goalie's defensive zone.
+ * zoneAtX counts the ice behind their own goal line as their end.
+ * Neutral ice and the other end do not.
+ */
+function goalieDefendZone(side: "home" | "away", x: number): boolean {
+  const end = defendDir(side) > 0 ? 1 : -1;
+  return zoneAtX(x) === end;
 }
 
 function offsidesLive(): boolean {
@@ -7192,8 +7428,13 @@ function goalieLengthPlay(s: Skater, play: FarPlay): void {
   beginShotSpeedTrack();
 }
 
+/** In their end, a goalie waits out the cover hold before a pass or clear. */
+function goalieMustHoldCover(s: Skater): boolean {
+  return goalieDefendZone(s.side, world.puck.x) && world.coverT < GOALIE_HOLD;
+}
+
 function doGoalieOutlet(s: Skater, mx: number, my: number, saucer: boolean): void {
-  if (world.coverT < GOALIE_HOLD) return;
+  if (goalieMustHoldCover(s)) return;
   s.coverPose = 0;
   world.coverT = 0;
   const { ax, az } = aimDir(s, mx, my);
@@ -8373,7 +8614,7 @@ function doShot(
     return;
   }
   if (s.kind === "goalie") {
-    if (world.coverT < GOALIE_HOLD) return;
+    if (goalieMustHoldCover(s)) return;
     goalieLengthPlay(s, farPlayFromStick(mx, my, slap));
     world.shotWindupT = 0;
     if (useGame.getState().clockMode === "drill") armDrillShot();
@@ -8783,7 +9024,9 @@ function refreshUserStickCommit(act: Actions): void {
   }
   const aLive = holdingA && userAProtectId === user.id && world.time < userAProtectUntil;
   const skaterShot =
-    user.kind !== "goalie" && !world.windupCancel && (act.xDown || skillStickLoading);
+    user.kind !== "goalie" &&
+    !world.windupCancel &&
+    (act.xDown || (skillStickLoading && !skillStickSideHold));
   if (skaterShot && userXProtectId !== user.id) {
     userXProtectId = user.id;
     userXProtectUntil = world.time + USER_A_PROTECT_S;
@@ -8835,6 +9078,7 @@ function pokeCheck(user: Skater): void {
     if (!holder || holder.side === user.side) return;
     if (userStickCommitHolds(holder.id)) return;
     if (holder.deke > 0.06) return;
+    if (skillProtectBlocks(holder, user)) return;
     const dBlade = Math.hypot(blade.x - puck.x, blade.z - puck.z);
     const dBody = Math.hypot(user.x - holder.x, user.z - holder.z);
     const ahead = (holder.x - user.x) * fx + (holder.z - user.z) * fz;
@@ -8905,6 +9149,7 @@ function pokeCheck(user: Skater): void {
       );
       holder.stun = dive ? 0.62 : cpu ? 0.24 : 0.42;
       holder.struck = dive ? 0.48 : cpu ? 0.16 : 0.32;
+      if (skillSweepPoke && user.id === world.userId) skillSweepBat = true;
       world.lastPass = world.time;
       if (cpu) {
         world.lastPassTo = null;
@@ -8932,6 +9177,20 @@ function pokeCheck(user: Skater): void {
   const dBody = Math.hypot(user.x - puck.x, user.z - puck.z);
   const bladeHit = user.poke > 0 && d < 0.95 * (stance ? 1.35 : 1) && puck.y < 0.4;
   const throughBody = stance && !liveShotFlight() && dBody < user.radius * 1.35 && puck.y < 1.2;
+  if (skillSweepPoke && user.id === world.userId && user.poke > 0 && sweepLooseContact(user)) {
+    if (!skillSweepBat) {
+      skillSweepBat = true;
+      const { fx, fz } = heading(user.yaw);
+      noteRelease("poke", user);
+      puck.vx = fx * 8.2;
+      puck.vz = fz * 8.2;
+      puck.vy = 0.18;
+      world.lastPass = world.time;
+      world.lastPasser = user.id;
+      world.lastPassTo = null;
+    }
+    return;
+  }
   if (bladeHit || throughBody) {
     if (world.time < stickLooseUntil && (user.id !== world.userId || user.id === stickLooseFrom))
       return;
@@ -9236,7 +9495,7 @@ function beginUserCheck(): void {
   if (u) armCheckSwing(u);
 }
 
-/** Y, and a Skill Stick push with no puck. Stoppage is the frozen-puck check. */
+/** Y, and a Skill Stick stick-up or pull-back with no puck. A sideways push pokes instead. Stoppage is the frozen-puck check. */
 function pressUserCheck(user: Skater): void {
   if (world.stoppage) {
     user.hit = 0.55;
@@ -9260,19 +9519,32 @@ function keepSkillHitFacing(user: Skater): void {
 }
 
 /**
- * Mark one defensive right-stick push. Does not swing yet.
- * Stick-up / stick-right use the camera basis, the same one skate uses.
- * Camera forward +X (camFx 1, camFz 0) and stick up faces yaw -PI/2, heading +X.
+ * Right stick in the camera basis skating already uses.
+ * Stick up with camFx 1 and camFz 0 is world +X.
+ * atan2(-x, -z) matches heading(): that stick-up case is yaw -PI/2, heading +X.
+ * Stick right (aimX 1) with camRx 0 and camRz 1 is world +Z.
+ */
+function stickPushYaw(act: Actions): number | null {
+  const x = world.camRx * act.aimX + world.camFx * act.aimY;
+  const z = world.camRz * act.aimX + world.camFz * act.aimY;
+  if (Math.hypot(x, z) < 1e-4) return null;
+  return Math.atan2(-x, -z);
+}
+
+/**
+ * Mark one defensive right-stick push that is a body check. Does not swing yet.
+ * Live play sends a sideways push to skillStickSweep instead.
+ * Stoppage still arms any direction, including sideways.
+ * The aim uses the camera basis skating already uses.
  */
 function armSkillStickHit(user: Skater, act: Actions, hasPuck: boolean): void {
   if (!skillRsRising) return;
   if (useGame.getState().controlProfile !== "stick") return;
   if (hasPuck || user.kind === "goalie") return;
-  const x = world.camRx * act.aimX + world.camFx * act.aimY;
-  const z = world.camRz * act.aimX + world.camFz * act.aimY;
-  if (Math.hypot(x, z) < 1e-4) return;
+  const yaw = stickPushYaw(act);
+  if (yaw === null) return;
   skillHitPush = true;
-  skillHitYaw = Math.atan2(-x, -z);
+  skillHitYaw = yaw;
 }
 
 /** Y wins the frame. Otherwise the armed stick push throws that same check. */
@@ -9289,32 +9561,63 @@ function finishSkillStickHit(user: Skater, yAlready: boolean): void {
 
 /**
  * Skill Stick, no puck, not the goalie: hold RB and one right-stick push.
- * Same 0.36 crossing as the hit. RS alone still arms the check.
- * Camera forward +X (camFx 1, camFz 0) and stick up faces yaw -PI/2, heading +X.
+ * Same 0.36 crossing as the hit. Any direction, including stick-up.
+ * A sideways push with no RB is skillStickSweep, not this.
  */
 function skillStickPokePush(user: Skater, act: Actions): boolean {
   if (!act.rbDown || !skillRsRising) return false;
   if (useGame.getState().controlProfile !== "stick") return false;
   if (user.kind === "goalie" || world.puck.owner === user.id) return false;
-  const x = world.camRx * act.aimX + world.camFx * act.aimY;
-  const z = world.camRz * act.aimX + world.camFz * act.aimY;
-  return Math.hypot(x, z) >= 1e-4;
+  return stickPushYaw(act) !== null;
+}
+
+/**
+ * Skill Stick, no puck, not the goalie: one sideways push, no RB.
+ * Forehand and backhand only. Stick-up stays the body check.
+ * Faces along that stick direction and uses the X poke, so the blade can
+ * knock a carried puck free. It does not arm the check.
+ */
+function skillStickSweep(user: Skater, act: Actions): boolean {
+  if (!skillRsRising) return false;
+  if (useGame.getState().controlProfile !== "stick") return false;
+  if (user.kind === "goalie" || world.puck.owner === user.id) return false;
+  const sec = skillSector(act.aimX, act.aimY);
+  if (sec !== "fore" && sec !== "back") return false;
+  return stickPushYaw(act) !== null;
+}
+
+/**
+ * Loose puck on the blade, or in a narrow lane along the stick.
+ * The lane is shorter and tighter than a body check.
+ */
+function sweepLooseContact(user: Skater): boolean {
+  const puck = world.puck;
+  if (puck.y >= 0.4) return false;
+  const blade = stickBlade(user);
+  if (Math.hypot(blade.x - puck.x, blade.z - puck.z) < 0.95) return true;
+  const { fx, fz } = heading(user.yaw);
+  const dx = puck.x - user.x;
+  const dz = puck.z - user.z;
+  const ahead = dx * fx + dz * fz;
+  const lat = Math.abs(dx * fz - dz * fx);
+  return ahead > 0.3 && ahead < 1.75 && lat < 0.45;
 }
 
 function faceSkillStickPoke(user: Skater, act: Actions): void {
-  const x = world.camRx * act.aimX + world.camFx * act.aimY;
-  const z = world.camRz * act.aimX + world.camFz * act.aimY;
-  if (Math.hypot(x, z) < 1e-4) return;
-  skillPokeYaw = Math.atan2(-x, -z);
+  const yaw = stickPushYaw(act);
+  if (yaw === null) return;
+  skillPokeYaw = yaw;
   user.yaw = skillPokeYaw;
 }
 
 function keepSkillPokeFacing(user: Skater): void {
-  if (skillPokeYaw === null) return;
   if (user.poke <= 0) {
     skillPokeYaw = null;
+    skillSweepPoke = false;
+    skillSweepBat = false;
     return;
   }
+  if (skillPokeYaw === null) return;
   if (user.hit > 0) return;
   user.yaw = skillPokeYaw;
 }
@@ -11222,7 +11525,7 @@ function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number)
           !cornerSnipeLive() &&
           shotAtThisNet(side)
         ) {
-          applyShotIron(puck, side, "bar", barZ, GOAL_H);
+          if (!tryDefendBar(puck, side, barZ)) applyShotIron(puck, side, "bar", barZ, GOAL_H);
           return;
         }
         noteDrillPipe();
@@ -11274,7 +11577,8 @@ function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number)
             return;
           }
         } else if (Math.abs(zAt) <= hw + 0.08 && yAt >= GOAL_H - 0.4 && yAt <= GOAL_H + 0.45) {
-          applyShotIron(puck, side, "bar", Math.max(-hw + 0.2, Math.min(hw - 0.2, zAt)), GOAL_H);
+          const zBar = Math.max(-hw + 0.2, Math.min(hw - 0.2, zAt));
+          if (!tryDefendBar(puck, side, zBar)) applyShotIron(puck, side, "bar", zBar, GOAL_H);
           return;
         }
         shotIron = null;
@@ -11928,6 +12232,56 @@ function tryDefendPost(puck: Puck, side: 1 | -1, zPost: number, yHit: number): b
   return true;
 }
 
+/**
+ * Save attempt at the crossbar, before iron.
+ * Same miss gates as tryDefendPost. The post's over-the-bar reject does not apply:
+ * this call is the bar. A clear miss never reaches it. A miss here still hits iron.
+ */
+function tryDefendBar(puck: Puck, side: 1 | -1, zBar: number): boolean {
+  const g = defendingGoalie(side);
+  if (!g || g.tumble !== 0 || g.struck > 0.45) return false;
+  if (world.lastPasser === g.id && world.time - world.lastPass < 1.05) return false;
+  const spot = barSaveAnchor(g, zBar);
+  if (Math.hypot(g.x - spot.x, g.z - spot.z) > 0.42) return false;
+  const yHit = GOAL_H;
+  const shooter = world.lastShooter !== null ? world.skaters[world.lastShooter] : undefined;
+  const rush = shooter ? rushCounts(shooter.side) : { attackers: 0, defenders: 1 };
+  const oddMan = world.lastShotOneTimer && rush.defenders === 0 && rush.attackers >= 2;
+  const farOt = world.lastShotOneTimer && world.lastShotDist > 12.2;
+  const clutterOt = !!(world.lastShotOneTimer && shooter && defendersInLane(shooter) > 0);
+  if (oddMan && g.side === "away" && Math.random() < 0.92) return false;
+  if (
+    g.side === "home" &&
+    shooter?.side === "away" &&
+    world.reboundN >= 1 &&
+    rush.defenders === 0
+  ) {
+    if (Math.random() < (world.reboundN >= 2 ? 0.58 : 0.3)) return false;
+  }
+  if (
+    world.lastShotOneTimer &&
+    !farOt &&
+    !clutterOt &&
+    world.lastOneTimerDanger > 0.48 &&
+    Math.abs(zBar - g.z) > 0.38 &&
+    Math.random() < world.lastOneTimerDanger * 0.32
+  ) {
+    return false;
+  }
+  if (g.side === "home" && whiffHot() && shooter?.side === "away" && Math.random() < 0.4)
+    return false;
+  if (cpuSaveMiss(g, yHit, zBar)) return false;
+  const mouth = side * GOAL_LINE_X;
+  applyGoalieSave(
+    g,
+    puck,
+    g.side === "home" ? 0.22 : 0.9,
+    mouth - side * (0.55 + Math.random() * 0.4),
+    onGloveSave(g, yHit, zBar),
+  );
+  return true;
+}
+
 function trySave(puck: Puck, prevX: number, prevZ: number, prevY: number): boolean {
   for (const side of [1, -1] as const) {
     const mouth = side * GOAL_LINE_X;
@@ -12295,6 +12649,10 @@ function checkCover(dt: number, act: Actions): void {
   if (puck.owner !== null) {
     const holder = world.skaters[puck.owner];
     if (holder?.kind === "goalie") {
+      if (!goalieDefendZone(holder.side, puck.x)) {
+        world.coverT = Math.max(0, world.coverT - dt * 2);
+        return;
+      }
       if (world.coverT <= 0) world.coverSideZ = puck.z;
       world.coverT += dt;
       if (holder.gloveFlash > 0.12) return;
@@ -12660,6 +13018,7 @@ function tryPickup(puck: Puck): void {
     if (dekeCommitBlocks(s.id)) continue;
     if (justReleased && s.side === "away") continue;
     if (s.kind === "goalie") {
+      if (!goalieDefendZone(s.side, puck.x)) continue;
       if (s.stun > 0.2 || s.struck > 0.3 || s.tumble !== 0) continue;
       const behind = puck.x * defendDir(s.side) > GOAL_LINE_X - 0.2;
       const dG = Math.hypot(s.x - puck.x, s.z - puck.z);
@@ -12774,6 +13133,7 @@ function tryPickup(puck: Puck): void {
   if (best >= 0) {
     const s = world.skaters[best]!;
     if (s.kind === "goalie") {
+      if (!goalieDefendZone(s.side, puck.x)) return;
       if (Math.hypot(s.x - puck.x, s.z - puck.z) > 1.45) return;
       const hold = goaliePuckHold(s);
       if (segmentHitsCage(puck.x, puck.z, hold.x, hold.z)) return;
@@ -14896,7 +15256,8 @@ function seatUserPuck(user: Skater): void {
 
 function skillPullFor(sec: SkillSide | "up" | "neutral", x: number, prev: number): number {
   if (sec === "back" || (sec === "down" && x < -0.12)) return 1;
-  if (sec === "fore" || (sec === "down" && x > 0.12)) return 0;
+  if (sec === "fore") return -1;
+  if (sec === "down" && x > 0.12) return 0;
   return prev;
 }
 
@@ -14923,20 +15284,30 @@ function skillRelease(user: Skater): ShotRelease {
   return { kind: "snap", mph: snapMph(spd) };
 }
 
+/** Forehand is −1 (local −X). Backhand is +1 (local +X). Down and up are not the hold. */
+function aimedDekeSide(sec: SkillSide | "up" | "neutral"): -1 | 1 | 0 {
+  if (sec === "fore") return -1;
+  if (sec === "back") return 1;
+  return 0;
+}
+
 function stepSkillStick(user: Skater, act: Actions, allowShot: boolean): { loading: boolean } {
   if (skillHitPush || skillPokePush) {
     if (user.stickPull !== 0) user.stickPull = 0;
     freshSkillGesture();
+    clearSkillProtect();
     return { loading: false };
   }
   if (useGame.getState().controlProfile !== "stick" || user.kind === "goalie" || world.puck.owner !== user.id) {
     if (user.stickPull !== 0) user.stickPull = 0;
     freshSkillGesture();
+    clearSkillProtect();
     return { loading: false };
   }
   const x = act.aimX;
   const y = act.aimY;
   const sec = skillSector(x, y);
+  const side = aimedDekeSide(sec);
   if (sec === "neutral") {
     freshSkillGesture();
     if (user.stickPull !== 0) user.stickPull = 0;
@@ -14957,7 +15328,10 @@ function stepSkillStick(user: Skater, act: Actions, allowShot: boolean): { loadi
   }
   if (act.xDown) {
     if (sec === "up") skillG.fired = true;
-    else noteSkillLoad(user, x, y, sec);
+    else {
+      if (side !== 0) holdSkillProtect(side);
+      noteSkillLoad(user, x, y, sec);
+    }
     return { loading: false };
   }
   if (sec === "up") {
@@ -14974,6 +15348,7 @@ function stepSkillStick(user: Skater, act: Actions, allowShot: boolean): { loadi
     }
     return { loading: true };
   }
+  if (side !== 0) holdSkillProtect(side);
   noteSkillLoad(user, x, y, sec);
   return { loading: true };
 }
@@ -14982,6 +15357,7 @@ function stepPlay(dt: number, act: Actions): void {
   latchPrecede();
   userWinding = false;
   skillStickLoading = false;
+  skillStickSideHold = false;
   userStickCommit = false;
   clearBackskate();
   const ui = useGame.getState();
@@ -15422,7 +15798,10 @@ function stepPlay(dt: number, act: Actions): void {
     if (!act.xDown) world.windupCancel = false;
   } else {
     const yHit = act.yEdge && user.kind !== "goalie";
-    const skillPoke = !yHit && skillStickPokePush(user, act);
+    const rbPoke = !yHit && skillStickPokePush(user, act);
+    const sweep = !yHit && !rbPoke && skillStickSweep(user, act);
+    const skillPoke = rbPoke || sweep;
+    if (sweep) skillSweepPoke = true;
     if (skillPoke) skillPokePush = true;
     else armSkillStickHit(user, act, false);
     if (user.kind !== "goalie") stepSkillStick(user, act, false);
@@ -15628,7 +16007,13 @@ function stepPlay(dt: number, act: Actions): void {
       const n = nearestFoe(user);
       if (n.foe && n.d < 1.85) world.idlePokeT += dt;
       else world.idlePokeT = Math.max(0, world.idlePokeT - dt * 0.35);
-      if (world.idlePokeT >= 2 && n.foe && n.d < 1.85 && !userStickCommit) {
+      if (
+        world.idlePokeT >= 2 &&
+        n.foe &&
+        n.d < 1.85 &&
+        !userStickCommit &&
+        !skillProtectBlocks(user, n.foe)
+      ) {
         cpuIdlePoke(n.foe, user);
       }
     } else {

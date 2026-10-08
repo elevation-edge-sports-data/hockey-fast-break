@@ -44,9 +44,10 @@ const store = await server.ssrLoadModule("/src/game/store.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
 const { GOALIE_Z, GOALIE_SOCKET_X, GOALIE_SOCKET_Y, poseGoaliePlay, poseGoalieZLimbs } = stance;
-const { goaliePlaysPuck, goalieShotSave, goalieZKind, resetWorld, stepSim, world } = sim;
+const { goalieButterflyPose, goaliePlaysPuck, goalieShotSave, goalieZKind, resetWorld, stepSim, world } =
+  sim;
 const { useGame } = store;
-const { GOAL_LINE_X, GOAL_W } = rink;
+const { FACEOFF_EZ_X, FACEOFF_R, GOAL_H, GOAL_LINE_X, GOAL_PIPE_R, GOAL_W } = rink;
 
 function basis(root) {
   root.updateWorldMatrix(true, true);
@@ -609,4 +610,261 @@ test("play pose is only the loose-puck handling, not a save", () => {
   parkExcept(away.id);
   stepSim(1 / 60);
   assert.equal(goaliePlaysPuck(away), true);
+});
+
+const PUCK_Y = 0.042;
+const BAR_R = GOAL_PIPE_R + 0.04;
+const CIRCLE_TOP = GOAL_LINE_X - FACEOFF_EZ_X + FACEOFF_R;
+// Horizontal drag means a slower shot from farther out dies before the post and bar sweeps reach the mouth.
+const RELEASE = CIRCLE_TOP + 1.5;
+const SHOT_V = 18;
+
+function segCircle(x0, y0, x1, y1, cx, cy, rad) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const fx = x0 - cx;
+  const fy = y0 - cy;
+  const a = dx * dx + dy * dy;
+  if (a < 1e-8) return null;
+  const b = 2 * (fx * dx + fy * dy);
+  const c = fx * fx + fy * fy - rad * rad;
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return null;
+  const root = Math.sqrt(disc);
+  const t1 = (-b - root) / (2 * a);
+  const t2 = (-b + root) / (2 * a);
+  const t = t1 >= 0 && t1 <= 1 ? t1 : t2 >= 0 && t2 <= 1 ? t2 : null;
+  if (t === null) return null;
+  return { t, x: x0 + dx * t, y: y0 + dy * t };
+}
+
+/** Same 1/60 step as the goalie bar and post sweeps. */
+function predictShot(x0, z0, vx, vy, end) {
+  const mouth = end * GOAL_LINE_X;
+  const hw = GOAL_W / 2;
+  let x = x0;
+  let y = PUCK_Y;
+  let z = z0;
+  let pvx = vx;
+  let pvy = vy;
+  let pvz = 0;
+  const dt = 1 / 60;
+  const along0 = (mouth - x) * end;
+  const steps = Math.min(150, Math.ceil(along0 / Math.max(3, pvx * end) / dt) + 8);
+  let bar = false;
+  let post = false;
+  let yCross = null;
+  for (let i = 0; i < steps; i++) {
+    const px = x;
+    const py = y;
+    const pz = z;
+    x += pvx * dt;
+    z += pvz * dt;
+    y += pvy * dt;
+    pvy -= 12 * dt;
+    if (y <= PUCK_Y) {
+      y = PUCK_Y;
+      if (pvy < 0) pvy *= -0.28;
+      if (Math.abs(pvy) < 0.4) pvy = 0;
+    }
+    const damp = Math.exp(-0.35 * dt);
+    pvx *= damp;
+    pvz *= damp;
+    const barHit = segCircle(px, py, x, y, mouth, GOAL_H, BAR_R);
+    if (barHit) {
+      const zHit = pz + (z - pz) * barHit.t;
+      if (Math.abs(zHit) <= hw + 0.02) bar = true;
+    }
+    for (const zPost of [hw, -hw]) {
+      const postHit = segCircle(px, pz, x, z, mouth, zPost, 0.11);
+      if (!postHit) continue;
+      const yHit = py + (y - py) * postHit.t;
+      if (yHit <= GOAL_H + 0.08 && yHit >= -0.02) post = true;
+    }
+    if (yCross === null && (px - mouth) * end <= 0 && (x - mouth) * end >= 0) {
+      const span = x - px || 1;
+      yCross = py + (y - py) * ((mouth - px) / span);
+    }
+    if ((px - mouth) * end < 0.2 && (x - mouth) * end > 0.28) break;
+    if (Math.hypot(pvx, pvz) < 2.2) break;
+  }
+  return { bar, post, yCross };
+}
+
+function vyAimedAtBar(x, z, vx, end) {
+  let lo = null;
+  let hi = null;
+  for (let vy = 2; vy <= 32; vy += 0.04) {
+    const hit = predictShot(x, z, vx, vy, end);
+    if (hit.bar && !hit.post) {
+      if (lo === null) lo = vy;
+      hi = vy;
+    } else if (lo !== null) {
+      break;
+    }
+  }
+  assert.ok(lo !== null && hi !== null, "no crossbar loft");
+  return (lo + hi) / 2;
+}
+
+function vyClearlyOver(x, z, vx, end) {
+  for (let vy = 6; vy <= 40; vy += 0.08) {
+    const hit = predictShot(x, z, vx, vy, end);
+    if (!hit.bar && !hit.post && hit.yCross !== null && hit.yCross > GOAL_H + 0.45) return vy;
+  }
+  assert.fail("no over-bar loft");
+}
+
+function vyAimedAtPost(x, z, vx, end) {
+  let best = null;
+  for (let vy = 0; vy <= 14; vy += 0.04) {
+    const hit = predictShot(x, z, vx, vy, end);
+    if (!hit.post || hit.bar || hit.yCross === null || hit.yCross > 0.7) continue;
+    const err = Math.abs(hit.yCross - 0.45);
+    if (!best || err < best.err) best = { vy, err };
+  }
+  assert.ok(best, "no post loft");
+  return best.vy;
+}
+
+function inSaveStance(g) {
+  return goalieButterflyPose(g) || goalieZKind(g) === "butterfly";
+}
+
+function placeLongShot(end, z, vy) {
+  live();
+  const mouth = end * GOAL_LINE_X;
+  const g = goalie(end > 0 ? "away" : "home");
+  const shooter = world.skaters.find(
+    (s) => s.side === (end > 0 ? "home" : "away") && s.kind !== "goalie",
+  );
+  assert.ok(shooter);
+  world.userId = shooter.id;
+  g.x = mouth - end * 0.9;
+  g.z = 0;
+  g.vx = 0;
+  g.vz = 0;
+  g.lean = 0;
+  g.poke = 0;
+  g.dive = 0;
+  g.tumble = 0;
+  g.coverPose = 0;
+  g.lPad = 15 / 90;
+  g.rPad = 15 / 90;
+  world.puck.owner = null;
+  world.puck.x = mouth - end * RELEASE;
+  world.puck.z = z;
+  world.puck.y = PUCK_Y;
+  world.puck.vx = 0;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+  parkExcept(g.id);
+  calmSkaters();
+  g.x = mouth - end * 0.9;
+  g.z = 0;
+  assert.ok((mouth - world.puck.x) * end > CIRCLE_TOP + 1);
+  assert.equal(goalieButterflyPose(g), false);
+  assert.notEqual(goalieZKind(g), "butterfly");
+  assert.equal(goalieShotSave(g), false);
+  world.lastShooter = shooter.id;
+  world.lastShoot = world.time;
+  world.lastPass = -10;
+  world.puck.vx = end * SHOT_V;
+  world.puck.vy = vy;
+  world.puck.vz = 0;
+  return { g, x0: g.x, mouth };
+}
+
+test("a long shot at the crossbar leaves idle and plays the save", () => {
+  for (const end of [1, -1]) {
+    const mouth = end * GOAL_LINE_X;
+    const x = mouth - end * RELEASE;
+    const vx = end * SHOT_V;
+    const vy = vyAimedAtBar(x, 0, vx, end);
+    const aimed = predictShot(x, 0, vx, vy, end);
+    assert.equal(aimed.bar, true, `end ${end} loft must meet the bar`);
+    assert.equal(aimed.post, false);
+
+    const { g, x0 } = placeLongShot(end, 0, vy);
+    let leftIdle = false;
+    let challenged = false;
+    let stillSaving = false;
+    for (let i = 0; i < 200; i++) {
+      const along = (mouth - world.puck.x) * end;
+      if (along < 0.35) break;
+      parkExcept(g.id);
+      stepSim(1 / 60);
+      const alongAfter = (mouth - world.puck.x) * end;
+      const toward = (g.x - x0) * end;
+      if (inSaveStance(g)) leftIdle = true;
+      if (toward > 0.2) challenged = true;
+      if (alongAfter < 4 && alongAfter > 0.2 && inSaveStance(g) && g.lean > 0.22 && toward > 0.2) {
+        stillSaving = true;
+      }
+      if (alongAfter < 0.2) break;
+    }
+    assert.equal(leftIdle, true, `end ${end} stayed idle`);
+    assert.equal(challenged, true, `end ${end} watched from the crease`);
+    assert.equal(stillSaving, true, `end ${end} dropped the save before the puck arrived`);
+  }
+});
+
+test("a shot clearly over the bar can still be watched", () => {
+  for (const end of [1, -1]) {
+    const mouth = end * GOAL_LINE_X;
+    const x = mouth - end * RELEASE;
+    const vx = end * SHOT_V;
+    const vy = vyClearlyOver(x, 0, vx, end);
+    const aimed = predictShot(x, 0, vx, vy, end);
+    assert.equal(aimed.bar, false);
+    assert.ok(aimed.yCross > GOAL_H + 0.45);
+
+    const { g, x0 } = placeLongShot(end, 0, vy);
+    let maxToward = 0;
+    let maxAbsZ = 0;
+    let maxLean = 0;
+    for (let i = 0; i < 200; i++) {
+      const along = (mouth - world.puck.x) * end;
+      if (along < 0.3) break;
+      parkExcept(g.id);
+      stepSim(1 / 60);
+      maxToward = Math.max(maxToward, (g.x - x0) * end);
+      maxAbsZ = Math.max(maxAbsZ, Math.abs(g.z));
+      maxLean = Math.max(maxLean, g.lean);
+      if ((mouth - world.puck.x) * end < 0.2) break;
+    }
+    assert.ok(maxToward < 0.2, `end ${end} challenged a miss (${maxToward})`);
+    assert.ok(maxAbsZ < 0.25, `end ${end} slid on a miss (${maxAbsZ})`);
+    assert.ok(maxLean < 0.2, `end ${end} leaned into a miss (${maxLean})`);
+  }
+});
+
+test("a long shot at the post still slides off the crease", () => {
+  for (const end of [1, -1]) {
+    for (const zSign of [1, -1]) {
+      const mouth = end * GOAL_LINE_X;
+      const z = zSign * (GOAL_W / 2);
+      const x = mouth - end * RELEASE;
+      const vx = end * SHOT_V;
+      const vy = vyAimedAtPost(x, z, vx, end);
+      const aimed = predictShot(x, z, vx, vy, end);
+      assert.equal(aimed.post, true, `end ${end} post ${zSign}`);
+      assert.equal(aimed.bar, false);
+
+      const { g } = placeLongShot(end, z, vy);
+      let leftIdle = false;
+      let slid = false;
+      for (let i = 0; i < 200; i++) {
+        const along = (mouth - world.puck.x) * end;
+        if (along < 0.35) break;
+        parkExcept(g.id);
+        stepSim(1 / 60);
+        if (inSaveStance(g)) leftIdle = true;
+        if ((g.z - 0) * zSign > 0.25 && g.lean > 0.22) slid = true;
+        if ((mouth - world.puck.x) * end < 0.2) break;
+      }
+      assert.equal(leftIdle, true, `end ${end} post ${zSign} stayed idle`);
+      assert.equal(slid, true, `end ${end} post ${zSign} did not slide`);
+    }
+  }
 });

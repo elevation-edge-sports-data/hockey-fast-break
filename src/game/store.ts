@@ -401,7 +401,14 @@ export const useGame = create<GameUi>((set, get) => ({
   },
   setClockMode: (m) => {
     saveClockMode(m);
+    const prev = get().clockMode;
     const lu = MODE_LINEUPS[m];
+    const powerPlay =
+      m === "practice" && prev !== "practice"
+        ? false
+        : prev === "practice" && m !== "practice"
+          ? loadFlag("hfb-power-play", true)
+          : undefined;
     set({
       clockMode: m,
       homeLineup: { ...lu.home },
@@ -413,6 +420,7 @@ export const useGame = create<GameUi>((set, get) => ({
       periodClock: m === "game" ? get().periodClock || 1200 : m === "drill" ? 60 : 1200,
       drillScore: 0,
       offsides: m === "game",
+      ...(powerPlay === undefined ? {} : { powerPlay }),
     });
   },
   setGameMinutes: (n) => {

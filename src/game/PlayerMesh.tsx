@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { createNetTexture, createNumberTexture } from "./iceTexture";
 import { attackDir, cheerFor, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, world, type Referee, type Skater } from "./sim";
 import { GOALIE_BUTTERFLY_BLADE_LEAD, GOALIE_Z, GOALIE_Z_BLADE_LEAD, poseGoalieButterflyArms, poseGoalieButterflyLimbs, poseGoalieHand, poseGoalieButterflyStanceLimbs, poseGoaliePlay, poseGoalieZArms, poseGoalieZLimbs } from "./goalieStance";
-import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, carryStickAim, dekePull, dekeStickAim, shotStickAim, stickFrame, type StickAim } from "./stickSide";
+import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, carryStickAim, dekePull, dekeStickAim, shotStickAim, skillCarryStickAim, stickFrame, type StickAim } from "./stickSide";
 import { kitById, type UniformKit } from "./uniforms";
 import { useGame } from "./store";
 import { BLUE_X, GOAL_H, GOAL_LINE_X } from "./rink";
@@ -2663,6 +2663,8 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     const carryPose = !goalie && world.puck.owner === index && !slapping && !wrist && !diving && !tumbling && !cheer && !rage && s.struck <= 0.2 && !brawlPoseFor(s.id);
     const dekePose = carryPose && s.deke > 0.02;
     const sidePose = carryPose && !dekePose && s.stickPull > 0.02;
+    const skillCarry =
+      carryPose && !dekePose && s.id === world.userId && useGame.getState().controlProfile === "stick";
     const dekeAmt = dekePose ? dekePull(s.deke) : sidePose ? dekePull(0.525 * Math.min(1, s.stickPull)) : 0;
     const pokeReach = !goalie && world.puck.owner !== index && (poke || puckNearSkater(s)) && !slapping && !wrist && !diving && !tumbling && !cheer && !rage && s.hit <= 0 && s.struck <= 0.2 && !brawlPoseFor(s.id);
     let pokePosed = false;
@@ -2922,7 +2924,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
           pokePosed = true;
         } else if (tumbleRise && hasPuck) applyStickAim(stick.current, carryOwnStickAim());
         else if (tumbleRise) applyStickAim(stick.current, readyStickAim());
-        else if (carryPose) applyStickAim(stick.current, dekePose ? dekeStickAim(s.deke) : sidePose ? dekeStickAim(0.525 * Math.min(1, s.stickPull)) : carryOwnStickAim());
+        else if (carryPose) applyStickAim(stick.current, dekePose ? dekeStickAim(s.deke) : skillCarry ? skillCarryStickAim(Math.max(-1, Math.min(1, s.stickPull))) : sidePose ? dekeStickAim(0.525 * Math.min(1, s.stickPull)) : carryOwnStickAim());
         else if (hasPuck || reach) applyStickAim(stick.current, carryStickAim());
         else applyStickAim(stick.current, readyStickAim());
         if (!fallHand && !wrist && !slapping && !hasPuck && !reach) {

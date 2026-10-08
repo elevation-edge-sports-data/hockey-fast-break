@@ -143,6 +143,48 @@ export function skaterPlateLocal(): V3 {
 }
 
 /**
+ * Skill Stick possession carry in the yaw+π frame.
+ * pull −1 is the shooter's right (local −X, forehand).
+ * pull 0 is the center line. Local Z is 0.84, ahead of the carry skate toe
+ * (sole z about −0.07, blade half-length 0.16, toe about 0.13).
+ * pull +1 is the shooter's left (local +X, backhand).
+ * Heel X is the mesh carry. The 55° roll is bladeGrp.rotation.z.
+ */
+const SKILL_SHAFT = (55 * Math.PI) / 180;
+const SKILL_REACH = 1.15;
+const SKILL_HEEL_Y = 0.03;
+const SKILL_HEEL_Z = 0.65;
+const SKILL_BLADE_ROLL = SKILL_SHAFT;
+
+export function skillCarryStickAim(pull: number): StickAim {
+  const t = Math.max(-1, Math.min(1, pull));
+  const mirror = t > 0.02;
+  const shaftX = Math.sin(SKILL_SHAFT) * (mirror ? -1 : 1);
+  return {
+    heel: [SKILL_REACH * t, SKILL_HEEL_Y, SKILL_HEEL_Z],
+    shaft: [shaftX, Math.cos(SKILL_SHAFT), 0],
+    blade: [0, 0, 1],
+  };
+}
+
+const SKILL_PLATE = { y: 0.026, z: 0.19 };
+
+export function skillCarryLocal(pull: number): V3 {
+  const aim = skillCarryStickAim(pull);
+  const f = stickFrame(aim);
+  const c = Math.cos(SKILL_BLADE_ROLL);
+  const s = Math.sin(SKILL_BLADE_ROLL);
+  const px = -SKILL_PLATE.y * s;
+  const py = SKILL_PLATE.y * c;
+  const pz = SKILL_PLATE.z;
+  return {
+    x: f.heel.x + f.axisX.x * px + f.axisY.x * py + f.axisZ.x * pz,
+    y: f.heel.y + f.axisX.y * px + f.axisY.y * py + f.axisZ.y * pz,
+    z: f.heel.z + f.axisX.z * px + f.axisY.z * py + f.axisZ.z * pz,
+  };
+}
+
+/**
  * 0 at the start of a deke (timer 1.05) and at the end (timer 0).
  * 1 at the middle, which is where a held deke sits.
  */
