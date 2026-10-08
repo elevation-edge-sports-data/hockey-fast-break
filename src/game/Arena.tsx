@@ -111,8 +111,12 @@ function SeatDeck() {
     if (!seats || !crowd) return;
     const dummy = _crowdDummy;
     const ui = useGame.getState();
-    const winHome = world.periodOver && ui.homeScore > ui.awayScore;
-    const winAway = world.periodOver && ui.awayScore > ui.homeScore;
+    const scrimmageHomeWin =
+      ui.clockMode === "scrimmage" && world.periodOver && world.goalSide === "home";
+    const scrimmageAwayWin =
+      ui.clockMode === "scrimmage" && world.periodOver && world.goalSide === "away";
+    const winHome = (world.periodOver && ui.homeScore > ui.awayScore) || scrimmageHomeWin;
+    const winAway = (world.periodOver && ui.awayScore > ui.homeScore) || scrimmageAwayWin;
     const drill = ui.clockMode === "drill";
     const brawl = world.lineBrawl !== null;
     const on = drill

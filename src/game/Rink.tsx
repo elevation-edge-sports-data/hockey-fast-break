@@ -48,8 +48,8 @@ import {
 } from "./rink";
 import { roundedRectShape, rinkPerimeter } from "./rinkGeom";
 import { kitById } from "./uniforms";
-import { useGame } from "./store";
-import { drillFade, drillGrid, drillTargetList, world } from "./sim";
+import { useGame, type DrillTargets } from "./store";
+import { defendDir, drillFade, drillGrid, drillTargetList, targetBoard, world } from "./sim";
 
 function extrudeRing(outerInset: number, innerInset: number, depth: number) {
   const outer = roundedRectShape(RINK_L, RINK_W, CORNER_R, outerInset);
@@ -244,8 +244,8 @@ function FaceoffDot({
 function FaceoffCircles() {
   const map = useMemo(() => createFaceoffDotTexture(), []);
   useLayoutEffect(() => () => map.dispose(), [map]);
-  const scrimmage = useGame((s) => s.clockMode) === "scrimmage";
-  const dots: readonly (readonly [number, number])[] = scrimmage
+  const roller = useGame((s) => s.clockMode) === "roller";
+  const dots: readonly (readonly [number, number])[] = roller
     ? [
         [FACEOFF_EZ_X, FACEOFF_SPOT_Z],
         [FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
@@ -668,14 +668,82 @@ function DrillTargets() {
   );
 }
 
+function ScrimmageBoard({
+  team,
+  count,
+  meshes,
+}: {
+  team: "home" | "away";
+  count: DrillTargets;
+  meshes: { current: (THREE.Mesh | null)[] };
+}) {
+  const { cols, rows, list } = targetBoard(count);
+  const hw = GOAL_W / 2;
+  const colW = GOAL_W / cols;
+  const rowH = GOAL_H / rows;
+  const netX = defendDir(team) * GOAL_LINE_X;
+  const towardCenter = -Math.sign(netX) * 0.05;
+  return (
+    <group position={[netX, 0, 0]}>
+      {list.map((t, i) => (
+        <mesh
+          key={i}
+          ref={(el) => {
+            meshes.current[i] = el;
+          }}
+          position={[towardCenter, (t.row + 0.5) * rowH, -hw + (t.col + 0.5) * colW]}
+          rotation={[0, -Math.PI / 2, 0]}
+        >
+          <planeGeometry args={[colW * 0.88, rowH * 0.88]} />
+          <meshBasicMaterial
+            color="#236192"
+            transparent
+            opacity={0.85}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function ScrimmageTargets() {
+  const mode = useGame((s) => s.clockMode);
+  const homeCount = useGame((s) => s.scrimmageHomeTargets);
+  const awayCount = useGame((s) => s.scrimmageAwayTargets);
+  const homeMesh = useRef<(THREE.Mesh | null)[]>([]);
+  const awayMesh = useRef<(THREE.Mesh | null)[]>([]);
+  useFrame(() => {
+    if (mode !== "scrimmage") return;
+    const home = targetBoard(homeCount).list;
+    for (let i = 0; i < home.length; i++) {
+      const g = homeMesh.current[i];
+      if (g) g.visible = !world.scrimmageHomeGone[i];
+    }
+    const away = targetBoard(awayCount).list;
+    for (let i = 0; i < away.length; i++) {
+      const g = awayMesh.current[i];
+      if (g) g.visible = !world.scrimmageAwayGone[i];
+    }
+  });
+  if (mode !== "scrimmage") return null;
+  return (
+    <group>
+      <ScrimmageBoard key={`home-${homeCount}`} team="home" count={homeCount} meshes={homeMesh} />
+      <ScrimmageBoard key={`away-${awayCount}`} team="away" count={awayCount} meshes={awayMesh} />
+    </group>
+  );
+}
+
 export function Rink() {
   const homeKit = useGame((s) => s.homeKit);
   const awayKit = useGame((s) => s.awayKit);
   const clockMode = useGame((s) => s.clockMode);
   const home = kitById(homeKit);
   const away = kitById(awayKit);
-  const showBlue = clockMode !== "scrimmage";
-  const nzDots = clockMode !== "scrimmage";
+  const showBlue = clockMode !== "roller";
+  const nzDots = clockMode !== "roller";
 
   const ice = useMemo(() => createIceTextures(showBlue, nzDots), [showBlue, nzDots]);
   const adsHome = useMemo(() => createAdTexture(home.ribbon, home.yoke), [home]);
@@ -803,6 +871,7 @@ export function Rink() {
       <Goal side={1} />
       <Goal side={-1} />
       <DrillTargets />
+      <ScrimmageTargets />
       <DrillCards />
     </group>
   );

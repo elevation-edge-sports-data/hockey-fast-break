@@ -578,14 +578,18 @@ h2 {
 
 .mode-grid {
   display: grid;
-  grid-template-columns: repeat(4, 9.5rem);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
   align-items: center;
+  width: min(100%, 760px);
 }
 
 .mode-grid > button {
   width: 100%;
   white-space: nowrap;
+  letter-spacing: 0.02em;
+  padding: 0 4px;
+  font-size: clamp(0.72rem, 1.6vw, 0.95rem);
 }
 
 .hud-actions {
@@ -896,7 +900,7 @@ h2 {
 
 .clock-setup {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 4px 8px;
   width: 100%;
   min-width: 0;
@@ -925,6 +929,13 @@ h2 {
   background: var(--color-fg);
   color: var(--color-bg);
   border-color: var(--color-fg);
+}
+
+.scrimmage-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 
 .clock-untimed {

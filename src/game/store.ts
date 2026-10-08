@@ -5,7 +5,7 @@ export type CamMode = "classic" | "chase" | "broadcast" | "high" | "freestyle";
 export type ArenaLook = "light" | "dark";
 
 export type Lineup = { g: number; d: number; o: number };
-export type PlayMode = "practice" | "scrimmage" | "game" | "drill";
+export type PlayMode = "practice" | "roller" | "scrimmage" | "game" | "drill";
 export type DrillTargets = 4 | 8 | 12 | 16;
 export type ControlProfile = "classic" | "wings" | "stick";
 export type ShotKind = "wrist" | "snap" | "slap" | "backhand";
@@ -16,17 +16,18 @@ export const CHAOS_CAP = 11;
 
 export const MODE_LINEUPS: Record<PlayMode, { home: Lineup; away: Lineup }> = {
   practice: { home: { g: 0, d: 0, o: 1 }, away: { g: 1, d: 0, o: 0 } },
-  scrimmage: { home: { g: 1, d: 1, o: 3 }, away: { g: 1, d: 1, o: 3 } },
+  roller: { home: { g: 1, d: 1, o: 3 }, away: { g: 1, d: 1, o: 3 } },
+  scrimmage: { home: { g: 0, d: 2, o: 3 }, away: { g: 0, d: 2, o: 3 } },
   game: { home: { g: 1, d: 2, o: 3 }, away: { g: 1, d: 2, o: 3 } },
   drill: { home: { g: 0, d: 0, o: 1 }, away: { g: 0, d: 0, o: 0 } },
 };
 
 export function modeLineupCap(mode: PlayMode): number {
-  return mode === "scrimmage" ? 5 : 6;
+  return mode === "roller" || mode === "scrimmage" ? 5 : 6;
 }
 
-export const DEFAULT_HOME: Lineup = { ...MODE_LINEUPS.scrimmage.home };
-export const DEFAULT_AWAY: Lineup = { ...MODE_LINEUPS.scrimmage.away };
+export const DEFAULT_HOME: Lineup = { ...MODE_LINEUPS.roller.home };
+export const DEFAULT_AWAY: Lineup = { ...MODE_LINEUPS.roller.away };
 
 export function lineupTotal(l: Lineup): number {
   return l.g + l.d + l.o;
@@ -94,6 +95,10 @@ type GameUi = {
   periodOver: boolean;
   drillScore: number;
   drillTargets: DrillTargets;
+  scrimmageHomeTargets: DrillTargets;
+  scrimmageAwayTargets: DrillTargets;
+  scrimmageHomeDown: number;
+  scrimmageAwayDown: number;
   checkRefs: boolean;
   checkGoalies: boolean;
   lineBrawl: boolean;
@@ -142,6 +147,9 @@ type GameUi = {
   setPeriodOver: (v: boolean) => void;
   setDrillScore: (n: number) => void;
   setDrillTargets: (n: DrillTargets) => void;
+  setScrimmageHomeTargets: (n: DrillTargets) => void;
+  setScrimmageAwayTargets: (n: DrillTargets) => void;
+  setScrimmageDown: (home: number, away: number) => void;
   setCheckRefs: (v: boolean) => void;
   setCheckGoalies: (v: boolean) => void;
   setLineBrawl: (v: boolean) => void;
@@ -177,29 +185,54 @@ function rollClockMode(): PlayMode {
   return "game";
 }
 
+/** Old Roller saves used this id. The new target mode reuses it after one migration. */
+const PLAY_MODE_VERSION = "hfb-play-mode-v";
+
 function loadClockMode(): PlayMode {
+  try {
+    const version = localStorage.getItem(PLAY_MODE_VERSION);
+    const raw = localStorage.getItem("hfb-play-mode");
+    if (version !== "2") {
+      localStorage.setItem(PLAY_MODE_VERSION, "2");
+      if (raw === "scrimmage") {
+        localStorage.setItem("hfb-play-mode", "roller");
+        return "roller";
+      }
+    }
+  } catch {
+    /* ignore */
+  }
   return rollClockMode();
 }
 
-function loadDrillTargets(): DrillTargets {
+function clampTargets(n: number): DrillTargets {
+  return n === 16 ? 16 : n === 12 ? 12 : n === 8 ? 8 : 4;
+}
+
+function loadTargetCount(key: string): DrillTargets {
   try {
-    const raw = localStorage.getItem("hfb-drill-targets");
-    if (raw === "4") return 4;
-    if (raw === "8") return 8;
-    if (raw === "12") return 12;
-    if (raw === "16") return 16;
+    const raw = localStorage.getItem(key);
+    if (raw === "4" || raw === "8" || raw === "12" || raw === "16") return clampTargets(Number(raw));
   } catch {
     /* ignore */
   }
   return 4;
 }
 
-function saveDrillTargets(n: DrillTargets): void {
+function saveTargetCount(key: string, n: DrillTargets): void {
   try {
-    localStorage.setItem("hfb-drill-targets", String(n));
+    localStorage.setItem(key, String(n));
   } catch {
     /* ignore */
   }
+}
+
+function loadDrillTargets(): DrillTargets {
+  return loadTargetCount("hfb-drill-targets");
+}
+
+function saveDrillTargets(n: DrillTargets): void {
+  saveTargetCount("hfb-drill-targets", n);
 }
 
 function saveClockMode(v: PlayMode): void {
@@ -321,6 +354,10 @@ export const useGame = create<GameUi>((set, get) => ({
   periodOver: false,
   drillScore: 0,
   drillTargets: loadDrillTargets(),
+  scrimmageHomeTargets: loadTargetCount("hfb-scrimmage-home"),
+  scrimmageAwayTargets: loadTargetCount("hfb-scrimmage-away"),
+  scrimmageHomeDown: 0,
+  scrimmageAwayDown: 0,
   checkRefs: loadFlag("hfb-check-refs", true),
   checkGoalies: loadFlag("hfb-check-goalies", true),
   lineBrawl: loadFlag("hfb-line-brawl", false),
@@ -403,10 +440,11 @@ export const useGame = create<GameUi>((set, get) => ({
     saveClockMode(m);
     const prev = get().clockMode;
     const lu = MODE_LINEUPS[m];
+    const quiet = (mode: PlayMode) => mode === "practice" || mode === "scrimmage";
     const powerPlay =
-      m === "practice" && prev !== "practice"
+      quiet(m) && !quiet(prev)
         ? false
-        : prev === "practice" && m !== "practice"
+        : !quiet(m) && quiet(prev)
           ? loadFlag("hfb-power-play", true)
           : undefined;
     set({
@@ -430,9 +468,25 @@ export const useGame = create<GameUi>((set, get) => ({
   setPeriodOver: (v) => set({ periodOver: v }),
   setDrillScore: (n) => set({ drillScore: n }),
   setDrillTargets: (n) => {
-    const v: DrillTargets = n === 16 ? 16 : n === 12 ? 12 : n === 8 ? 8 : 4;
+    const v = clampTargets(n);
     saveDrillTargets(v);
     set({ drillTargets: v });
+  },
+  setScrimmageHomeTargets: (n) => {
+    const v = clampTargets(n);
+    saveTargetCount("hfb-scrimmage-home", v);
+    set({ scrimmageHomeTargets: v });
+  },
+  setScrimmageAwayTargets: (n) => {
+    const v = clampTargets(n);
+    saveTargetCount("hfb-scrimmage-away", v);
+    set({ scrimmageAwayTargets: v });
+  },
+  setScrimmageDown: (home, away) => {
+    set({
+      scrimmageHomeDown: Math.max(0, Math.round(home)),
+      scrimmageAwayDown: Math.max(0, Math.round(away)),
+    });
   },
   setCheckRefs: (v) => {
     saveFlag("hfb-check-refs", v);

@@ -60,7 +60,7 @@ test("practice starts with power play off and does not write the saved flag", ()
 
 test("roller and game keep the saved toggle", () => {
   boot(true);
-  useGame.getState().setClockMode("scrimmage");
+  useGame.getState().setClockMode("roller");
   assert.equal(useGame.getState().powerPlay, true);
   assert.equal(stored(), "1");
   useGame.getState().setClockMode("game");
@@ -70,7 +70,7 @@ test("roller and game keep the saved toggle", () => {
   useGame.getState().setClockMode("practice");
   assert.equal(useGame.getState().powerPlay, false);
   assert.equal(stored(), "1");
-  useGame.getState().setClockMode("scrimmage");
+  useGame.getState().setClockMode("roller");
   assert.equal(useGame.getState().powerPlay, true);
   assert.equal(stored(), "1");
   useGame.getState().setClockMode("game");
@@ -78,7 +78,7 @@ test("roller and game keep the saved toggle", () => {
   assert.equal(stored(), "1");
 
   boot(false);
-  useGame.getState().setClockMode("scrimmage");
+  useGame.getState().setClockMode("roller");
   useGame.getState().setClockMode("game");
   assert.equal(useGame.getState().powerPlay, false);
   assert.equal(stored(), "0");

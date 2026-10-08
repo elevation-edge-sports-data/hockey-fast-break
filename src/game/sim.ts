@@ -34,6 +34,7 @@ import {
   LINEUP_CAP,
   gameClockScale,
   lineupTotal,
+  modeLineupCap,
   clampGameMinutes,
   releaseFromBox,
   useGame,
@@ -266,6 +267,8 @@ export type World = {
   wrapBehind: boolean;
   wrapSide: number;
   drillGone: boolean[];
+  scrimmageHomeGone: boolean[];
+  scrimmageAwayGone: boolean[];
   drillFlash: number[];
   drillShot: boolean;
   drillCheer: number;
@@ -500,7 +503,7 @@ export function penaltyNumbers(side: "home" | "away", lu: Lineup): number[] {
     if (n != null) unused.push(n);
   }
   if (lu.g < 1 && nums.g[0] != null) unused.push(nums.g[0]);
-  const cap = useGame.getState().clockMode === "scrimmage" ? 5 : 6;
+  const cap = modeLineupCap(useGame.getState().clockMode);
   return unused.slice(0, Math.max(0, cap - lineupTotal(lu)));
 }
 
@@ -596,6 +599,8 @@ export const world: World = {
   wrapBehind: false,
   wrapSide: 0,
   drillGone: [false, false, false, false, false, false, false, false],
+  scrimmageHomeGone: [],
+  scrimmageAwayGone: [],
   drillFlash: [0, 0, 0, 0, 0, 0, 0, 0],
   drillShot: false,
   drillCheer: 0,
@@ -726,7 +731,7 @@ function spawnSide(side: "home" | "away", lu: Lineup, startId: number): Skater[]
   let id = startId;
   const netX = sign * (GOAL_LINE_X - 0.9);
 
-  if (lu.g > 0) {
+  if (lu.g > 0 && useGame.getState().clockMode !== "scrimmage") {
     out.push(makeSkater(id++, side, "goalie", nums.g[0]!, netX, 0));
   }
   for (let i = 0; i < lu.d; i++) {
@@ -1332,19 +1337,20 @@ const DRILL_16 = buildDrillTargets(8, 5);
 
 let drillPromote = false;
 
+export function targetBoard(n: DrillTargets): { cols: number; rows: number; list: DrillTarget[] } {
+  if (n === 4) return { cols: 4, rows: 3, list: DRILL_4 };
+  if (n === 12) return { cols: 6, rows: 4, list: DRILL_12 };
+  if (n === 16) return { cols: 8, rows: 5, list: DRILL_16 };
+  return { cols: 4, rows: 3, list: DRILL_8 };
+}
+
 export function drillTargetList(): DrillTarget[] {
-  const n = useGame.getState().drillTargets;
-  if (n === 4) return DRILL_4;
-  if (n === 12) return DRILL_12;
-  if (n === 16) return DRILL_16;
-  return DRILL_8;
+  return targetBoard(useGame.getState().drillTargets).list;
 }
 
 export function drillGrid(): { cols: number; rows: number } {
-  const n = useGame.getState().drillTargets;
-  if (n === 16) return { cols: 8, rows: 5 };
-  if (n === 12) return { cols: 6, rows: 4 };
-  return { cols: 4, rows: 3 };
+  const board = targetBoard(useGame.getState().drillTargets);
+  return { cols: board.cols, rows: board.rows };
 }
 
 function applyDrillPromote(): void {
@@ -1359,13 +1365,23 @@ export function drillMaxScore(): number {
   return drillTargetList().reduce((sum, t) => sum + t.pts, 0);
 }
 
-export function drillCellIndex(y: number, z: number): number {
-  const { cols, rows } = drillGrid();
+function gridCellIndex(
+  y: number,
+  z: number,
+  cols: number,
+  rows: number,
+  targets: DrillTarget[],
+): number {
   const hw = GOAL_W / 2;
   if (y < 0 || y > GOAL_H || Math.abs(z) > hw) return -1;
   const col = Math.min(cols - 1, Math.max(0, Math.floor(((z + hw) / GOAL_W) * cols)));
   const row = Math.min(rows - 1, Math.max(0, Math.floor((y / GOAL_H) * rows)));
-  return drillTargetList().findIndex((t) => t.col === col && t.row === row);
+  return targets.findIndex((t) => t.col === col && t.row === row);
+}
+
+export function drillCellIndex(y: number, z: number): number {
+  const { cols, rows, list } = targetBoard(useGame.getState().drillTargets);
+  return gridCellIndex(y, z, cols, rows, list);
 }
 
 function drill16MouthCell(
@@ -1454,6 +1470,19 @@ function drill16EnteredCorner(
     if (hit >= 0) return hit;
   }
   return -1;
+}
+
+function resetScrimmageBoards(): void {
+  const ui = useGame.getState();
+  world.scrimmageHomeGone = Array.from(
+    { length: targetBoard(ui.scrimmageHomeTargets).list.length },
+    () => false,
+  );
+  world.scrimmageAwayGone = Array.from(
+    { length: targetBoard(ui.scrimmageAwayTargets).list.length },
+    () => false,
+  );
+  ui.setScrimmageDown(0, 0);
 }
 
 function resetDrill(): void {
@@ -1764,6 +1793,32 @@ function hitDrillTarget(i: number, puck?: Puck): void {
   if (wonNow) noteDrillWin(puck);
 }
 
+function strikeTargetBoard(
+  side: 1 | -1,
+  prevX: number,
+  prevY: number,
+  prevZ: number,
+  x: number,
+  y: number,
+  z: number,
+  cols: number,
+  rows: number,
+  targets: DrillTarget[],
+  gone: boolean[],
+): { crossed: boolean; index: number; fresh: boolean } {
+  const mouth = side * GOAL_LINE_X;
+  const fromIce = side > 0 ? prevX < mouth : prevX > mouth;
+  const crossed = (prevX - mouth) * (x - mouth) <= 0 && x !== prevX && fromIce;
+  if (!crossed) return { crossed: false, index: -1, fresh: false };
+  const t = (mouth - prevX) / (x - prevX || 1);
+  const hy = prevY + (y - prevY) * t;
+  const hz = prevZ + (z - prevZ) * t;
+  let index = gridCellIndex(hy, hz, cols, rows, targets);
+  if (index < 0) index = gridCellIndex(y, z, cols, rows, targets);
+  const fresh = index >= 0 && !gone[index];
+  return { crossed: true, index, fresh };
+}
+
 function strikeDrillMouth(
   prevX: number,
   prevY: number,
@@ -1776,24 +1831,107 @@ function strikeDrillMouth(
   shotZ: number,
   puck?: Puck,
 ): { crossed: boolean; hit: boolean } {
-  const mouth = GOAL_LINE_X;
-  const crossed = (prevX - mouth) * (x - mouth) <= 0 && x !== prevX && prevX < mouth;
-  let i = -1;
-  if (crossed) {
-    const t = (mouth - prevX) / (x - prevX || 1);
-    const hy = prevY + (y - prevY) * t;
-    const hz = prevZ + (z - prevZ) * t;
-    i = drillCellIndex(hy, hz);
-    if (i < 0) i = drillCellIndex(y, z);
-    if (i < 0) i = drill16EnteredCorner(prevX, prevY, prevZ, shotX, shotY, shotZ);
-  } else {
-    i = drill16EnteredCorner(prevX, prevY, prevZ, shotX, shotY, shotZ);
+  const grid = targetBoard(useGame.getState().drillTargets);
+  const board = strikeTargetBoard(
+    1,
+    prevX,
+    prevY,
+    prevZ,
+    x,
+    y,
+    z,
+    grid.cols,
+    grid.rows,
+    grid.list,
+    world.drillGone,
+  );
+  let i = board.fresh ? board.index : -1;
+  if (board.index < 0) {
+    const corner = drill16EnteredCorner(prevX, prevY, prevZ, shotX, shotY, shotZ);
+    if (corner >= 0 && !world.drillGone[corner]) i = corner;
   }
-  if (i >= 0 && !world.drillGone[i]) {
+  if (i >= 0) {
     hitDrillTarget(i, puck);
-    return { crossed, hit: true };
+    return { crossed: board.crossed, hit: true };
   }
-  return { crossed, hit: false };
+  return { crossed: board.crossed, hit: false };
+}
+
+function teamOnMouth(mouth: 1 | -1): "home" | "away" {
+  const homeMouth: 1 | -1 = defendDir("home") >= 0 ? 1 : -1;
+  return homeMouth === mouth ? "home" : "away";
+}
+
+function scrimmageGone(team: "home" | "away"): boolean[] {
+  return team === "home" ? world.scrimmageHomeGone : world.scrimmageAwayGone;
+}
+
+function scrimmageWinner(): "home" | "away" | null {
+  const ui = useGame.getState();
+  if (ui.clockMode !== "scrimmage") return null;
+  const homeScored = world.scrimmageAwayGone.filter(Boolean).length;
+  const awayScored = world.scrimmageHomeGone.filter(Boolean).length;
+  if (ui.scrimmageAwayTargets > 0 && homeScored >= ui.scrimmageAwayTargets) return "home";
+  if (ui.scrimmageHomeTargets > 0 && awayScored >= ui.scrimmageHomeTargets) return "away";
+  return null;
+}
+
+function endScrimmageMatch(): boolean {
+  const winner = scrimmageWinner();
+  if (!winner) return false;
+  world.periodOver = true;
+  world.goalSide = winner;
+  world.whistle = null;
+  const ui = useGame.getState();
+  ui.setGoalSide(winner);
+  ui.setPeriodOver(true);
+  ui.setWhistle(null);
+  return true;
+}
+
+function knockScrimmage(team: "home" | "away", index: number): void {
+  const gone = scrimmageGone(team);
+  if (index < 0 || index >= gone.length || gone[index]) return;
+  gone[index] = true;
+  const homeScored = world.scrimmageAwayGone.filter(Boolean).length;
+  const awayScored = world.scrimmageHomeGone.filter(Boolean).length;
+  useGame.getState().setScrimmageDown(homeScored, awayScored);
+  const mouth: 1 | -1 = defendDir(team) >= 0 ? 1 : -1;
+  startStoppage("goal", mouth);
+}
+
+function tickScrimmage(
+  prevX: number,
+  prevY: number,
+  prevZ: number,
+  x: number,
+  y: number,
+  z: number,
+): boolean {
+  const ui = useGame.getState();
+  if (ui.clockMode !== "scrimmage" || world.stoppage || world.periodOver) return false;
+  for (const mouth of [1, -1] as const) {
+    const team = teamOnMouth(mouth);
+    const count = team === "home" ? ui.scrimmageHomeTargets : ui.scrimmageAwayTargets;
+    const grid = targetBoard(count);
+    const hit = strikeTargetBoard(
+      mouth,
+      prevX,
+      prevY,
+      prevZ,
+      x,
+      y,
+      z,
+      grid.cols,
+      grid.rows,
+      grid.list,
+      scrimmageGone(team),
+    );
+    if (!hit.fresh) continue;
+    knockScrimmage(team, hit.index);
+    return true;
+  }
+  return false;
 }
 
 function tickDrill(
@@ -1953,6 +2091,7 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
     if (ui.clockMode !== "drill") world.homeAttack = 1;
     awayNums = rollAwayNums();
     world.aimCompassLock = null;
+    resetScrimmageBoards();
   }
   resetSkaters();
   if (!opts?.keepScore) ui.bumpLineup();
@@ -9836,7 +9975,7 @@ function layDownRef(
 function lineBrawlAllowed(): boolean {
   const ui = useGame.getState();
   if (!ui.lineBrawl) return false;
-  return ui.clockMode === "scrimmage" || ui.clockMode === "game";
+  return ui.clockMode === "roller" || ui.clockMode === "game";
 }
 
 function heldBody(id: number): boolean {
@@ -11828,12 +11967,15 @@ function startStoppage(kind: "goal" | "cover" | "offside" | "crowd", net?: 1 | -
   ui.setHasPuck(keepCarrier);
   if (kind === "goal") {
     const homeScored = (net ?? (world.puck.x > 0 ? 1 : -1)) === world.homeAttack;
-    if (homeScored) ui.setHomeScore(ui.homeScore + 1);
-    else ui.setAwayScore(ui.awayScore + 1);
+    const targetGoal = ui.clockMode === "scrimmage";
+    if (!targetGoal) {
+      if (homeScored) ui.setHomeScore(ui.homeScore + 1);
+      else ui.setAwayScore(ui.awayScore + 1);
+    }
     world.goalSide = homeScored ? "home" : "away";
     world.goalTicker = 6.5;
     ui.setGoalSide(world.goalSide);
-    if (ui.powerPlay || ui.chaos) {
+    if (!targetGoal && (ui.powerPlay || ui.chaos)) {
       const scoredOn = homeScored ? "away" : "home";
       const ice = scoredOn === "home" ? ui.liveHome : ui.liveAway;
       const cap = ui.chaos ? CHAOS_CAP : LINEUP_CAP;
@@ -13419,7 +13561,9 @@ function stepPuck(dt: number): void {
         const bodyIn =
           crossed !== 0 || alreadyInCageOrBehind(prevX, prevZ, prevY) ? 0 : carrierIntoOwnMouth(s);
         const scored = crossed !== 0 ? crossed : bodyIn;
-        if (scored !== 0 && useGame.getState().clockMode !== "drill") {
+        if (tickScrimmage(prevX, prevY, prevZ, puck.x, puck.y, puck.z)) return;
+        const carriedMode = useGame.getState().clockMode;
+        if (scored !== 0 && carriedMode !== "drill" && carriedMode !== "scrimmage") {
           const defending: "home" | "away" = scored === world.homeAttack ? "away" : "home";
           const g = world.skaters.find((p) => p.kind === "goalie" && p.side === defending);
           const own = s.side === defending;
@@ -13550,12 +13694,14 @@ function stepPuck(dt: number): void {
     return;
   }
 
+  if (tickScrimmage(prevX, prevY, prevZ, puck.x, puck.y, puck.z)) return;
+
   if (tryGoalieCatch(puck)) return;
   if (tryGoalieSweep(puck, prevX, prevZ, prevY)) return;
   if (trySave(puck, prevX, prevZ, prevY)) return;
 
   const scored = crossedGoalMouth(prevX, prevZ, prevY, puck);
-  if (scored !== 0) {
+  if (scored !== 0 && useGame.getState().clockMode !== "scrimmage") {
     if (world.goalieShot === "out") {
       kickGoalieMiss(puck, scored, puck.z, puck.y > GOAL_H - 0.2);
       return;
@@ -13643,6 +13789,8 @@ function tickFreeCam(dt: number, act: Actions): void {
 type PauseDraft = {
   clockMode: PlayMode;
   drillTargets: DrillTargets;
+  scrimmageHome: DrillTargets;
+  scrimmageAway: DrillTargets;
   gameMinutes: number;
 };
 
@@ -13675,6 +13823,8 @@ function runningDraft(): PauseDraft {
   return {
     clockMode: pauseDraft?.clockMode ?? s.clockMode,
     drillTargets: pauseDraft?.drillTargets ?? s.drillTargets,
+    scrimmageHome: pauseDraft?.scrimmageHome ?? s.scrimmageHomeTargets,
+    scrimmageAway: pauseDraft?.scrimmageAway ?? s.scrimmageAwayTargets,
     gameMinutes: pauseDraft?.gameMinutes ?? s.gameMinutes,
   };
 }
@@ -13684,6 +13834,8 @@ function writePauseDraft(next: PauseDraft): void {
     pauseDraft &&
     pauseDraft.clockMode === next.clockMode &&
     pauseDraft.drillTargets === next.drillTargets &&
+    pauseDraft.scrimmageHome === next.scrimmageHome &&
+    pauseDraft.scrimmageAway === next.scrimmageAway &&
     pauseDraft.gameMinutes === next.gameMinutes
   ) {
     return;
@@ -13714,6 +13866,21 @@ export function previewPausedTargets(n: DrillTargets): void {
   writePauseDraft({ ...runningDraft(), drillTargets: v });
 }
 
+export function previewPausedScrimmage(side: "home" | "away", n: DrillTargets): void {
+  const v: DrillTargets = n === 16 ? 16 : n === 12 ? 12 : n === 8 ? 8 : 4;
+  const ui = useGame.getState();
+  if (!(ui.playing && ui.paused)) {
+    if (side === "home") ui.setScrimmageHomeTargets(v);
+    else ui.setScrimmageAwayTargets(v);
+    if (useGame.getState().clockMode === "scrimmage") resetWorld();
+    return;
+  }
+  writePauseDraft({
+    ...runningDraft(),
+    ...(side === "home" ? { scrimmageHome: v } : { scrimmageAway: v }),
+  });
+}
+
 export function previewPausedMinutes(n: number): void {
   const minutes = clampGameMinutes(n);
   const ui = useGame.getState();
@@ -13742,6 +13909,8 @@ export function startPausedNewGame(): void {
   if (draft) {
     drillPromote = false;
     const ui = useGame.getState();
+    if (draft.scrimmageHome !== ui.scrimmageHomeTargets) ui.setScrimmageHomeTargets(draft.scrimmageHome);
+    if (draft.scrimmageAway !== ui.scrimmageAwayTargets) ui.setScrimmageAwayTargets(draft.scrimmageAway);
     if (draft.drillTargets !== ui.drillTargets) ui.setDrillTargets(draft.drillTargets);
     if (draft.gameMinutes !== ui.gameMinutes) ui.setGameMinutes(draft.gameMinutes);
     if (draft.clockMode !== ui.clockMode) ui.setClockMode(draft.clockMode);
@@ -14936,7 +15105,7 @@ function maybeStickRage(homeScored: boolean): void {
   stickRage = null;
   if (!homeScored) return;
   const mode = useGame.getState().clockMode;
-  if (mode !== "scrimmage" && mode !== "game") return;
+  if (mode !== "roller" && mode !== "game") return;
   if (Math.random() >= 0.34) return;
   const side = defendDir("away");
   const mouth = side * GOAL_LINE_X;
@@ -15450,6 +15619,7 @@ function stepPlay(dt: number, act: Actions): void {
     world.stoppageT += dt;
     if (world.whistle === "goal" && !world.periodOver) {
       if (world.stoppageT > 0.12 && act.bEdge) {
+        if (endScrimmageMatch()) return;
         resetWorld({ keepScore: true });
         world.faceoffA = true;
         return;
@@ -15645,6 +15815,7 @@ function stepPlay(dt: number, act: Actions): void {
       }
     } else if (world.stoppageT > 3.2) {
       if (world.periodOver) return;
+      if (endScrimmageMatch()) return;
       resetWorld({ keepScore: true });
     }
     return;

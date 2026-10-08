@@ -15,6 +15,7 @@ import {
   drillMaxScore,
   previewPausedMode,
   previewPausedTargets,
+  previewPausedScrimmage,
   previewPausedMinutes,
   resumePausedGame,
   resetPausedGame,
@@ -32,6 +33,7 @@ import {
   type CamMode,
   type DrillTargets,
   type Lineup,
+  type PlayMode,
 } from "./store";
 import { kitById, UNIFORMS, type UniformKit } from "./uniforms";
 
@@ -235,11 +237,12 @@ function LineupStrip({
   onChange: (l: Lineup) => void;
   disabled: boolean;
 }) {
+  const noGoalie = useGame((s) => s.clockMode) === "scrimmage";
   return (
     <div className="lineup-strip is-vert">
       <Stepper label="F" slot="o" lineup={lineup} onChange={onChange} disabled={disabled} />
       <Stepper label="D" slot="d" lineup={lineup} onChange={onChange} disabled={disabled} />
-      <Stepper label="G" slot="g" lineup={lineup} onChange={onChange} disabled={disabled} />
+      <Stepper label="G" slot="g" lineup={lineup} onChange={onChange} disabled={disabled || noGoalie} />
     </div>
   );
 }
@@ -387,7 +390,7 @@ function ReplayBar() {
   );
 }
 
-function chooseMode(m: "drill" | "practice" | "scrimmage" | "game"): void {
+function chooseMode(m: PlayMode): void {
   previewPausedMode(m);
 }
 
@@ -449,11 +452,28 @@ function ClockSetup() {
         <button
           type="button"
           className={clockMode === "scrimmage" ? "is-on" : ""}
+          title="No goalies. Knock down the other team's targets."
           onClick={() => chooseMode("scrimmage")}
+        >
+          Scrimmage
+        </button>
+        {clockMode === "scrimmage" ? (
+          <>
+            <p className="clock-untimed">Untimed</p>
+            <p className="clock-untimed">targets</p>
+            <ScrimmageTargetPick />
+          </>
+        ) : null}
+      </div>
+      <div className="clock-col">
+        <button
+          type="button"
+          className={clockMode === "roller" ? "is-on" : ""}
+          onClick={() => chooseMode("roller")}
         >
           Roller
         </button>
-        {clockMode === "scrimmage" ? <p className="clock-untimed">Untimed</p> : null}
+        {clockMode === "roller" ? <p className="clock-untimed">Untimed</p> : null}
       </div>
       <div className="clock-col">
         <button
@@ -471,12 +491,54 @@ function ClockSetup() {
 
 type MenuId = "mode" | "controller" | "gameplay" | "camera";
 
-const MODES: { id: "drill" | "practice" | "scrimmage" | "game"; label: string }[] = [
+const MODES: { id: PlayMode; label: string; title?: string }[] = [
   { id: "drill", label: "Drill" },
   { id: "practice", label: "Practice" },
-  { id: "scrimmage", label: "Roller" },
+  {
+    id: "scrimmage",
+    label: "Scrimmage",
+    title: "No goalies. Knock down the other team's targets.",
+  },
+  { id: "roller", label: "Roller" },
   { id: "game", label: "Game" },
 ];
+
+function TargetCountRow({
+  label,
+  value,
+  onPick,
+}: {
+  label: string;
+  value: DrillTargets;
+  onPick: (n: DrillTargets) => void;
+}) {
+  return (
+    <div className="clock-mins">
+      <span>{label}</span>
+      {([4, 8, 12, 16] as const).map((n) => (
+        <button key={n} type="button" className={value === n ? "is-on" : ""} onClick={() => onPick(n)}>
+          {n}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ScrimmageTargetPick() {
+  const storeHome = useGame((s) => s.scrimmageHomeTargets);
+  const storeAway = useGame((s) => s.scrimmageAwayTargets);
+  const playing = useGame((s) => s.playing);
+  const paused = useGame((s) => s.paused);
+  const draft = usePauseDraft();
+  const home = playing && paused && draft ? draft.scrimmageHome : storeHome;
+  const away = playing && paused && draft ? draft.scrimmageAway : storeAway;
+  return (
+    <div className="scrimmage-targets">
+      <TargetCountRow label="Home" value={home} onPick={(n) => previewPausedScrimmage("home", n)} />
+      <TargetCountRow label="Away" value={away} onPick={(n) => previewPausedScrimmage("away", n)} />
+    </div>
+  );
+}
 
 function DrillTargetPick() {
   const storeTargets = useGame((s) => s.drillTargets);
@@ -575,10 +637,11 @@ function MainMenus() {
       ) : null}
       {menu === "mode" ? (
         <div className="mode-grid">
-          {clockMode === "drill" || clockMode === "game" ? (
+          {clockMode === "drill" || clockMode === "scrimmage" || clockMode === "game" ? (
             <>
               <div>{clockMode === "drill" ? <DrillTargetPick /> : null}</div>
               <div />
+              <div>{clockMode === "scrimmage" ? <ScrimmageTargetPick /> : null}</div>
               <div />
               <div>{clockMode === "game" ? <GameMinutes /> : null}</div>
             </>
@@ -588,6 +651,7 @@ function MainMenus() {
               key={m.id}
               type="button"
               className={clockMode === m.id ? "is-on" : ""}
+              title={m.title}
               onClick={() => chooseMode(m.id)}
             >
               {m.label}
@@ -960,6 +1024,11 @@ export function Overlay() {
   const periodClock = useGame((s) => s.periodClock);
   const drillScore = useGame((s) => s.drillScore);
   const drillTargets = useGame((s) => s.drillTargets);
+  const scrimmageHomeTargets = useGame((s) => s.scrimmageHomeTargets);
+  const scrimmageAwayTargets = useGame((s) => s.scrimmageAwayTargets);
+  const scrimmageHomeDown = useGame((s) => s.scrimmageHomeDown);
+  const scrimmageAwayDown = useGame((s) => s.scrimmageAwayDown);
+  const goalSide = useGame((s) => s.goalSide);
   const gameMinutes = useGame((s) => s.gameMinutes);
   const pauseDraft = usePauseDraft();
   const periodOver = useGame((s) => s.periodOver);
@@ -1002,6 +1071,8 @@ export function Overlay() {
     !!pauseDraft &&
     (pauseDraft.clockMode !== clockMode ||
       pauseDraft.drillTargets !== drillTargets ||
+      pauseDraft.scrimmageHome !== scrimmageHomeTargets ||
+      pauseDraft.scrimmageAway !== scrimmageAwayTargets ||
       pauseDraft.gameMinutes !== gameMinutes);
 
   return (
@@ -1084,6 +1155,24 @@ export function Overlay() {
                   <b>{drillScore}</b>
                   <span key={drillTargets}>/ {drillMaxScore()}</span>
                   <span className="period-clock">{fmtClock(periodClock)}</span>
+                </>
+              ) : clockMode === "scrimmage" ? (
+                <>
+                  <span className="who">
+                    <UniStripe kit={homeUni} />
+                    YOU
+                  </span>
+                  <b>
+                    {scrimmageHomeDown}/{scrimmageAwayTargets}
+                  </b>
+                  <span>—</span>
+                  <b>
+                    {scrimmageAwayDown}/{scrimmageHomeTargets}
+                  </b>
+                  <span className="who">
+                    CPU
+                    <UniStripe kit={awayUni} />
+                  </span>
                 </>
               ) : (
                 <>
@@ -1290,6 +1379,10 @@ export function Overlay() {
               </div>
             ) : null}
           </div>
+        ) : clockMode === "scrimmage" ? (
+          <div className="whistle">
+            {goalSide === "home" ? "YOU WIN" : goalSide === "away" ? "CPU WINS" : "Final"}
+          </div>
         ) : (
           <div className="whistle">
             {homeScore === awayScore ? "Final" : homeScore > awayScore ? "YOU WIN" : "CPU WINS"}
@@ -1331,7 +1424,9 @@ export function Overlay() {
               ? world.drillWon
                 ? `${drillScore} / ${drillMaxScore()} · ${fmtClock(world.drillElapsed)}`
                 : `Score ${drillScore} / ${drillMaxScore()}`
-              : `Final ${homeScore}–${awayScore}`}
+              : clockMode === "scrimmage"
+                ? `${goalSide === "home" ? "YOU WIN" : goalSide === "away" ? "CPU WINS" : "Final"} ${scrimmageHomeDown}/${scrimmageAwayTargets}–${scrimmageAwayDown}/${scrimmageHomeTargets}`
+                : `Final ${homeScore}–${awayScore}`}
           </p>
           <button type="button" className="btn-primary" onClick={skate}>
             Skate

@@ -2453,7 +2453,7 @@ function poseGoalieGetUp(s: Skater, root: THREE.Group, body: THREE.Group | null,
 }
 
 function SkateSole({ mats, position, goalie = false, bladeName }: { mats: Pick<KitMats, "blade" | "skates" | "mask">; position: [number, number, number]; goalie?: boolean; bladeName?: string }) {
-  const roller = useGame((s) => s.clockMode) === "scrimmage";
+  const roller = useGame((s) => s.clockMode) === "roller";
   if (!roller) {
     return <mesh name={bladeName} geometry={bladeGeo} material={mats.blade} position={position} />;
   }

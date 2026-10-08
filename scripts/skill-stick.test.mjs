@@ -437,7 +437,7 @@ test("B cancels a loaded stick shot and Y still dekes", () => {
 });
 
 test("Skill Stick does not claim wings and still dives on RT", () => {
-  fresh("wings", "scrimmage");
+  fresh("wings", "roller");
   const s = user();
   const mate = world.skaters.find((p) => p.side === "home" && p.kind !== "goalie" && p.id !== s.id);
   assert.ok(mate);
@@ -450,7 +450,7 @@ test("Skill Stick does not claim wings and still dives on RT", () => {
   step(2);
   assert.equal(world.wingL, mate.id);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const s2 = user();
   const mate2 = world.skaters.find((p) => p.side === "home" && p.kind !== "goalie" && p.id !== s2.id);
   mate2.x = s2.x;
@@ -538,7 +538,7 @@ function placeCarrier(x, z) {
 }
 
 test("skill stick body check is one Y hit per right-stick push", () => {
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const foe = placeCarrier(1.1, 0);
   setInjectedAim(0, 1);
   step(1);
@@ -574,7 +574,7 @@ test("skill stick body check is one Y hit per right-stick push", () => {
   step(1);
   assert.ok(foe.struck > 0, "second push checks again");
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   setInjectedAim(0, 0);
   step(1);
   const mate = world.skaters.find((p) => p.side === "home" && p.kind !== "goalie" && p.id !== user().id);
@@ -592,7 +592,7 @@ test("skill stick body check is one Y hit per right-stick push", () => {
   assert.equal(mate.struck, 0);
   assert.ok(user().hit > 0, "empty lane still swings");
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const yFoe = placeCarrier(1.1, 0);
   user().yaw = -Math.PI / 2;
   setInjectedAim(0, 0);
@@ -601,7 +601,7 @@ test("skill stick body check is one Y hit per right-stick push", () => {
   assert.ok(yFoe.struck > 0, "Y still checks");
   setInjectedKeys([]);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const resting = placeCarrier(1.1, 0);
   user().yaw = -Math.PI / 2;
   setInjectedAim(0, 0.3);
@@ -609,7 +609,7 @@ test("skill stick body check is one Y hit per right-stick push", () => {
   assert.equal(resting.struck, 0);
   assert.equal(user().hit, 0);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const held = placeCarrier(12, 8);
   setInjectedAim(0, 1);
   step(1);
@@ -635,7 +635,7 @@ test("skill stick body check is one Y hit per right-stick push", () => {
   assert.equal(world.lastShotKind, "snap");
   assert.equal(held.struck, 0);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const shotFoe = placeCarrier(1.1, 0);
   shotFoe.stun = 30;
   user().yaw = -Math.PI / 2;
@@ -653,7 +653,7 @@ test("skill stick body check is one Y hit per right-stick push", () => {
   assert.equal(shotFoe.struck, 0);
   assert.equal(user().hit, 0);
 
-  fresh("classic", "scrimmage");
+  fresh("classic", "roller");
   const classicFoe = placeCarrier(1.1, 0);
   setInjectedAim(0, 1);
   step(3);
@@ -661,14 +661,14 @@ test("skill stick body check is one Y hit per right-stick push", () => {
   assert.equal(user().hit, 0);
   assert.equal(world.lastShotKind, null);
 
-  fresh("wings", "scrimmage");
+  fresh("wings", "roller");
   const wingsFoe = placeCarrier(1.1, 0);
   setInjectedAim(0, 1);
   step(3);
   assert.equal(wingsFoe.struck, 0);
   assert.equal(user().hit, 0);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   placeCarrier(8, 6);
   const crease = world.skaters.find((p) => p.kind === "goalie" && p.side === "away");
   assert.ok(crease);
@@ -689,7 +689,7 @@ test("skill stick body check is one Y hit per right-stick push", () => {
 });
 
 test("skill stick RB plus right stick pokes once along the stick", () => {
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const foe = placeCarrier(1.1, 0);
   const hitAt = world.lastHitTime;
   setInjectedKeys(["KeyM"]);
@@ -753,7 +753,7 @@ test("skill stick RB plus right stick pokes once along the stick", () => {
   assert.equal(user().hit, 0);
   assert.ok(foe.struck > 0);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const xFoe = placeCarrier(1.1, 0);
   const yawBefore = user().yaw;
   setInjectedKeys(["KeyF"]);
@@ -776,7 +776,7 @@ test("skill stick RB plus right stick pokes once along the stick", () => {
   assert.equal(user().poke, 0);
   assert.equal(user().dive, 0);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   placeCarrier(1.1, 0);
   setInjectedKeys(["KeyM"]);
   setInjectedAim(0, 0);
@@ -785,7 +785,7 @@ test("skill stick RB plus right stick pokes once along the stick", () => {
   assert.equal(user().poke, 0);
   assert.equal(user().hit, 0);
 
-  fresh("classic", "scrimmage");
+  fresh("classic", "roller");
   const classicFoe = placeCarrier(1.1, 0);
   setInjectedKeys(["KeyM"]);
   setInjectedAim(0, 1);
@@ -795,7 +795,7 @@ test("skill stick RB plus right stick pokes once along the stick", () => {
   assert.equal(user().poke, 0);
   assert.equal(user().dive, 0);
 
-  fresh("wings", "scrimmage");
+  fresh("wings", "roller");
   world.puck.owner = null;
   setInjectedKeys(["KeyM"]);
   setInjectedAim(0, 1);
@@ -805,7 +805,7 @@ test("skill stick RB plus right stick pokes once along the stick", () => {
 });
 
 test("sideways aim pokes and does not set the check struck impulse; stick-up still checks and does not poke", () => {
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const foe = placeCarrier(0.5, 2);
   foe.yaw = Math.PI;
   user().yaw = -Math.PI / 2;
@@ -835,7 +835,7 @@ test("sideways aim pokes and does not set the check struck impulse; stick-up sti
   assert.equal(user().hit, 0);
   assert.equal(world.lastHitTime, hitAt);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   placeCarrier(12, 8).stun = 30;
   user().yaw = -Math.PI / 2;
   world.puck.owner = null;
@@ -854,7 +854,7 @@ test("sideways aim pokes and does not set the check struck impulse; stick-up sti
   assert.equal(world.puck.owner, null, "loose puck stays free");
   assert.ok(world.puck.vz > 4 && Math.abs(world.puck.vx) < 2, `loose knock ${world.puck.vx} ${world.puck.vz}`);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   placeCarrier(12, 8).stun = 30;
   user().yaw = Math.PI;
   world.puck.owner = null;
@@ -872,7 +872,7 @@ test("sideways aim pokes and does not set the check struck impulse; stick-up sti
   assert.ok(world.puck.vz < -4 && Math.abs(world.puck.vx) < 2, `left knock ${world.puck.vx} ${world.puck.vz}`);
   assert.equal(user().hit, 0);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const upFoe = placeCarrier(1.1, 0);
   setInjectedAim(0, 1);
   step(1);
@@ -883,7 +883,7 @@ test("sideways aim pokes and does not set the check struck impulse; stick-up sti
   assert.ok(upFoe.struck > 1, `check struck ${upFoe.struck}`);
   assert.ok(upFoe.vx > 6 && Math.abs(upFoe.vz) < 4, `check knock ${upFoe.vx} ${upFoe.vz}`);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   const yFoe = placeCarrier(1.1, 0);
   user().yaw = -Math.PI / 2;
   setInjectedKeys(["KeyQ"]);
@@ -894,7 +894,7 @@ test("sideways aim pokes and does not set the check struck impulse; stick-up sti
   assert.ok(yFoe.struck > 1, "Y still lays down the check");
   setInjectedKeys([]);
 
-  fresh("stick", "scrimmage");
+  fresh("stick", "roller");
   placeCarrier(12, 8).stun = 30;
   const blade = stickBlade(user());
   world.puck.owner = null;
@@ -910,7 +910,7 @@ test("sideways aim pokes and does not set the check struck impulse; stick-up sti
   assert.equal(world.puck.owner, user().id, "X still picks up a loose puck");
   setInjectedKeys([]);
 
-  fresh("classic", "scrimmage");
+  fresh("classic", "roller");
   const classicFoe = placeCarrier(0, 1.1);
   setInjectedAim(1, 0);
   step(1);
@@ -918,7 +918,7 @@ test("sideways aim pokes and does not set the check struck impulse; stick-up sti
   assert.equal(user().hit, 0);
   assert.equal(classicFoe.struck, 0);
 
-  fresh("wings", "scrimmage");
+  fresh("wings", "roller");
   const wingsFoe = placeCarrier(0, 1.1);
   setInjectedAim(1, 0);
   step(1);
@@ -1029,7 +1029,7 @@ function armChecker(spot) {
 
 test("skill stick held deke protects the far side only", () => {
   function setup(profile = "stick") {
-    fresh(profile, "scrimmage");
+    fresh(profile, "roller");
     parkExcept([user().id]);
     settleUser();
     user().yaw = -Math.PI / 2;
