@@ -31,11 +31,17 @@ import { readActions, setInjectedKeys, type Actions } from "./input";
 import { dekePuckLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal } from "./stickSide";
 import {
   CHAOS_CAP,
+  GAME_CLOCK_DISPLAY_MINUTES,
+  GAME_PERIODS,
   LINEUP_CAP,
+  ROLLER_CLOCK_DISPLAY_MINUTES,
+  ROLLER_PERIODS,
   gameClockScale,
+  rollerClockScale,
   lineupTotal,
   modeLineupCap,
   clampGameMinutes,
+  clampRollerMinutes,
   releaseFromBox,
   useGame,
   type CamMode,
@@ -311,6 +317,9 @@ export type World = {
   lastUserActT: number;
   periodClock: number;
   periodOver: boolean;
+  periodEndT: number;
+  period: number;
+  periodView: number;
   goalieRecallT: number;
   goalieShot: "score" | "out" | null;
   whiffUntil: number;
@@ -643,6 +652,9 @@ export const world: World = {
   lastUserActT: 0,
   periodClock: 1200,
   periodOver: false,
+  periodEndT: 0,
+  period: 1,
+  periodView: 0,
   goalieRecallT: 0,
   goalieShot: null,
   whiffUntil: -10,
@@ -1313,6 +1325,9 @@ function releaseDrillShotState(): void {
 export type DrillTarget = { col: number; row: number; pts: number };
 
 const DRILL_SECONDS = 60;
+const PERIOD_SECONDS = GAME_CLOCK_DISPLAY_MINUTES * 60;
+const ROLLER_PERIOD_SECONDS = ROLLER_CLOCK_DISPLAY_MINUTES * 60;
+const PERIOD_END_HOLD = 3;
 
 function buildDrillTargets(cols: number, rows: number, cornersOnly = false): DrillTarget[] {
   const out: DrillTarget[] = [];
@@ -2063,8 +2078,10 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
   drillPin = null;
   drillWinPin = null;
   const ui = useGame.getState();
+  world.periodEndT = 0;
+  if (ui.periodBreak !== 0) ui.setPeriodBreak(0);
   if (ui.clockMode === "drill") {
-    world.homeAttack = 1;
+    assignHomeAttack(1);
     world.faceX = 0;
     world.faceZ = 0;
   }
@@ -2079,16 +2096,19 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
     ui.setGoalSide(null);
     world.goalTicker = 0;
     world.goalSide = null;
+    world.period = 1;
     world.periodOver = false;
-    world.periodClock = 1200;
+    const openingClock = ui.clockMode === "roller" ? ROLLER_PERIOD_SECONDS : PERIOD_SECONDS;
+    world.periodClock = openingClock;
+    ui.setPeriod(1);
     ui.setPeriodOver(false);
-    ui.setPeriodClock(1200);
+    ui.setPeriodClock(openingClock);
     if (!opts?.keepReplay) clearReplayBuf();
     world.ppRelease = null;
     world.ppChaos = false;
     ui.setLiveHome(ui.homeLineup);
     ui.setLiveAway(ui.awayLineup);
-    if (ui.clockMode !== "drill") world.homeAttack = 1;
+    if (ui.clockMode !== "drill") assignHomeAttack(1);
     awayNums = rollAwayNums();
     world.aimCompassLock = null;
     resetScrimmageBoards();
@@ -2557,6 +2577,12 @@ function collideRefs(): void {
     }
     collideRefIce(r);
   }
+}
+
+function assignHomeAttack(next: 1 | -1): void {
+  if (world.homeAttack === next) return;
+  world.homeAttack = next;
+  world.periodView += 1;
 }
 
 export function attackDir(side: "home" | "away"): number {
@@ -13792,6 +13818,7 @@ type PauseDraft = {
   scrimmageHome: DrillTargets;
   scrimmageAway: DrillTargets;
   gameMinutes: number;
+  rollerMinutes: number;
 };
 
 let pauseDraft: PauseDraft | null = null;
@@ -13826,6 +13853,7 @@ function runningDraft(): PauseDraft {
     scrimmageHome: pauseDraft?.scrimmageHome ?? s.scrimmageHomeTargets,
     scrimmageAway: pauseDraft?.scrimmageAway ?? s.scrimmageAwayTargets,
     gameMinutes: pauseDraft?.gameMinutes ?? s.gameMinutes,
+    rollerMinutes: pauseDraft?.rollerMinutes ?? s.rollerMinutes,
   };
 }
 
@@ -13836,7 +13864,8 @@ function writePauseDraft(next: PauseDraft): void {
     pauseDraft.drillTargets === next.drillTargets &&
     pauseDraft.scrimmageHome === next.scrimmageHome &&
     pauseDraft.scrimmageAway === next.scrimmageAway &&
-    pauseDraft.gameMinutes === next.gameMinutes
+    pauseDraft.gameMinutes === next.gameMinutes &&
+    pauseDraft.rollerMinutes === next.rollerMinutes
   ) {
     return;
   }
@@ -13891,6 +13920,16 @@ export function previewPausedMinutes(n: number): void {
   writePauseDraft({ ...runningDraft(), gameMinutes: minutes });
 }
 
+export function previewPausedRollerMinutes(n: number): void {
+  const minutes = clampRollerMinutes(n);
+  const ui = useGame.getState();
+  if (!(ui.playing && ui.paused)) {
+    ui.setRollerMinutes(minutes);
+    return;
+  }
+  writePauseDraft({ ...runningDraft(), rollerMinutes: minutes });
+}
+
 export function resumePausedGame(): void {
   clearPauseDraft();
   finishPauseCam();
@@ -13913,6 +13952,7 @@ export function startPausedNewGame(): void {
     if (draft.scrimmageAway !== ui.scrimmageAwayTargets) ui.setScrimmageAwayTargets(draft.scrimmageAway);
     if (draft.drillTargets !== ui.drillTargets) ui.setDrillTargets(draft.drillTargets);
     if (draft.gameMinutes !== ui.gameMinutes) ui.setGameMinutes(draft.gameMinutes);
+    if (draft.rollerMinutes !== ui.rollerMinutes) ui.setRollerMinutes(draft.rollerMinutes);
     if (draft.clockMode !== ui.clockMode) ui.setClockMode(draft.clockMode);
   }
   resetWorld();
@@ -15522,6 +15562,39 @@ function stepSkillStick(user: Skater, act: Actions, allowShot: boolean): { loadi
   return { loading: true };
 }
 
+function beginPeriodBreak(): void {
+  world.periodEndT = PERIOD_END_HOLD;
+  world.periodClock = 0;
+  world.whistle = null;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  clearDelayedOffside();
+  const ui = useGame.getState();
+  ui.setPeriodClock(0);
+  ui.setWhistle(null);
+  ui.setPeriodBreak(world.period);
+  dropWingClaims();
+}
+
+function startNextPeriod(): void {
+  const roller = useGame.getState().clockMode === "roller";
+  const periods = roller ? ROLLER_PERIODS : GAME_PERIODS;
+  const seconds = roller ? ROLLER_PERIOD_SECONDS : PERIOD_SECONDS;
+  const next: 1 | -1 = world.homeAttack === 1 ? -1 : 1;
+  world.period = Math.min(periods, world.period + 1);
+  assignHomeAttack(next);
+  world.faceX = 0;
+  world.faceZ = 0;
+  world.whistle = null;
+  resetWorld({ keepScore: true });
+  world.periodClock = seconds;
+  const ui = useGame.getState();
+  ui.setPeriod(world.period);
+  ui.setPeriodClock(seconds);
+  ui.setPeriodOver(false);
+}
+
 function stepPlay(dt: number, act: Actions): void {
   latchPrecede();
   userWinding = false;
@@ -15541,6 +15614,13 @@ function stepPlay(dt: number, act: Actions): void {
   if (world.periodOver) {
     dropWingClaims();
     if (ui.clockMode === "drill") releaseDrillNetPuck(world.puck);
+    return;
+  }
+
+  if (world.periodEndT > 0) {
+    dropWingClaims();
+    world.periodEndT = Math.max(0, world.periodEndT - dt);
+    if (world.periodEndT <= 0) startNextPeriod();
     return;
   }
 
@@ -15577,11 +15657,18 @@ function stepPlay(dt: number, act: Actions): void {
     }
   }
 
-  if (ui.clockMode === "game" && !world.stoppage && !world.faceoff) {
-    world.periodClock = Math.max(0, world.periodClock - dt * gameClockScale(ui.gameMinutes));
+  if ((ui.clockMode === "game" || ui.clockMode === "roller") && !world.stoppage && !world.faceoff) {
+    const roller = ui.clockMode === "roller";
+    const scale = roller ? rollerClockScale(ui.rollerMinutes) : gameClockScale(ui.gameMinutes);
+    const periods = roller ? ROLLER_PERIODS : GAME_PERIODS;
+    world.periodClock = Math.max(0, world.periodClock - dt * scale);
     const shown = Math.floor(world.periodClock);
     if (shown !== ui.periodClock) ui.setPeriodClock(shown);
     if (world.periodClock <= 0) {
+      if (world.period < periods) {
+        beginPeriodBreak();
+        return;
+      }
       world.periodOver = true;
       world.stoppage = true;
       world.stoppageT = 0;

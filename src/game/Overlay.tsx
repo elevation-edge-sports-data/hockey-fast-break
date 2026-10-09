@@ -17,6 +17,7 @@ import {
   previewPausedTargets,
   previewPausedScrimmage,
   previewPausedMinutes,
+  previewPausedRollerMinutes,
   resumePausedGame,
   resetPausedGame,
   startPausedNewGame,
@@ -26,6 +27,9 @@ import {
 import {
   GAME_MINUTES_MAX,
   GAME_MINUTES_MIN,
+  periodEndCopy,
+  periodOrdinal,
+  showsPeriodClock,
   lineupTotal,
   modeLineupCap,
   patchLineup,
@@ -289,6 +293,18 @@ const drillEndCard = {
   transform: "none",
 };
 
+const periodEndBanner = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "0.85em",
+  width: "max-content",
+  maxWidth: "94vw",
+  textTransform: "none" as const,
+  whiteSpace: "nowrap" as const,
+  fontSize: "clamp(1.2rem, 5vw, 2.2rem)",
+};
+
 function AbilitySliders() {
   const gameSpeed = useGame((s) => s.gameSpeed);
   const setGameSpeed = useGame((s) => s.setGameSpeed);
@@ -394,20 +410,21 @@ function chooseMode(m: PlayMode): void {
   previewPausedMode(m);
 }
 
-function GameMinutes() {
-  const storeMinutes = useGame((s) => s.gameMinutes);
+function PeriodMinutes({ kind }: { kind: "game" | "roller" }) {
+  const storeMinutes = useGame((s) => (kind === "roller" ? s.rollerMinutes : s.gameMinutes));
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
   const draft = usePauseDraft();
-  const gameMinutes = playing && paused && draft ? draft.gameMinutes : storeMinutes;
-  const setMin = (n: number) => previewPausedMinutes(n);
+  const minutes =
+    playing && paused && draft ? (kind === "roller" ? draft.rollerMinutes : draft.gameMinutes) : storeMinutes;
+  const setMin = (n: number) => (kind === "roller" ? previewPausedRollerMinutes(n) : previewPausedMinutes(n));
   return (
     <div className="clock-mins">
-      <button type="button" aria-label="Fewer minutes" disabled={gameMinutes <= GAME_MINUTES_MIN} onClick={() => setMin(gameMinutes - 1)}>
+      <button type="button" aria-label="Fewer minutes" disabled={minutes <= GAME_MINUTES_MIN} onClick={() => setMin(minutes - 1)}>
         −
       </button>
-      <b>{gameMinutes}</b>
-      <button type="button" aria-label="More minutes" disabled={gameMinutes >= GAME_MINUTES_MAX} onClick={() => setMin(gameMinutes + 1)}>
+      <b>{minutes}</b>
+      <button type="button" aria-label="More minutes" disabled={minutes >= GAME_MINUTES_MAX} onClick={() => setMin(minutes + 1)}>
         +
       </button>
       <span>minutes</span>
@@ -473,7 +490,13 @@ function ClockSetup() {
         >
           Roller
         </button>
-        {clockMode === "roller" ? <p className="clock-untimed">Untimed</p> : null}
+        {clockMode === "roller" ? (
+          <>
+            <p className="clock-untimed">2 X 18</p>
+            <p className="clock-untimed">period length</p>
+            <PeriodMinutes kind="roller" />
+          </>
+        ) : null}
       </div>
       <div className="clock-col">
         <button
@@ -483,7 +506,13 @@ function ClockSetup() {
         >
           Game
         </button>
-        {clockMode === "game" ? <GameMinutes /> : null}
+        {clockMode === "game" ? (
+          <>
+            <p className="clock-untimed">3 X 20</p>
+            <p className="clock-untimed">period length</p>
+            <PeriodMinutes kind="game" />
+          </>
+        ) : null}
       </div>
     </div>
   );
@@ -637,13 +666,13 @@ function MainMenus() {
       ) : null}
       {menu === "mode" ? (
         <div className="mode-grid">
-          {clockMode === "drill" || clockMode === "scrimmage" || clockMode === "game" ? (
+          {clockMode === "drill" || clockMode === "scrimmage" || clockMode === "roller" || clockMode === "game" ? (
             <>
               <div>{clockMode === "drill" ? <DrillTargetPick /> : null}</div>
               <div />
               <div>{clockMode === "scrimmage" ? <ScrimmageTargetPick /> : null}</div>
-              <div />
-              <div>{clockMode === "game" ? <GameMinutes /> : null}</div>
+              <div>{clockMode === "roller" ? <PeriodMinutes kind="roller" /> : null}</div>
+              <div>{clockMode === "game" ? <PeriodMinutes kind="game" /> : null}</div>
             </>
           ) : null}
           {MODES.map((m) => (
@@ -1022,6 +1051,7 @@ export function Overlay() {
   const clockMode = useGame((s) => s.clockMode);
   const controlProfile = useGame((s) => s.controlProfile);
   const periodClock = useGame((s) => s.periodClock);
+  const period = useGame((s) => s.period);
   const drillScore = useGame((s) => s.drillScore);
   const drillTargets = useGame((s) => s.drillTargets);
   const scrimmageHomeTargets = useGame((s) => s.scrimmageHomeTargets);
@@ -1030,8 +1060,14 @@ export function Overlay() {
   const scrimmageAwayDown = useGame((s) => s.scrimmageAwayDown);
   const goalSide = useGame((s) => s.goalSide);
   const gameMinutes = useGame((s) => s.gameMinutes);
+  const rollerMinutes = useGame((s) => s.rollerMinutes);
   const pauseDraft = usePauseDraft();
   const periodOver = useGame((s) => s.periodOver);
+  const periodBreak = useGame((s) => s.periodBreak);
+  const periodEnd =
+    periodBreak > 0 && (clockMode === "game" || clockMode === "roller")
+      ? periodEndCopy(periodBreak, homeScore, awayScore)
+      : null;
   const setPlaying = useGame((s) => s.setPlaying);
   const setHomeKit = useGame((s) => s.setHomeKit);
   const setAwayKit = useGame((s) => s.setAwayKit);
@@ -1073,12 +1109,13 @@ export function Overlay() {
       pauseDraft.drillTargets !== drillTargets ||
       pauseDraft.scrimmageHome !== scrimmageHomeTargets ||
       pauseDraft.scrimmageAway !== scrimmageAwayTargets ||
-      pauseDraft.gameMinutes !== gameMinutes);
+      pauseDraft.gameMinutes !== gameMinutes ||
+      pauseDraft.rollerMinutes !== rollerMinutes);
 
   return (
     <div className={playing ? "hud" : "hud is-title"}>
       <div className="hud-top-stack">
-        {(playing && !paused && clockMode === "drill") || replay ? null : (
+        {(playing && !paused) || replay ? null : (
         <div className="uni-banner">
           <div className="uni-cluster">
             <div className="uni-side">
@@ -1087,11 +1124,6 @@ export function Overlay() {
                   You
                   <AimCompass />
                 </span>
-                {playing && !paused ? (
-                  <small>
-                    {lineupTotal(liveHome)} / {modeLineupCap(clockMode)}
-                  </small>
-                ) : null}
               </div>
               <div className="uni-row">
                 {UNIFORMS.map((u) => (
@@ -1105,22 +1137,15 @@ export function Overlay() {
                 ))}
               </div>
             </div>
-            {!playing || paused ? (
-              <LineupStrip lineup={playing ? liveHome : homeLineup} onChange={applyHome} disabled={false} />
-            ) : null}
+            <LineupStrip lineup={playing ? liveHome : homeLineup} onChange={applyHome} disabled={false} />
           </div>
-          <div className="uni-cluster">
+          <div className="uni-cluster is-cpu">
             <div className="uni-side">
               <div className="uni-side-head">
                 <span>
                   CPU
                   <AimCompass flip />
                 </span>
-                {playing && !paused ? (
-                  <small>
-                    {lineupTotal(liveAway)} / {modeLineupCap(clockMode)}
-                  </small>
-                ) : null}
               </div>
               <div className="uni-row">
                 {UNIFORMS.map((u) => (
@@ -1134,16 +1159,14 @@ export function Overlay() {
                 ))}
               </div>
             </div>
-            {!playing || paused ? (
-              <LineupStrip lineup={playing ? liveAway : awayLineup} onChange={applyAway} disabled={false} />
-            ) : null}
+            <LineupStrip lineup={playing ? liveAway : awayLineup} onChange={applyAway} disabled={false} />
           </div>
         </div>
         )}
 
         <header className="hud-top">
           <div>
-            <p className="eyebrow">Elevation Edge · v3</p>
+            <p className="eyebrow">Elevation Edge · v4</p>
             <h1>Hockey Fast Break</h1>
             <AbilitySliders />
           </div>
@@ -1187,7 +1210,11 @@ export function Overlay() {
                     CPU
                     <UniStripe kit={awayUni} />
                   </span>
-                  {clockMode === "game" ? <span className="period-clock">{fmtClock(periodClock)}</span> : null}
+                  {showsPeriodClock(clockMode) ? (
+                    <span className="period-clock">
+                      {periodOrdinal(period)} {fmtClock(periodClock)}
+                    </span>
+                  ) : null}
                 </>
               )}
             </span>
@@ -1358,6 +1385,11 @@ export function Overlay() {
           {paused
             ? "A pause · Y lock · stick pan · LB/RB slow · LT/RT fast · R3 exits"
             : "A/B/X/Y skip"}
+        </div>
+      ) : periodEnd ? (
+        <div className="whistle" style={periodEndBanner}>
+          <span>{periodEnd.title}</span>
+          <span>{periodEnd.score}</span>
         </div>
       ) : periodOver || world.drillWon ? (
         clockMode === "drill" ? (

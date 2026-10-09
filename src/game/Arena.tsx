@@ -11,7 +11,7 @@ import {
 import { BOARD_H, FT, GLASS_H, GOAL_LINE_X, RINK_W } from "./rink";
 import { rinkPerimeter } from "./rinkGeom";
 import { kitById } from "./uniforms";
-import { useGame, type ArenaLook } from "./store";
+import { periodOrdinal, showsPeriodClock, useGame, type ArenaLook } from "./store";
 import { benchGoalieNumber, defendDir, jumboReplayView, penaltyNumbers, stepJumboReplay, world } from "./sim";
 import { SeatedPlayer } from "./PlayerMesh";
 import {
@@ -276,7 +276,7 @@ function StadiumRibbon({
       ticker: world.time,
       goal: lit,
       clock:
-        clockMode === "game"
+        showsPeriodClock(clockMode)
           ? `${Math.floor(Math.max(0, periodClock) / 60)}:${String(Math.floor(Math.max(0, periodClock) % 60)).padStart(2, "0")}`
           : null,
     };
@@ -470,6 +470,7 @@ function Jumbotron() {
   const goalSide = useGame((s) => s.goalSide);
   const clockMode = useGame((s) => s.clockMode);
   const periodClock = useGame((s) => s.periodClock);
+  const period = useGame((s) => s.period);
   const face = useMemo(() => createJumboFace(), []);
   useLayoutEffect(() => () => face.texture.dispose(), [face]);
   const root = useRef<THREE.Group>(null);
@@ -556,8 +557,8 @@ function Jumbotron() {
       ticker: world.time,
       goal: lit,
       clock:
-        clockMode === "game"
-          ? `${Math.floor(Math.max(0, periodClock) / 60)}:${String(Math.floor(Math.max(0, periodClock) % 60)).padStart(2, "0")}`
+        showsPeriodClock(clockMode)
+          ? `${periodOrdinal(period).toUpperCase()}  ${Math.floor(Math.max(0, periodClock) / 60)}:${String(Math.floor(Math.max(0, periodClock) % 60)).padStart(2, "0")}`
           : "—",
       puckX: replay?.puckX ?? world.puck.x,
       puckZ: replay?.puckZ ?? world.puck.z,

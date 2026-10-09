@@ -593,6 +593,7 @@ function CameraRig() {
   const wasTitle = useRef(true);
   const seenDrill = useRef(-1);
   const seededTitle = useRef(false);
+  const seenPeriod = useRef(world.periodView);
 
   useFrame((state) => {
     const ui = useGame.getState();
@@ -607,12 +608,14 @@ function CameraRig() {
 
   useFrame((state, dt) => {
     const cam = state.camera as THREE.PerspectiveCamera;
+    const periodSnap = world.periodView !== seenPeriod.current;
     const uiNow = useGame.getState();
     const pausedNow = uiNow.playing && uiNow.paused;
     if (pausedNow) stopPausedOrbit(state.controls);
     const drillNow = uiNow.clockMode === "drill";
     const drillSnap = drillNow && world.drillView !== seenDrill.current;
     if (!playing) {
+      seenPeriod.current = world.periodView;
       wasTitle.current = true;
       prevMode.current = mode;
       if (drillNow) {
@@ -744,7 +747,8 @@ function CameraRig() {
     const px = idle ? 0 : drillCam ? drillCam.x : scorer ? scorer.x : puck.x;
     const pz = idle ? 0 : drillCam ? drillCam.z : scorer ? scorer.z : puck.z;
     const py = idle ? 0.45 : drillCam ? drillCam.y : scorer ? 1.05 : Math.max(0.35, puck.y);
-    const switched = prevMode.current !== mode || fromTitle || drillSnap;
+    if (periodSnap) seenPeriod.current = world.periodView;
+    const switched = prevMode.current !== mode || fromTitle || drillSnap || periodSnap;
     prevMode.current = mode;
 
     const puckJump = Math.hypot(px - _follow.x, pz - _follow.z);

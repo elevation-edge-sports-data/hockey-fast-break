@@ -91,8 +91,11 @@ type GameUi = {
   clockMode: PlayMode;
   controlProfile: ControlProfile;
   gameMinutes: number;
+  rollerMinutes: number;
+  period: number;
   periodClock: number;
   periodOver: boolean;
+  periodBreak: number;
   drillScore: number;
   drillTargets: DrillTargets;
   scrimmageHomeTargets: DrillTargets;
@@ -143,8 +146,11 @@ type GameUi = {
   setClockMode: (m: PlayMode) => void;
   setControlProfile: (v: ControlProfile) => void;
   setGameMinutes: (n: number) => void;
+  setRollerMinutes: (n: number) => void;
+  setPeriod: (n: number) => void;
   setPeriodClock: (n: number) => void;
   setPeriodOver: (v: boolean) => void;
+  setPeriodBreak: (n: number) => void;
   setDrillScore: (n: number) => void;
   setDrillTargets: (n: DrillTargets) => void;
   setScrimmageHomeTargets: (n: DrillTargets) => void;
@@ -266,24 +272,63 @@ function saveControlProfile(v: ControlProfile): void {
 }
 
 export const GAME_MINUTES_MIN = 1;
-export const GAME_MINUTES_MAX = 10;
-export const GAME_MINUTES_DEFAULT = 5;
-/** The scoreboard always counts down a 20:00 period, scaled to the real length. */
+export const GAME_MINUTES_MAX = 5;
+export const GAME_MINUTES_DEFAULT = 2;
+/** Each period counts down 20:00, scaled to the real length. A game is three of them. */
 export const GAME_CLOCK_DISPLAY_MINUTES = 20;
+export const GAME_PERIODS = 3;
+/** Each roller period counts down 18:00. A roller match is two of them. */
+export const ROLLER_CLOCK_DISPLAY_MINUTES = 18;
+export const ROLLER_PERIODS = 2;
+export const ROLLER_MINUTES_DEFAULT = 3;
 
-export function clampGameMinutes(n: number): number {
-  if (!Number.isFinite(n)) return GAME_MINUTES_DEFAULT;
+export function clampPeriodMinutes(n: number, fallback: number): number {
+  if (!Number.isFinite(n)) return fallback;
   return Math.max(GAME_MINUTES_MIN, Math.min(GAME_MINUTES_MAX, Math.round(n)));
 }
 
-/** Displayed minutes elapsed per real minute. A 5-minute game runs the clock at 4×. */
+export function clampGameMinutes(n: number): number {
+  return clampPeriodMinutes(n, GAME_MINUTES_DEFAULT);
+}
+
+export function clampRollerMinutes(n: number): number {
+  return clampPeriodMinutes(n, ROLLER_MINUTES_DEFAULT);
+}
+
+/** Displayed minutes elapsed per real minute. A 1-minute period runs the clock at 20×, a 5-minute period at 4×. */
 export function gameClockScale(minutes: number): number {
   return GAME_CLOCK_DISPLAY_MINUTES / clampGameMinutes(minutes);
 }
 
-/** A full page load always starts at 5. The in-memory length survives the next game, not a refresh. */
+/** A 1-minute roller period runs the 18:00 clock at 18×. A 3-minute period runs it at 6×. */
+export function rollerClockScale(minutes: number): number {
+  return ROLLER_CLOCK_DISPLAY_MINUTES / clampRollerMinutes(minutes);
+}
+
+export function showsPeriodClock(mode: PlayMode): boolean {
+  return mode === "game" || mode === "roller";
+}
+
+export function periodOrdinal(period: number): string {
+  if (period === 2) return "2nd";
+  if (period === 3) return "3rd";
+  return "1st";
+}
+
+export function periodEndCopy(period: number, homeScore: number, awayScore: number): { title: string; score: string } {
+  return {
+    title: `end ${periodOrdinal(period)}`,
+    score: `You ${homeScore} - ${awayScore} CPU`,
+  };
+}
+
+/** A full page load always starts at 2 for game and 3 for roller. The in-memory length survives the next visit, not a refresh. */
 function loadGameMinutes(): number {
   return GAME_MINUTES_DEFAULT;
+}
+
+function loadRollerMinutes(): number {
+  return ROLLER_MINUTES_DEFAULT;
 }
 
 function rollAwayKit(): number {
@@ -350,8 +395,11 @@ export const useGame = create<GameUi>((set, get) => ({
   clockMode: INITIAL_MODE,
   controlProfile: loadControlProfile(),
   gameMinutes: loadGameMinutes(),
+  rollerMinutes: loadRollerMinutes(),
+  period: 1,
   periodClock: INITIAL_MODE === "drill" ? 60 : 1200,
   periodOver: false,
+  periodBreak: 0,
   drillScore: 0,
   drillTargets: loadDrillTargets(),
   scrimmageHomeTargets: loadTargetCount("hfb-scrimmage-home"),
@@ -455,7 +503,10 @@ export const useGame = create<GameUi>((set, get) => ({
       liveAway: { ...lu.away },
       lineupRev: get().lineupRev + 1,
       periodOver: false,
-      periodClock: m === "game" ? get().periodClock || 1200 : m === "drill" ? 60 : 1200,
+      periodBreak: 0,
+      period: 1,
+      periodClock:
+        m === "drill" ? 60 : m === "roller" ? ROLLER_CLOCK_DISPLAY_MINUTES * 60 : GAME_CLOCK_DISPLAY_MINUTES * 60,
       drillScore: 0,
       offsides: m === "game",
       ...(powerPlay === undefined ? {} : { powerPlay }),
@@ -464,8 +515,13 @@ export const useGame = create<GameUi>((set, get) => ({
   setGameMinutes: (n) => {
     set({ gameMinutes: clampGameMinutes(n) });
   },
+  setRollerMinutes: (n) => {
+    set({ rollerMinutes: clampRollerMinutes(n) });
+  },
+  setPeriod: (n) => set({ period: n }),
   setPeriodClock: (n) => set({ periodClock: n }),
   setPeriodOver: (v) => set({ periodOver: v }),
+  setPeriodBreak: (n) => set({ periodBreak: n }),
   setDrillScore: (n) => set({ drillScore: n }),
   setDrillTargets: (n) => {
     const v = clampTargets(n);
