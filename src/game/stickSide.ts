@@ -229,6 +229,60 @@ export function dekeStickAim(deke: number): StickAim {
   };
 }
 
+/**
+ * Neutral puck carry. Heel is in front of the skates, shaft runs back and up
+ * to the left hip, and the toe axis stays horizontal so a Z roll can flatten the sole.
+ * Centered stick (stickPull 0) and the middle of a deke sweep (dekePull 0.5) use this plate.
+ * Forehand and backhand pulls stay on their own aims.
+ */
+const NEUTRAL_HEEL: [number, number, number] = [-0.18, 0.03, 1.65];
+const NEUTRAL_SHAFT: [number, number, number] = [0.36, 0.56, -0.7462];
+const NEUTRAL_BLADE: [number, number, number] = [0.9007, 0, 0.4345];
+
+export function neutralCarryStickAim(): StickAim {
+  return {
+    heel: NEUTRAL_HEEL,
+    shaft: NEUTRAL_SHAFT,
+    blade: NEUTRAL_BLADE,
+  };
+}
+
+/** Same Z roll poseWristBlade uses when the extra roll and yaw are 0. */
+function bladeFlatRoll(axisX: V3, axisY: V3): number {
+  return -Math.PI / 2 - Math.atan2(-axisY.y, axisX.y);
+}
+
+/** Owned puck on the neutral blade, after the flat roll. Y is the seated sole; x and z are the plate. */
+export function neutralCarryLocal(): V3 {
+  const f = stickFrame(neutralCarryStickAim());
+  const rz = bladeFlatRoll(f.axisX, f.axisY);
+  const c = Math.cos(rz);
+  const s = Math.sin(rz);
+  const py = 0.026;
+  const pz = 0.19;
+  const px = -py * s;
+  const uy = py * c;
+  return {
+    x: f.heel.x + f.axisX.x * px + f.axisY.x * uy + f.axisZ.x * pz,
+    y: f.heel.y + f.axisX.y * px + f.axisY.y * uy + f.axisZ.y * pz,
+    z: f.heel.z + f.axisX.z * px + f.axisY.z * uy + f.axisZ.z * pz,
+  };
+}
+
+/**
+ * 1 is this neutral plate. 0 is the forehand or backhand pull already aimed.
+ * A deke uses dekePull, so the held middle stays on the backhand.
+ * Otherwise the stick pull is the blend, centered at 0.
+ */
+export function neutralCarryBlend(deke: number, stickPull: number): number {
+  if (deke > 0.02) {
+    const p = dekePull(deke);
+    return 1 - Math.abs(p * 2 - 1);
+  }
+  const t = stickPull < -1 ? -1 : stickPull > 1 ? 1 : stickPull;
+  return 1 - Math.abs(t);
+}
+
 export function skaterKnobLocal(): V3 {
   return CARRY.knob;
 }

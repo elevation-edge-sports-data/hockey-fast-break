@@ -691,6 +691,9 @@ test("skill stick body check is one Y hit per right-stick push", () => {
 test("skill stick RB plus right stick pokes once along the stick", () => {
   fresh("stick", "roller");
   const foe = placeCarrier(1.1, 0);
+  // Neutral carry puts the blade a stick-length ahead. Face +X so that blade
+  // sits past the carrier, not back on the checker who just poked it loose.
+  foe.yaw = -Math.PI / 2;
   const hitAt = world.lastHitTime;
   setInjectedKeys(["KeyM"]);
   setInjectedAim(0, 1);
@@ -927,11 +930,24 @@ test("sideways aim pokes and does not set the check struck impulse; stick-up sti
   assert.equal(wingsFoe.struck, 0);
 });
 
-test("classic and wings still carry on the forehand", () => {
+test("classic and wings carry ahead, and burst stays on the forehand", () => {
   fresh("classic");
-  assert.ok(localX() < -0.5, `classic ${localX()}`);
+  const coast = localXZ();
+  assert.ok(Math.abs(coast.x) < 0.12, `classic coast x ${coast.x}`);
+  assert.ok(coast.z > 0.4, `classic coast z ${coast.z}`);
+  setInjectedKeys(["Space"]);
+  step(1);
+  assert.ok(user().burst > 0, "space is burst");
+  assert.ok(localX() < -0.5, `classic burst ${localX()}`);
+  setInjectedKeys([]);
   fresh("wings");
-  assert.ok(localX() < -0.5, `wings ${localX()}`);
+  const wing = localXZ();
+  assert.ok(Math.abs(wing.x) < 0.12, `wings coast x ${wing.x}`);
+  assert.ok(wing.z > 0.4, `wings coast z ${wing.z}`);
+  setInjectedKeys(["Space"]);
+  step(1);
+  assert.ok(localX() < -0.5, `wings burst ${localX()}`);
+  setInjectedKeys([]);
 });
 
 function worldFromLocal(s, lx, lz) {

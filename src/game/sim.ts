@@ -28,7 +28,7 @@ import {
 } from "./rink";
 import { goalieRaisedHandCovers } from "./goalieStance";
 import { readActions, setInjectedKeys, type Actions } from "./input";
-import { dekePuckLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal } from "./stickSide";
+import { dekePuckLocal, neutralCarryBlend, neutralCarryLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal } from "./stickSide";
 import {
   CHAOS_CAP,
   GAME_CLOCK_DISPLAY_MINUTES,
@@ -782,16 +782,15 @@ function parkFaceoffWingers(skaters: Skater[], homeDot: number, awayDot: number)
         extras.length === 1
           ? zSpread * (side === "home" ? 1 : -1)
           : laneZ(extras.length, i, zSpread);
-      let x = ox + sign * 0.42;
+      const flank = 1;
+      let x = ox + sign * flank;
       let z = oz + zOff;
-      const dx = x - ox;
       const dz = z - oz;
-      const d = Math.hypot(dx, dz);
       const min = FACEOFF_R + 0.42;
-      if (d < min && d > 1e-4) {
-        const k = min / d;
-        x = ox + dx * k;
-        z = oz + dz * k;
+      if (Math.hypot(flank, dz) < min) {
+        const zNeed = Math.sqrt(min * min - flank * flank);
+        const zSign = Math.abs(dz) > 1e-4 ? Math.sign(dz) : side === "home" ? 1 : -1;
+        z = oz + zSign * zNeed;
       }
       s.x = x;
       s.z = z;
@@ -6110,6 +6109,24 @@ function skillStickCarryPull(s: Skater): number | null {
   return 0;
 }
 
+/** Forwards and defense who own the puck, coasting. Shots, burst, and the faceoff set win. */
+function neutralCarryOn(s: Skater): boolean {
+  if (s.kind === "goalie" || world.puck.owner !== s.id) return false;
+  if (s.burst > 0 || s.poke > 0.04 || s.hit > 0 || s.dive > 0.04) return false;
+  if (s.tumble !== 0 && s.struck > 0.1) return false;
+  if (s.celebrate > 0.05 || s.struck > 0.2) return false;
+  if (s.windup > 0.5 || s.follow > 0.02) return false;
+  if (world.faceoff && world.faceoffPhase !== "live") return false;
+  if (rageDraw(s.id)) return false;
+  const brawl = world.lineBrawl;
+  if (brawl) {
+    for (const p of brawl.pairs) {
+      if (p.home === s.id || p.away === s.id) return false;
+    }
+  }
+  return true;
+}
+
 export function stickBlade(s: Skater): { x: number; z: number } {
   // Skater plate is the shooter's right in this yaw+π frame (same point as the mesh).
   // Facing +X (yaw −π/2) that lands at world +Z, classic-camera screen-right.
@@ -6137,6 +6154,14 @@ export function stickBlade(s: Skater): { x: number; z: number } {
       const across = dekePuckLocal(0.525 * Math.min(1, s.stickPull));
       lx = across.x;
       lz = across.z;
+    }
+  }
+  if (plate && neutralCarryOn(s)) {
+    const n = neutralCarryBlend(s.deke, s.stickPull);
+    if (n > 0) {
+      const at = neutralCarryLocal();
+      lx += (at.x - lx) * n;
+      lz += (at.z - lz) * n;
     }
   }
   if (s.kind === "goalie" && goalieZKind(s)) {
@@ -14259,14 +14284,14 @@ type ReplaySnap = {
   ref: ReplayRef;
   ref2: ReplayRef;
   rage: StickRage | null;
+  /** Post-hold faceoff frame. Trim keeps the earliest one still in the buffer. */
+  ceremony?: boolean;
 };
 
 const REPLAY_CAP = 1800;
 const replayBuf: ReplaySnap[] = new Array(REPLAY_CAP);
 let replayW = 0;
 let replayN = 0;
-let replaySeq = 0;
-let replayDropSeq = 0;
 let replayPlay: ReplaySnap[] = [];
 let pauseHold: ReplaySnap | null = null;
 type ReplayScrub = "lt" | "rt" | "lb" | "rb";
@@ -14282,14 +14307,13 @@ let jumboT = 0;
 let jumboOn = false;
 
 function markPuckDrop(): void {
-  replayDropSeq = replaySeq;
+  // The rewind floor is the post-hold faceoff frames stored below.
+  // A win calls this after clearing the faceoff, so it must not move that floor.
 }
 
 function clearReplayBuf(): void {
   replayN = 0;
   replayW = 0;
-  replaySeq = 0;
-  replayDropSeq = 0;
   replayPlay = [];
   pauseHold = null;
   jumboPlay = [];
@@ -14366,8 +14390,11 @@ function snapBody(s: Skater): ReplayBody {
 
 function recordReplay(force = false): void {
   if (world.replay) return;
-  if (!force && world.faceoff) return;
+  // Hold and non-goal stoppages stay out so a long whistle does not fill REPLAY_CAP.
+  // Every faceoff keeps lower, fake, drop, and the live beat before the win.
+  if (!force && world.faceoff && world.faceoffPhase === "hold") return;
   if (!force && world.stoppage && world.whistle !== "goal") return;
+  const ceremony = world.faceoff && world.faceoffPhase !== "hold";
   replayBuf[replayW] = {
     puck: {
       x: world.puck.x,
@@ -14383,10 +14410,10 @@ function recordReplay(force = false): void {
     ref: snapRef(),
     ref2: snapRef2(),
     rage: snapRage(),
+    ceremony,
   };
   replayW = (replayW + 1) % REPLAY_CAP;
   if (replayN < REPLAY_CAP) replayN++;
-  replaySeq++;
 }
 
 function applyReplaySnap(snap: ReplaySnap): void {
@@ -14465,6 +14492,15 @@ function trimReplayDead(raw: ReplaySnap[]): ReplaySnap[] {
       break;
     }
   }
+  // A lowering ref is still. Keep every faceoff ceremony that is still in the buffer.
+  let ceremonyAt = -1;
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i]?.ceremony) {
+      ceremonyAt = i;
+      break;
+    }
+  }
+  if (ceremonyAt >= 0 && ceremonyAt < start) start = ceremonyAt;
   if (start <= 0) return raw;
   return raw.slice(start);
 }
@@ -15939,6 +15975,7 @@ function stepPlay(dt: number, act: Actions): void {
     }
     stepRef(dt);
     separateSkaters();
+    recordReplay();
     return;
   }
 
