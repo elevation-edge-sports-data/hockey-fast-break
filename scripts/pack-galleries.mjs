@@ -89,7 +89,7 @@ if (pub.js.includes("poseGalleryFull") || pub.js.includes("puckDropSet")) {
   throw new Error("pack-galleries: public bundle references the private gallery");
 }
 const publicHtml = page(
-  "Pose gallery",
+  "POSE GALLERY",
   pub.css,
   `  <script>
 ${escapeScript(pub.js)}
@@ -116,13 +116,13 @@ if (existsSync(fullSource)) {
 }
 
 const fullHtml = page(
-  "Full pose gallery",
+  "FULL POSE GALLERY",
   "",
   `  <script>
     function showMissingGallery() {
       var app = document.getElementById("app");
       if (!app || app.dataset.ready === "1") return;
-      app.style.cssText = "height:100dvh;display:grid;place-items:center;background:#070b12;color:#8b97a4;font-family:Barlow Condensed,sans-serif;letter-spacing:0.04em";
+      app.style.cssText = "height:100dvh;display:grid;place-items:center;background:#070b12;color:#8b97a4;font-family:Barlow Condensed,sans-serif;letter-spacing:0.04em;text-transform:uppercase";
       app.textContent = ${JSON.stringify(MISSING)};
     }
     window.addEventListener("error", function (e) {

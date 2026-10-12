@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNetTexture, createNumberTexture } from "./iceTexture";
-import { attackDir, burstPoseWeight, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, world, type Referee, type Skater } from "./sim";
+import { attackDir, burstPoseWeight, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, shotFollowTime, world, type Referee, type Skater } from "./sim";
 import { GOALIE_BUTTERFLY_BLADE_LEAD, GOALIE_Z, GOALIE_Z_BLADE_LEAD, poseGoalieButterflyArms, poseGoalieButterflyLimbs, poseGoalieHand, poseGoalieButterflyStanceLimbs, poseGoaliePlay, poseGoalieZArms, poseGoalieZLimbs } from "./goalieStance";
 import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, SKATER_TAPE_Z0, SKATER_TAPE_Z1, burstCarryStickAim, carryStickAim, dekePull, dekeStickAim, neutralCarryBlend, neutralCarryStickAim, shotStickAim, skaterBladeCurveX, skaterBladeLiePoint, skillCarryStickAim, stickFrame, type StickAim } from "./stickSide";
 import { kitById, type UniformKit } from "./uniforms";
@@ -907,6 +907,20 @@ type WristKey = {
   drop: number;
   /** Horizontal toe, so a forward shaft can lie the sole on the ice. */
   flat: boolean;
+  /** Root-frame sole Z. Player's right trails, player's left leads. */
+  zL: number;
+  zR: number;
+  /** Boot yaw. π points the trail toe back along an extended leg. */
+  toeL: number;
+  toeR: number;
+  /** Shift the pitched chest back so the lean hinges at the hips. */
+  bz: number;
+  /** Thighs leave the sockets by this much. Wrist keys stay at 0. */
+  abduct: number;
+  /** 0 keeps the right skate planted. 1 lifts it and aims the blade back. */
+  lift: number;
+  /** Bottom-hand fraction along the shaft. Lower sits closer to the blade. */
+  botGrip: number;
 };
 
 const WRIST_BOT_ALONG = SKATER_STICK_LEN * SKATER_GRIP_BOT;
@@ -937,6 +951,7 @@ const WRIST_CARRY: WristKey = {
   kneeR: 0.22,
   drop: CARRY_DROP,
   flat: true,
+  ...wristStance(0.22, 0.22),
 };
 const WRIST_SETTLE: WristKey = { ...WRIST_CARRY, hip: 0, drop: 0 };
 const WRIST_LOAD: WristKey = {
@@ -952,6 +967,7 @@ const WRIST_LOAD: WristKey = {
   kneeR: (72 * Math.PI) / 180,
   drop: -0.06,
   flat: true,
+  ...wristStance((34 * Math.PI) / 180, (72 * Math.PI) / 180, WRIST_LOW_GRIP),
 };
 const WRIST_PLANT: WristKey = {
   bot: wristBot(),
@@ -966,6 +982,7 @@ const WRIST_PLANT: WristKey = {
   kneeR: (90 * Math.PI) / 180,
   drop: -0.05,
   flat: true,
+  ...wristStance((28 * Math.PI) / 180, (90 * Math.PI) / 180, WRIST_LOW_GRIP),
 };
 const WRIST_RELEASE: WristKey = {
   bot: wristBot(),
@@ -980,20 +997,45 @@ const WRIST_RELEASE: WristKey = {
   kneeR: (86 * Math.PI) / 180,
   drop: -0.05,
   flat: true,
+  ...wristStance((28 * Math.PI) / 180, (86 * Math.PI) / 180, WRIST_LOW_GRIP),
 };
+/**
+ * Shared post-release finish for wrist, snap, and slap.
+ * Pitch is half of the previous 50° slap follow. No chest yaw, so the
+ * torso does not lean to either side. The right thigh and shin meet at
+ * 90°. That skate stays lifted with the blade aimed back. The shaft falls about 10°.
+ */
+const FOLLOW_HIP = (25 * Math.PI) / 180;
+/** Ankle sits 4 cm ahead of the shin, so this joint rotation makes the bones meet at 90°. */
+const FOLLOW_KNEE_RIGHT = (97.59 * Math.PI) / 180;
+const FOLLOW_BOT_GRIP = 0.48;
+const FOLLOW_STICK_DIR: [number, number, number] = [0.9037, 0.0744, -0.4217];
+const FOLLOW_STICK_BOT: [number, number, number] = [-0.0247, 0.8477, 0.7182];
+/** Right thigh ~30° down and back in the player frame. Boot X cancels the knee opening so the blade stays aimed back. */
+const FOLLOW_TRAIL_THIGH = (5 * Math.PI) / 180;
+const FOLLOW_TRAIL_BOOT_X = (-32.59 * Math.PI) / 180;
+const FOLLOW_TRAIL_BOOT_Y = 0;
 const WRIST_FOLLOW: WristKey = {
-  bot: wristBot(),
-  dir: WRIST_DIR,
+  bot: FOLLOW_STICK_BOT,
+  dir: FOLLOW_STICK_DIR,
   roll: WRIST_FLAT_ROLL,
   yaw: 0,
-  hip: (32 * Math.PI) / 180,
+  hip: FOLLOW_HIP,
   aim: 0,
-  open: WRIST_OPEN,
+  open: 0,
   weight: 0,
-  kneeL: (30 * Math.PI) / 180,
-  kneeR: (64 * Math.PI) / 180,
-  drop: -0.06,
+  kneeL: FOLLOW_KNEE_RIGHT,
+  kneeR: (82 * Math.PI) / 180,
+  drop: -0.04,
   flat: true,
+  zL: -0.35,
+  zR: 0.35,
+  toeL: 0,
+  toeR: 0,
+  bz: followHinge(FOLLOW_HIP, 0),
+  abduct: 0,
+  lift: 1,
+  botGrip: FOLLOW_BOT_GRIP,
 };
 /** Outward elbow for the top wrist hand. +X is the player's left, away from the chest. */
 const _wristTopPole = new THREE.Vector3(0.7, -0.03, 0.02);
@@ -1017,6 +1059,14 @@ const BH_LOAD: WristKey = {
   kneeR: (42 * Math.PI) / 180,
   drop: -0.18,
   flat: false,
+  zL: 0,
+  zR: 0,
+  toeL: 0,
+  toeR: 0,
+  bz: 0,
+  abduct: 0,
+  lift: 0,
+  botGrip: SKATER_GRIP_BOT,
 };
 const BH_PLANT: WristKey = {
   bot: [0.14, 1, 0.44],
@@ -1031,6 +1081,14 @@ const BH_PLANT: WristKey = {
   kneeR: (16 * Math.PI) / 180,
   drop: -0.16,
   flat: false,
+  zL: 0,
+  zR: 0,
+  toeL: 0,
+  toeR: 0,
+  bz: 0,
+  abduct: 0,
+  lift: 0,
+  botGrip: SKATER_GRIP_BOT,
 };
 const BH_RELEASE: WristKey = {
   bot: [-0.22, 1.08, 0.45],
@@ -1045,6 +1103,14 @@ const BH_RELEASE: WristKey = {
   kneeR: (22 * Math.PI) / 180,
   drop: -0.16,
   flat: false,
+  zL: 0,
+  zR: 0,
+  toeL: 0,
+  toeR: 0,
+  bz: 0,
+  abduct: 0,
+  lift: 0,
+  botGrip: SKATER_GRIP_BOT,
 };
 const BH_FOLLOW: WristKey = {
   bot: [-0.08, 1.14, 0.14],
@@ -1059,6 +1125,14 @@ const BH_FOLLOW: WristKey = {
   kneeR: (24 * Math.PI) / 180,
   drop: -0.14,
   flat: false,
+  zL: 0,
+  zR: 0,
+  toeL: 0,
+  toeR: 0,
+  bz: 0,
+  abduct: 0,
+  lift: 0,
+  botGrip: SKATER_GRIP_BOT,
 };
 
 function lerpWrist(a: WristKey, b: WristKey, u: number): WristKey {
@@ -1077,6 +1151,14 @@ function lerpWrist(a: WristKey, b: WristKey, u: number): WristKey {
     kneeR: n(a.kneeR, b.kneeR),
     drop: n(a.drop, b.drop),
     flat: a.flat && b.flat,
+    zL: n(a.zL, b.zL),
+    zR: n(a.zR, b.zR),
+    toeL: n(a.toeL, b.toeL),
+    toeR: n(a.toeR, b.toeR),
+    bz: n(a.bz, b.bz),
+    abduct: n(a.abduct, b.abduct),
+    lift: n(a.lift, b.lift),
+    botGrip: n(a.botGrip, b.botGrip),
   };
 }
 
@@ -1183,12 +1265,154 @@ function wristFootZ(x: number, knee: number): number {
   return x > 0 ? 0.12 + bend * 0.56 : 0.2 - bend * 0.04;
 }
 
-function poseWristLeg(leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number, knee: number, hip: number, drop: number, flat: boolean) {
-  const thigh = flat ? plantThigh(hip, drop, knee, -2.4, 0.8, wristFootZ(x, knee)) : strideThigh(knee);
+/** Load and release keep this stance. Follow replaces it. */
+function wristStance(
+  kneeL: number,
+  kneeR: number,
+  botGrip = SKATER_GRIP_BOT,
+): Pick<WristKey, "zL" | "zR" | "toeL" | "toeR" | "bz" | "abduct" | "lift" | "botGrip"> {
+  return { zL: wristFootZ(-1, kneeL), zR: wristFootZ(1, kneeR), toeL: 0, toeR: 0, bz: 0, abduct: 0, lift: 0, botGrip };
+}
+
+/** Cancel the hip swing from pitch and chest yaw so the skates stay near the root. */
+function followHinge(hip: number, open: number): number {
+  return -Math.sin(hip) * SKATER_HIP_Y * Math.cos(open);
+}
+
+/** Follow only. The release crouch still uses plantThigh so its skates stay put. */
+function plantFollowThigh(leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, knee: number, hip: number, toeYaw: number, wantZ: number): number {
+  const root = leg.parent?.parent;
+  let bestT = 0;
+  let best = Infinity;
+  const score = (t: number) => {
+    leg.rotation.set(t, 0, 0);
+    if (shin) shin.rotation.set(knee, 0, 0);
+    if (boot) boot.rotation.set(-(hip + t + knee), toeYaw, 0);
+    if (!root || !boot) return Math.abs(t);
+    leg.updateWorldMatrix(true, true);
+    _corner.set(0, -0.1375, 0.02);
+    boot.localToWorld(_corner);
+    root.worldToLocal(_corner);
+    return Math.abs(_corner.y - 0.02) * 5 + Math.abs(_corner.z - wantZ);
+  };
+  for (let i = 0; i <= 36; i++) {
+    const t = -2.4 + (3.5 * i) / 36;
+    const err = score(t);
+    if (err < best) {
+      best = err;
+      bestT = t;
+    }
+  }
+  const span = 3.5 / 36;
+  const center = bestT;
+  for (let i = 0; i <= 12; i++) {
+    const t = center - span + (2 * span * i) / 12;
+    const err = score(t);
+    if (err < best) {
+      best = err;
+      bestT = t;
+    }
+  }
+  return bestT;
+}
+
+/** Right skate leaves the ice. The blade's down axis swings back to -Z. */
+function raiseTrailSkate(leg: THREE.Group, boot: THREE.Group, lift: number) {
+  const plantedThigh = leg.rotation.x;
+  const planted = boot.quaternion.clone();
+  leg.rotation.x = plantedThigh + (FOLLOW_TRAIL_THIGH - plantedThigh) * lift;
+  leg.rotation.z *= 1 - lift;
+  boot.rotation.set(FOLLOW_TRAIL_BOOT_X, FOLLOW_TRAIL_BOOT_Y, 0);
+  boot.quaternion.slerp(planted, 1 - lift);
+}
+
+function poseWristLeg(leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number, knee: number, hip: number, drop: number, flat: boolean, wantZ: number | null = null, toeYaw = 0, lift = 0) {
   leg.position.set(x, SKATER_HIP_Y, 0);
+  const thigh = !flat
+    ? strideThigh(knee)
+    : wantZ == null
+      ? plantThigh(hip, drop, knee, -2.4, 0.8, wristFootZ(x, knee))
+      : plantFollowThigh(leg, shin, boot, knee, hip, toeYaw, wantZ);
   leg.rotation.set(thigh, 0, 0);
   if (shin) shin.rotation.set(knee, 0, 0);
-  if (boot) boot.rotation.set(-(hip + thigh + knee), 0, 0);
+  if (boot) boot.rotation.set(-(hip + thigh + knee), toeYaw, 0);
+  if (x < 0 && lift > 0 && boot) raiseTrailSkate(leg, boot, lift);
+}
+
+/** Sole stays world-level after the chest yaw. Toe direction is kept, pitch is not. */
+function levelSlapBoot(boot: THREE.Object3D) {
+  const parent = boot.parent;
+  if (!parent) return;
+  boot.updateWorldMatrix(true, false);
+  boot.getWorldQuaternion(_bootQ);
+  _bootZ.set(0, 0, 1).applyQuaternion(_bootQ);
+  _bootZ.y = 0;
+  if (_bootZ.lengthSq() < 1e-8) _bootZ.set(0, 0, 1);
+  else _bootZ.normalize();
+  _bootY.set(0, 1, 0);
+  _bootX.crossVectors(_bootY, _bootZ).normalize();
+  _bootBasis.makeBasis(_bootX, _bootY, _bootZ);
+  _bootQ.setFromRotationMatrix(_bootBasis);
+  parent.getWorldQuaternion(_legInv);
+  boot.quaternion.copy(_legInv.invert()).multiply(_bootQ);
+}
+
+function slapSoleY(boot: THREE.Object3D): number {
+  _corner.set(0, -0.1375, 0.02);
+  boot.localToWorld(_corner);
+  return _corner.y;
+}
+
+/** Knees bent, soles level, thighs abducted from the normal hip sockets. */
+function poseSlapLeg(leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number, knee: number, hip: number, side: 1 | -1, wantZ: number, toeYaw = 0, abduct = SLAP_ABDUCT, wide = false, lift = 0) {
+  leg.position.set(x, SKATER_HIP_Y, 0);
+  const spread = side * abduct;
+  const body = leg.parent;
+  let bestT = -0.6;
+  let best = Infinity;
+  const score = (t: number) => {
+    leg.rotation.set(t, 0, spread);
+    if (shin) shin.rotation.set(knee, 0, 0);
+    if (!boot) return Math.abs(t);
+    boot.rotation.set(-(hip + t + knee), toeYaw, 0);
+    levelSlapBoot(boot);
+    _corner.set(0, -0.1375, 0.02);
+    boot.localToWorld(_corner);
+    const y = _corner.y;
+    const root = body?.parent;
+    if (root) root.worldToLocal(_corner);
+    const zErr = Math.abs(_corner.z - wantZ);
+    if (wide) return Math.abs(y - 0.02) * 5 + zErr;
+    return Math.abs(y - 0.02) * 24 + (zErr > 0.16 ? zErr * 3 : zErr * 0.35);
+  };
+  const lo = wide ? -2.35 : -1.8;
+  const span0 = wide ? 3.4 : 2.4;
+  const steps = wide ? 28 : 16;
+  for (let i = 0; i <= steps; i++) {
+    const t = lo + (span0 * i) / steps;
+    const err = score(t);
+    if (err < best) {
+      best = err;
+      bestT = t;
+    }
+  }
+  const span = span0 / steps;
+  const center = bestT;
+  for (let i = 0; i <= 8; i++) {
+    const t = center - span + (2 * span * i) / 8;
+    const err = score(t);
+    if (err < best) {
+      best = err;
+      bestT = t;
+    }
+  }
+  leg.rotation.set(bestT, 0, spread);
+  if (shin) shin.rotation.set(knee, 0, 0);
+  if (boot) {
+    boot.rotation.set(-(hip + bestT + knee), toeYaw, 0);
+    levelSlapBoot(boot);
+    if (side < 0 && lift > 0) raiseTrailSkate(leg, boot, lift);
+  }
 }
 
 function watchPoint(head: THREE.Group, body: THREE.Group, x: number, y: number, z: number) {
@@ -1214,7 +1438,49 @@ function wristAfter(elapsed: number, total: number): { phase: "release" | "follo
   return { phase: "blend", u: Math.min(1, (elapsed - rel - fol) / blend) };
 }
 
-const SLAP_UP = 0.83;
+/**
+ * Forehand follow window. Most of `total` sits on the shared follow pose.
+ * A short release eases in and a short blend leaves. Backhand keeps wristAfter.
+ */
+function shotFollowAfter(elapsed: number, total: number): { phase: "release" | "follow" | "blend"; u: number } {
+  const blend = Math.min(0.1, total * 0.16);
+  const rel = Math.min(0.08, Math.max(0.03, total * 0.1));
+  const fol = Math.max(0.05, total - blend - rel);
+  if (elapsed < rel) return { phase: "release", u: elapsed / Math.max(1e-4, rel) };
+  if (elapsed < rel + fol) {
+    const u = (elapsed - rel) / fol;
+    const ramp = Math.min(1, 0.1 / fol);
+    return { phase: "follow", u: Math.min(1, u / ramp) };
+  }
+  return { phase: "blend", u: Math.min(1, (elapsed - rel - fol) / Math.max(1e-4, blend)) };
+}
+
+/** Right hand, nearer the blade, on the right flank and a little behind the back. */
+const SLAP_UP = 0.22;
+/** Left hand, nearer the knob, above the left hip. */
+const SLAP_TOP = 0.954;
+/** Slight forward hip. Positive rotation.x pitches the chest toward +Z. */
+const SLAP_HIP = (15 * Math.PI) / 180;
+/** Chest and shoulders toward local −X, the player's right. */
+const SLAP_YAW = -Math.PI / 4;
+const SLAP_KNEE = (60 * Math.PI) / 180;
+const SLAP_DROP = -0.2;
+/** Thighs leave ±SKATER_HIP_X and angle out so the skates stay apart. */
+const SLAP_ABDUCT = (22 * Math.PI) / 180;
+/** Root-frame +Z. The player's left skate leads. */
+const SLAP_Z_LEAD = 0.3;
+const SLAP_Z_TRAIL = -0.02;
+/** Left socket stays on the shoulder. The right socket sits lower so that arm can extend. */
+const SLAP_SH_L = { x: 0.24, y: 1.46, z: 0.06 };
+const SLAP_SH_R = { x: -0.2, y: 1.2, z: 0.02 };
+/** Follow lifts the right socket back up so that hand can stay on the high shaft. */
+const SLAP_SH_FOLLOW = { x: -0.26, y: 1.46, z: 0.06 };
+/** Left elbow bends slightly forward, not into the chest. Right elbow goes out to −X and back to −Z. */
+const _slapTopPole = new THREE.Vector3(0.25, -0.15, 0.2);
+const _slapBotPole = new THREE.Vector3(-0.7, 0.15, -1);
+/** Follow elbows stay outside the chest: left to +X, right to -X, both forward. */
+const _followTopPole = new THREE.Vector3(0.9, 0.05, 0.5);
+const _followBotPole = new THREE.Vector3(-0.95, 0.05, 0.55);
 
 function slapFill(bot: [number, number, number], dir: [number, number, number], roll: number, yaw: number): WristKey {
   return {
@@ -1222,14 +1488,22 @@ function slapFill(bot: [number, number, number], dir: [number, number, number], 
     dir,
     roll,
     yaw,
-    hip: 0,
+    hip: SLAP_HIP,
     aim: 0,
     open: 0,
     weight: 0,
-    kneeL: 0.22,
-    kneeR: 0.22,
-    drop: 0,
+    kneeL: SLAP_KNEE,
+    kneeR: SLAP_KNEE,
+    drop: SLAP_DROP,
     flat: false,
+    zL: SLAP_Z_TRAIL,
+    zR: SLAP_Z_LEAD,
+    toeL: 0,
+    toeR: 0,
+    bz: 0,
+    abduct: SLAP_ABDUCT,
+    lift: 0,
+    botGrip: SKATER_GRIP_BOT,
   };
 }
 
@@ -1252,23 +1526,31 @@ function slapFromHeel(heel: [number, number, number], dir: [number, number, numb
 
 const _slapCarry = carryStickAim();
 const SLAP_PLANT = slapFromHeel(_slapCarry.heel, _slapCarry.shaft, 0, 0);
-const SLAP_WIND = slapFromTop([0.05, 1.4, 0.05], [-0.7, 0.35, -0.45], 0, 0);
+/**
+ * Loaded stick after the forward pitch and the −45° yaw.
+ * Dir points at the knob. The blade stays the high end, a little under the previous cock.
+ * The shaft crosses in front of the chest and finishes outside the right flank.
+ */
+const SLAP_WIND = slapFromHeel([-0.2854, 1.7173, 0.0264], [0.0841, -0.7665, 0.6368], 0, 0);
+SLAP_WIND.open = SLAP_YAW;
 const SLAP_HIT = slapFromHeel([-0.72, 0.2, 0.72], [0.35, 0.78, -0.5], (48 * Math.PI) / 180, (-36 * Math.PI) / 180);
-const SLAP_FOLLOW = slapFromTop([0.15, 1.5, 0.25], [0.25, 0.45, 0.4], (8 * Math.PI) / 180, (-20 * Math.PI) / 180);
 
 function slapBotSlide(u: number): number {
-  const t = u < 0.5 ? u / 0.5 : (u - 0.5) / 0.5;
-  const s = t * t * (3 - 2 * t);
-  if (u < 0.5) return SKATER_GRIP_BOT + (SLAP_UP - SKATER_GRIP_BOT) * s;
-  return SLAP_UP + (SKATER_GRIP_BOT - SLAP_UP) * s;
+  const s = u * u * (3 - 2 * u);
+  return SKATER_GRIP_BOT + (SLAP_UP - SKATER_GRIP_BOT) * s;
 }
 
-function slapStick(wind: number, follow: number): { key: WristKey; lock: boolean; bot: number } | null {
+function mixShoulder(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }, u: number) {
+  const t = u * u * (3 - 2 * u);
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
+}
+
+function slapStick(wind: number, follow: number): { key: WristKey; lock: boolean; bot: number; shR: { x: number; y: number; z: number }; wide: boolean } | null {
   const loaded = wind > 0.5 ? Math.min(1, (wind - 0.5) / 0.5) : 0;
   const raised = lerpWrist(SLAP_PLANT, SLAP_WIND, loaded);
   if (follow <= 0.02) {
     if (wind <= 0.5) return null;
-    return { key: raised, lock: false, bot: slapBotSlide(loaded) };
+    return { key: raised, lock: false, bot: slapBotSlide(loaded), shR: SLAP_SH_R, wide: false };
   }
   const total = 0.62;
   const elapsed = Math.min(total, Math.max(0, total - follow));
@@ -1283,18 +1565,23 @@ function slapStick(wind: number, follow: number): { key: WristKey; lock: boolean
       key: lerpWrist(raised, SLAP_PLANT, u),
       lock: u > 0.85,
       bot: slide + (SKATER_GRIP_BOT - slide) * u,
+      shR: SLAP_SH_R,
+      wide: false,
     };
   }
   if (elapsed < down + hit) {
     const u = (elapsed - down) / hit;
-    return { key: lerpWrist(SLAP_PLANT, SLAP_HIT, u), lock: true, bot: SKATER_GRIP_BOT };
+    const key = lerpWrist(SLAP_PLANT, SLAP_HIT, u);
+    return { key, lock: true, bot: key.botGrip, shR: SLAP_SH_R, wide: false };
   }
   if (elapsed < down + hit + fol) {
     const u = (elapsed - down - hit) / fol;
-    return { key: lerpWrist(SLAP_HIT, SLAP_FOLLOW, u), lock: false, bot: SKATER_GRIP_BOT };
+    const key = lerpWrist(SLAP_HIT, WRIST_FOLLOW, u);
+    return { key, lock: false, bot: key.botGrip, shR: mixShoulder(SLAP_SH_R, SLAP_SH_FOLLOW, u), wide: true };
   }
   const u = Math.min(1, (elapsed - down - hit - fol) / blend);
-  return { key: lerpWrist(SLAP_FOLLOW, WRIST_CARRY, u), lock: false, bot: SKATER_GRIP_BOT };
+  const key = lerpWrist(WRIST_FOLLOW, WRIST_CARRY, u);
+  return { key, lock: false, bot: key.botGrip, shR: SLAP_SH_FOLLOW, wide: true };
 }
 
 function hangSkaterArm(arm: THREE.Group, fore: THREE.Group | null, side: -1 | 1) {
@@ -3657,7 +3944,8 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     let swingT = 0;
     let slapping = false;
     if (follow > 0.02) {
-      const u = 1 - Math.min(1, follow / 0.62);
+      const span = Math.max(0.2, shotFollowTime(world.lastShotKind, world.lastShotSlap));
+      const u = 1 - Math.min(1, follow / span);
       const startT = -Math.max(0.4, wind);
       swingT = startT + u * (1 - startT);
       slapping = true;
@@ -3668,14 +3956,21 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     const slapRelease = follow > 0.02 && world.lastShotSlap && world.lastShooter === s.id;
     const slapLoad = follow <= 0.02 && wind > 0.5;
     const wristBlocked = goalie || poke || diving || tumbling || cheer || !!rage || s.hit > 0 || s.struck > 0.2 || !!brawlPoseFor(s.id);
+    const forehandFollow = !goalie && !wristBlocked && follow > 0.02 && world.lastShooter === s.id && !world.lastShotBackhand;
     if (world.windupCancel && follow <= 0.02 && wind <= 0.04) {
       wristFrom.current = null;
       wristBack.current = false;
     }
-    if (wristBlocked || slapRelease || slapLoad) {
-      wristLeft.current = 0;
-      if (slapLoad || slapRelease) wristFrom.current = null;
+    if (forehandFollow && wristShotAt.current !== world.lastShoot) {
+      wristShotAt.current = world.lastShoot;
+      wristHold.current = world.lastShotSlap ? SLAP_HIT : (wristFrom.current ?? WRIST_CARRY);
+      wristFrom.current = null;
       wristBack.current = false;
+    }
+    if (wristBlocked || slapRelease || slapLoad || forehandFollow) {
+      wristLeft.current = 0;
+      if (slapLoad || (slapRelease && !forehandFollow)) wristFrom.current = null;
+      if (!forehandFollow) wristBack.current = false;
     } else if (world.lastShooter === s.id && !world.lastShotSlap && world.time - world.lastShoot < 0.1 && wristShotAt.current !== world.lastShoot && (follow > 0.02 || wristFrom.current)) {
       wristShotAt.current = world.lastShoot;
       const span = Math.max(0.46, follow > 0.02 ? follow + Math.max(0, world.time - world.lastShoot) : 0.46);
@@ -3690,7 +3985,25 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     let wristIce = false;
     let wristWatch: "puck" | "net" = "puck";
     const ownsPuck = world.puck.owner === index;
-    if (!wristBlocked && !slapRelease && !slapLoad && wristLeft.current > 0 && wristSpan.current > 0) {
+    if (forehandFollow) {
+      const total = shotFollowTime(world.lastShotKind, world.lastShotSlap);
+      const elapsed = Math.min(total, Math.max(0, total - follow));
+      const after = shotFollowAfter(elapsed, total);
+      const from = wristHold.current ?? (world.lastShotSlap ? SLAP_HIT : WRIST_CARRY);
+      const releaseKey = world.lastShotSlap ? SLAP_HIT : WRIST_RELEASE;
+      const settleKey = ownsPuck ? WRIST_CARRY : WRIST_SETTLE;
+      if (after.phase === "release") wristKey = lerpWrist(from, releaseKey, after.u);
+      else if (after.phase === "follow") {
+        // A lerp from the slap hit keeps flat false, so the hold would miss the gallery planter.
+        if (after.u >= 1) wristKey = WRIST_FOLLOW;
+        else {
+          wristKey = lerpWrist(releaseKey, WRIST_FOLLOW, after.u);
+          wristKey.flat = true;
+        }
+      } else wristKey = lerpWrist(WRIST_FOLLOW, settleKey, after.u);
+      wristIce = after.phase === "release" && !world.lastShotSlap;
+      wristWatch = "net";
+    } else if (!wristBlocked && !slapRelease && !slapLoad && wristLeft.current > 0 && wristSpan.current > 0) {
       const elapsed = wristSpan.current - wristLeft.current;
       const after = wristAfter(elapsed, wristSpan.current);
       const from = wristHold.current ?? WRIST_CARRY;
@@ -3714,7 +4027,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       wristWatch = "puck";
     }
     const wrist = wristKey !== null;
-    const slap = !wrist && (slapLoad || slapRelease) ? slapStick(wind, follow) : null;
+    const slap = !wrist && slapLoad ? slapStick(wind, follow) : null;
     const carryPose = !goalie && world.puck.owner === index && !slapping && !wrist && !diving && !tumbling && !cheer && !rage && s.struck <= 0.2 && !brawlPoseFor(s.id);
     const dekePose = carryPose && s.deke > 0.02;
     const sidePose = carryPose && !dekePose && s.stickPull > 0.02;
@@ -3765,10 +4078,13 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       if (wrist && wristKey) {
         body.current.position.x = wristKey.weight;
         body.current.position.y = wristKey.drop;
-        body.current.position.z = 0;
+        body.current.position.z = wristKey.bz;
         body.current.rotation.x = wristKey.hip;
         body.current.rotation.y = wristHipYaw(s, wristKey.aim, wristKey.open);
         body.current.rotation.z = 0;
+      } else if (slap) {
+        body.current.position.set(0, slap.key.drop, slap.key.bz);
+        body.current.rotation.set(slap.key.hip, slap.key.open, 0);
       } else {
         body.current.position.x = 0;
         let pitch = s.lean;
@@ -3862,17 +4178,64 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         if (rBoot.current) rBoot.current.rotation.x = mix(rBoot.current.rotation.x, -(CARRY_HIP + thighR + kneeR));
       }
     } else if (!goalie && wrist && wristKey && s.poke <= 0.04) {
-      if (lLeg.current) poseWristLeg(lLeg.current, lShin.current, lBoot.current, -SKATER_HIP_X, wristKey.kneeL, wristKey.hip, wristKey.drop, wristKey.flat);
-      if (rLeg.current) poseWristLeg(rLeg.current, rShin.current, rBoot.current, SKATER_HIP_X, wristKey.kneeR, wristKey.hip, wristKey.drop, wristKey.flat);
+      const followFeet = wristKey.flat && (Math.abs(wristKey.bz) > 1e-3 || Math.abs(wristKey.toeL) > 1e-3 || Math.abs(wristKey.toeR) > 1e-3);
+      if (lLeg.current)
+        poseWristLeg(
+          lLeg.current,
+          lShin.current,
+          lBoot.current,
+          -SKATER_HIP_X,
+          wristKey.kneeL,
+          wristKey.hip,
+          wristKey.drop,
+          wristKey.flat,
+          followFeet ? wristKey.zL : null,
+          followFeet ? wristKey.toeL : 0,
+          wristKey.lift,
+        );
+      if (rLeg.current)
+        poseWristLeg(
+          rLeg.current,
+          rShin.current,
+          rBoot.current,
+          SKATER_HIP_X,
+          wristKey.kneeR,
+          wristKey.hip,
+          wristKey.drop,
+          wristKey.flat,
+          followFeet ? wristKey.zR : null,
+          followFeet ? wristKey.toeR : 0,
+          0,
+        );
       if (wristKey.flat && body.current && lBoot.current && rBoot.current) {
         body.current.updateWorldMatrix(true, true);
         let low = Infinity;
-        for (const boot of [lBoot.current, rBoot.current]) {
+        const boots = wristKey.lift > 0.15 ? [rBoot.current] : [lBoot.current, rBoot.current];
+        for (const boot of boots) {
           _corner.set(0, -0.1375, 0.02);
           boot.localToWorld(_corner);
           if (_corner.y < low) low = _corner.y;
         }
         if (low < Infinity) body.current.position.y -= low - 0.02;
+      }
+    } else if (!goalie && slap) {
+      if (lLeg.current) poseSlapLeg(lLeg.current, lShin.current, lBoot.current, -SKATER_HIP_X, slap.key.kneeL, slap.key.hip, -1, slap.key.zL, slap.key.toeL, slap.key.abduct, slap.wide, slap.key.lift);
+      if (rLeg.current) poseSlapLeg(rLeg.current, rShin.current, rBoot.current, SKATER_HIP_X, slap.key.kneeR, slap.key.hip, 1, slap.key.zR, slap.key.toeR, slap.key.abduct, slap.wide, 0);
+      if (body.current && lBoot.current && rBoot.current) {
+        body.current.updateWorldMatrix(true, true);
+        let low = Infinity;
+        let high = -Infinity;
+        for (const boot of [lBoot.current, rBoot.current]) {
+          _corner.set(0, -0.1375, 0.02);
+          boot.localToWorld(_corner);
+          if (_corner.y < low) low = _corner.y;
+          if (_corner.y > high) high = _corner.y;
+        }
+        if (slap.key.lift > 0.15 && rBoot.current) {
+          _corner.set(0, -0.1375, 0.02);
+          rBoot.current.localToWorld(_corner);
+          body.current.position.y -= _corner.y - 0.02;
+        } else if (low < Infinity) body.current.position.y -= (low + high) * 0.5 - 0.02;
       }
     } else if (!goalie && carryPose && s.poke <= 0.04) {
       const sinL = Math.sin(s.stride);
@@ -4021,19 +4384,53 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         } else if (!fallHand) {
           stick.current.updateWorldMatrix(true, false);
           body.current.updateWorldMatrix(true, false);
-          _handTop.set(0, layout.len * SKATER_GRIP_TOP, 0);
+          _handTop.set(0, layout.len * (slap ? SLAP_TOP : SKATER_GRIP_TOP), 0);
           stick.current.localToWorld(_handTop);
           body.current.worldToLocal(_handTop);
-          _handBot.set(0, layout.len * (wrist && wristKey?.flat ? WRIST_LOW_GRIP : slap ? slap.bot : SKATER_GRIP_BOT), 0);
+          _handBot.set(0, layout.len * (wrist && wristKey ? wristKey.botGrip : slap ? slap.bot : SKATER_GRIP_BOT), 0);
           stick.current.localToWorld(_handBot);
           body.current.worldToLocal(_handBot);
           const armOpp = carryPose && s.poke <= 0.04 ? Math.sin(s.stride) * STRIDE_ARM : 0;
           const shX = -DEKE_SHOULDER * dekeAmt;
           const handsOn = carryPose || wrist || !!slap || (tumbleRise && hasPuck);
           const wristHands = !!(wrist && wristKey && wristKey.flat);
-          gripSkaterHand(body.current, rArm.current, rFore.current, 0.24 + shX, 1.46, 0.06 + armOpp, _handTop.x, _handTop.y, _handTop.z, 1, handsOn, stick.current, wristHands ? _wristTopPole : null, wristHands, wristHands ? WRIST_TOP_BEND : 1);
+          const followArms = (!!slap && slap.key.lift > 0.35) || (!!wristKey && wristKey.lift > 0.35);
+          gripSkaterHand(
+            body.current,
+            rArm.current,
+            rFore.current,
+            slap ? SLAP_SH_L.x : 0.24 + shX,
+            slap ? SLAP_SH_L.y : 1.46,
+            slap ? SLAP_SH_L.z : 0.06 + armOpp,
+            _handTop.x,
+            _handTop.y,
+            _handTop.z,
+            1,
+            handsOn,
+            stick.current,
+            followArms ? _followTopPole : slap ? _slapTopPole : wristHands ? _wristTopPole : null,
+            !!slap || wristHands || followArms,
+            wristHands ? (followArms ? 0.85 : WRIST_TOP_BEND) : 1,
+          );
           if (reach && !slapping && !wrist && !tumbleRise && !checkT) hangSkaterArm(lArm.current, lFore.current, -1);
-          else gripSkaterHand(body.current, lArm.current, lFore.current, -0.26 + shX, 1.46, 0.06 - armOpp, _handBot.x, _handBot.y, _handBot.z, -1, handsOn, null, null, wristHands);
+          else
+            gripSkaterHand(
+              body.current,
+              lArm.current,
+              lFore.current,
+              slap ? slap.shR.x : -0.26 + shX,
+              slap ? slap.shR.y : 1.46,
+              slap ? slap.shR.z : 0.06 - armOpp,
+              _handBot.x,
+              _handBot.y,
+              _handBot.z,
+              -1,
+              handsOn,
+              null,
+              followArms ? _followBotPole : slap ? _slapBotPole : null,
+              !!slap || wristHands || followArms,
+              followArms ? 0.12 : 1,
+            );
         }
         if (checkT && lFore.current && rFore.current) {
           const w = checkT.influence;
@@ -4211,6 +4608,10 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         head.current.position.set(0, 1.54, 0.02);
         if (wristWatch === "puck") watchPoint(head.current, body.current, world.puck.x, world.puck.y, world.puck.z);
         else watchPoint(head.current, body.current, attackDir(s.side) * GOAL_LINE_X, GOAL_H * 0.45, 0);
+        head.current.rotation.x = Math.min(head.current.rotation.x, WRIST_HEAD_DOWN);
+      } else if (slap && slapRelease && body.current) {
+        head.current.position.set(0, 1.54, 0.02);
+        watchPoint(head.current, body.current, attackDir(s.side) * GOAL_LINE_X, GOAL_H * 0.45, 0);
         head.current.rotation.x = Math.min(head.current.rotation.x, WRIST_HEAD_DOWN);
       } else if ((dekePose || sidePose) && body.current) {
         head.current.position.set(0, 1.54, 0.02);

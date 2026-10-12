@@ -117,7 +117,16 @@ export function PoseGalleryView<Id extends string>({
   };
 
   return (
-    <div style={{ display: "flex", height: "100dvh", width: "100%", background: "#070b12", color: "#e8ece6" }}>
+    <div
+      style={{
+        display: "flex",
+        height: "100dvh",
+        width: "100%",
+        background: "#070b12",
+        color: "#e8ece6",
+        textTransform: "uppercase",
+      }}
+    >
       <aside
         style={{
           width: 220,
@@ -161,6 +170,7 @@ export function PoseGalleryView<Id extends string>({
                 fontFamily: '"Barlow Condensed", sans-serif',
                 fontSize: 16,
                 letterSpacing: "0.04em",
+                textTransform: "uppercase",
               }}
             >
               {labels[id]}
@@ -202,7 +212,17 @@ export function PoseGalleryView<Id extends string>({
             {labels[pose]}
           </div>
           {index === null ? (
-            <div style={{ height: "100%", display: "grid", placeItems: "center", color: "#d7e8f4" }}>Pose gallery</div>
+            <div
+              style={{
+                height: "100%",
+                display: "grid",
+                placeItems: "center",
+                color: "#d7e8f4",
+                textTransform: "uppercase",
+              }}
+            >
+              Pose gallery
+            </div>
           ) : (
             <Canvas
               frameloop="always"

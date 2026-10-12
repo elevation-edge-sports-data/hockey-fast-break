@@ -2,7 +2,7 @@ import { resetWorld, world, type Skater } from "./sim";
 import { useGame, type ControlProfile } from "./store";
 
 /** Curated stills for /pose-gallery. The full set lives in the private gallery module. */
-export const PUBLIC_POSES = ["wrist", "cheer"] as const;
+export const PUBLIC_POSES = ["wrist", "slap", "shot-follow-through", "cheer"] as const;
 
 export type PublicPoseId = (typeof PUBLIC_POSES)[number];
 
@@ -206,12 +206,35 @@ export function releasePoseGallery(): void {
   if (held) useGame.setState({ playing: held.playing, paused: held.paused, camAdjust: held.camAdjust });
 }
 
+/**
+ * Held inside the 0.75s slap follow window, on the shared follow pose.
+ * The gallery freezes delta, so the pose is read from the remaining timer.
+ */
+export function holdShotFollow(s: Skater): void {
+  s.windup = 0;
+  s.follow = 0.35;
+  world.lastShotSlap = true;
+  world.lastShotBackhand = false;
+  world.lastShotKind = "slap";
+  world.lastShooter = s.id;
+  world.lastShoot = world.time;
+  world.puck.owner = null;
+}
+
 export function applyPose(pose: PublicPoseId): number {
   const { s, index } = prepareGalleryPose(false, false);
   switch (pose) {
     case "wrist":
       s.windup = 0.28;
       ownPuck(index, 0, -1.05);
+      break;
+    case "slap":
+      s.windup = 1;
+      s.follow = 0;
+      ownPuck(index, 0, -1.05);
+      break;
+    case "shot-follow-through":
+      holdShotFollow(s);
       break;
     case "cheer":
       s.celebrate = 2;

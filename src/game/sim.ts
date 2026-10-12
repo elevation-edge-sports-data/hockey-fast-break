@@ -8674,7 +8674,7 @@ function fireOneTimer(t: Skater): void {
     world.lastShotDist = 6;
     rememberOneTimerLines(t.id, lines);
     world.lastOneTimerDanger = lines >= 1 ? 0 : danger;
-    t.follow = slap ? 0.62 : 0.52;
+    t.follow = shotFollowTime(slap ? "slap" : "wrist");
     t.windup = 0;
     if (t.side === "home") world.userId = t.id;
     beginShotSpeedTrack();
@@ -8722,7 +8722,7 @@ function fireOneTimer(t: Skater): void {
   world.lastShotRedirect = false;
   world.lastShooter = t.id;
   world.lastShotDist = dist;
-  t.follow = slap ? 0.62 : 0.52;
+  t.follow = shotFollowTime(slap ? "slap" : "wrist");
   t.windup = 0;
   if (t.side === "home") world.userId = t.id;
   beginShotSpeedTrack();
@@ -8834,6 +8834,14 @@ function shotSpray(kind: ShotKind, s: Skater, oneTimer: boolean, backhandBand: b
   return 0.01;
 }
 
+/** Seconds the shot follow-through pose stays up. Slap longest, snap shortest. */
+export function shotFollowTime(kind: ShotKind | null, slap = false): number {
+  if (slap || kind === "slap") return 0.75;
+  if (kind === "snap") return 0.25;
+  if (kind === "backhand") return 0.46;
+  return 0.5;
+}
+
 function doShot(
   s: Skater,
   mx: number,
@@ -8866,7 +8874,7 @@ function doShot(
     drillEncoreAt = world.time;
     drillEncoreShots = 1;
     s.windup = 0;
-    s.follow = backhand ? 0.46 : 0.2;
+    s.follow = shotFollowTime(backhand ? "backhand" : "wrist");
     beginShotSpeedTrack();
     return;
   }
@@ -8901,7 +8909,7 @@ function doShot(
     world.shotWindupT = 0;
     if (useGame.getState().clockMode === "drill") armDrillShot();
     s.windup = 0;
-    s.follow = isSlap ? 0.62 : backhand ? 0.46 : 0.2;
+    s.follow = shotFollowTime(kind);
     beginShotSpeedTrack();
     return;
   }
@@ -8923,11 +8931,8 @@ function doShot(
   world.oneTimerSaucer = false;
   world.shotWindupT = 0;
   if (useGame.getState().clockMode === "drill") armDrillShot();
-  if (isSlap || oneTimer) s.follow = isSlap ? 0.62 : 0.5;
-  else if (backhand) {
-    s.follow = 0.46;
-    s.windup = 0;
-  } else s.windup = 0;
+  s.windup = 0;
+  s.follow = shotFollowTime(kind);
   beginShotSpeedTrack();
 }
 
@@ -13032,7 +13037,7 @@ function cpuOneTimerShot(s: Skater): void {
   world.lastShooter = s.id;
   world.lastShotDist = dist;
   world.shotWindupT = 0;
-  s.follow = 0.5;
+  s.follow = shotFollowTime("wrist");
   s.windup = 0;
   beginShotSpeedTrack();
 }
