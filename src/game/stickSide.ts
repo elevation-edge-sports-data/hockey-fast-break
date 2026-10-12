@@ -5,7 +5,12 @@
  * The carry plate is the point stickBlade, pickup, and the mesh share.
  */
 
-export const SKATER_STICK_LEN = 1.66;
+/**
+ * Shaft length from the heel joint to the knob. With the toe on the ice and the
+ * shaft straight up, the knob top is about y=1.52, the skater's chin
+ * (neck top is 1.59, head pivot is 1.54).
+ */
+export const SKATER_STICK_LEN = 1.24;
 export const SKATER_GRIP_TOP = 0.92;
 export const SKATER_GRIP_BOT = 0.74;
 
@@ -114,7 +119,53 @@ export function shotStickAim(t: number): StickAim {
   return { heel: tuple(heel), shaft: tuple(shaft), blade: tuple(blade) };
 }
 
-/** Stick local +Y is the shaft toward the knob. Stick local +Z is the toe. */
+/**
+ * Right-shot lie. Rotating the blade sole by this much around local +X
+ * makes the side-view angle between shaft (+Y) and toe 135°, not 90°.
+ */
+export const SKATER_BLADE_LIE = Math.PI / 4;
+/**
+ * Inward offset at the end of the tape. Positive X is the player's left in this
+ * frame (shooter's right is −X), so the toe hooks left and the pocket faces the forehand.
+ * The heel is straight along +Z. The tape turns onto this offset.
+ * The toe stays straight on the tape's exit angle, so it is not parallel to the heel.
+ */
+export const SKATER_BLADE_CURVE = 0.018;
+/** White tape between the black heel neck and the black toe cap. */
+export const SKATER_TAPE_Z0 = 0.09;
+export const SKATER_TAPE_Z1 = 0.3;
+/** How far the heel neck sits up inside the shaft end, in stick-local Y after the lie. */
+const SKATER_HEEL_OVERLAP = 0.012;
+
+/**
+ * Centerline X before the lie. Heel (z ≤ tape start) is x = 0.
+ * Through the tape the slope rises from 0 to the toe slope with flat curvature
+ * at both ends, so neither junction kinks. Past the tape the toe is a straight
+ * line on that same slope, toward local +X.
+ */
+export function skaterBladeCurveX(z: number): number {
+  const span = SKATER_TAPE_Z1 - SKATER_TAPE_Z0;
+  const toeSlope = (2 * SKATER_BLADE_CURVE) / span;
+  if (z <= SKATER_TAPE_Z0) return 0;
+  if (z >= SKATER_TAPE_Z1) return SKATER_BLADE_CURVE + toeSlope * (z - SKATER_TAPE_Z1);
+  const u = (z - SKATER_TAPE_Z0) / span;
+  const uu = u * u;
+  return toeSlope * span * (uu * u - 0.5 * uu * u * u);
+}
+
+/** Blade vertex after the 135° lie, shifted so the heel neck meets the shaft. */
+export function skaterBladeLiePoint(x: number, y: number, z: number): V3 {
+  const c = Math.cos(SKATER_BLADE_LIE);
+  const s = Math.sin(SKATER_BLADE_LIE);
+  const y2 = y * c - z * s;
+  const z2 = y * s + z * c;
+  // Pre-lie heel crown (0, 0.046, 0) is the joint. Park it inside the shaft end.
+  const jy = 0.046 * c;
+  const jz = 0.046 * s;
+  return { x, y: y2 - jy + SKATER_HEEL_OVERLAP, z: z2 - jz };
+}
+
+/** Stick local +Y is the shaft toward the knob. Stick local +Z is the toe before the lie. */
 export function stickFrame(aim: StickAim): StickFrame {
   const heel = v(aim.heel[0], aim.heel[1], aim.heel[2]);
   const axisY = norm(v(aim.shaft[0], aim.shaft[1], aim.shaft[2]));
@@ -122,14 +173,17 @@ export function stickFrame(aim: StickAim): StickFrame {
   let axisZ = norm(add(aimB, axisY, -dot(aimB, axisY)));
   const axisX = norm(cross(axisY, axisZ));
   axisZ = norm(cross(axisX, axisY));
+  const onBlade = (x: number, y: number, z: number) => add(add(add(heel, axisX, x), axisY, y), axisZ, z);
+  const plate = skaterBladeLiePoint(skaterBladeCurveX(0.19), 0.026, 0.19);
+  const toe = skaterBladeLiePoint(skaterBladeCurveX(0.4), 0.024, 0.4);
   const along = (y: number, z: number) => add(add(heel, axisY, y), axisZ, z);
   return {
     heel,
     axisX,
     axisY,
     axisZ,
-    plate: along(0.026, 0.19),
-    toe: along(0.024, 0.4),
+    plate: onBlade(plate.x, plate.y, plate.z),
+    toe: onBlade(toe.x, toe.y, toe.z),
     knob: along(SKATER_STICK_LEN, 0),
     top: along(SKATER_STICK_LEN * SKATER_GRIP_TOP, 0),
     bot: along(SKATER_STICK_LEN * SKATER_GRIP_BOT, 0),
@@ -148,13 +202,12 @@ export function skaterPlateLocal(): V3 {
  * pull 0 is the center line. Local Z is 0.84, ahead of the carry skate toe
  * (sole z about −0.07, blade half-length 0.16, toe about 0.13).
  * pull +1 is the shooter's left (local +X, backhand).
- * Heel X is the mesh carry. The 55° roll is bladeGrp.rotation.z.
+ * Heel X is the mesh carry. The blade lie is in the mesh, not a Z roll.
  */
 const SKILL_SHAFT = (55 * Math.PI) / 180;
 const SKILL_REACH = 1.15;
 const SKILL_HEEL_Y = 0.03;
 const SKILL_HEEL_Z = 0.65;
-const SKILL_BLADE_ROLL = SKILL_SHAFT;
 
 export function skillCarryStickAim(pull: number): StickAim {
   const t = Math.max(-1, Math.min(1, pull));
@@ -167,21 +220,8 @@ export function skillCarryStickAim(pull: number): StickAim {
   };
 }
 
-const SKILL_PLATE = { y: 0.026, z: 0.19 };
-
 export function skillCarryLocal(pull: number): V3 {
-  const aim = skillCarryStickAim(pull);
-  const f = stickFrame(aim);
-  const c = Math.cos(SKILL_BLADE_ROLL);
-  const s = Math.sin(SKILL_BLADE_ROLL);
-  const px = -SKILL_PLATE.y * s;
-  const py = SKILL_PLATE.y * c;
-  const pz = SKILL_PLATE.z;
-  return {
-    x: f.heel.x + f.axisX.x * px + f.axisY.x * py + f.axisZ.x * pz,
-    y: f.heel.y + f.axisX.y * px + f.axisY.y * py + f.axisZ.y * pz,
-    z: f.heel.z + f.axisX.z * px + f.axisY.z * py + f.axisZ.z * pz,
-  };
+  return stickFrame(skillCarryStickAim(pull)).plate;
 }
 
 /**
@@ -250,6 +290,36 @@ export function neutralCarryStickAim(): StickAim {
 /** Same Z roll poseWristBlade uses when the extra roll and yaw are 0. */
 function bladeFlatRoll(axisX: V3, axisY: V3): number {
   return -Math.PI / 2 - Math.atan2(-axisY.y, axisX.y);
+}
+
+/**
+ * Top-speed carry. Heel is on the ice ahead of the front skate, on the stick side.
+ * Shaft runs up to the left chest. The 0.92 and 0.74 grips stay a forearm apart.
+ * The flat roll is poseWristBlade with no extra roll.
+ */
+const BURST_HEEL: [number, number, number] = [-0.6506, 0.03, 2.1945];
+const BURST_SHAFT: [number, number, number] = [0.6617, 0.3043, -0.6852];
+const BURST_BLADE: [number, number, number] = [0, 0, 1];
+
+export function burstCarryStickAim(): StickAim {
+  return { heel: BURST_HEEL, shaft: BURST_SHAFT, blade: BURST_BLADE };
+}
+
+/** Owned puck on the burst blade, after the flat roll. */
+export function burstCarryLocal(): V3 {
+  const f = stickFrame(burstCarryStickAim());
+  const rz = bladeFlatRoll(f.axisX, f.axisY);
+  const c = Math.cos(rz);
+  const s = Math.sin(rz);
+  const py = 0.026;
+  const pz = 0.19;
+  const px = -py * s;
+  const uy = py * c;
+  return {
+    x: f.heel.x + f.axisX.x * px + f.axisY.x * uy + f.axisZ.x * pz,
+    y: f.heel.y + f.axisX.y * px + f.axisY.y * uy + f.axisZ.y * pz,
+    z: f.heel.z + f.axisX.z * px + f.axisY.z * uy + f.axisZ.z * pz,
+  };
 }
 
 /** Owned puck on the neutral blade, after the flat roll. Y is the seated sole; x and z are the plate. */

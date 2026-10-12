@@ -423,8 +423,6 @@ export const useGame = create<GameUi>((set, get) => ({
   setCamMode: (m) => set({ camMode: m, freeCamLive: m === "freestyle" ? get().freeCamLive : false }),
   setFreeCamLive: (v) => set({ freeCamLive: v }),
   setHomeKit: (id) => {
-    const away = get().awayKit;
-    if (id === away) return;
     if (id < 0 || id >= UNIFORMS.length) return;
     set({ homeKit: id, lineupRev: get().lineupRev + 1 });
   },

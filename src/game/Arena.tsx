@@ -887,12 +887,13 @@ function Benches() {
       <group position={[0, 0, zPost]}>
         <BenchReporter />
       </group>
+      {/* Unrotated seats: local X is world X. holdStick is local -0.58, so only +X seats set it. */}
       {HOME_BENCH_XS.map((x, i) => {
         const goalie = i === homeGSlot;
         const number = goalie ? homeGNum : HOME_BENCH_NUMS[i < homeGSlot ? i : i - 1]!;
         return (
           <group key={`h${number}-${home.id}`} position={[x, 0.75, zBench - 0.04]}>
-            <SeatedPlayer kit={home} number={number} holdStick={!goalie && i % 2 === 0} goalie={goalie} seatX={x} />
+            <SeatedPlayer kit={home} number={number} holdStick={!goalie && x > 0} goalie={goalie} seatX={x} />
           </group>
         );
       })}
@@ -901,7 +902,7 @@ function Benches() {
         const number = goalie ? awayGNum : AWAY_BENCH_NUMS[i < awayGSlot ? i : i - 1]!;
         return (
           <group key={`a${number}-${away.id}`} position={[x, 0.75, zBench - 0.04]}>
-            <SeatedPlayer kit={away} number={number} holdStick={!goalie && i % 2 === 1} goalie={goalie} seatX={x} />
+            <SeatedPlayer kit={away} number={number} holdStick={!goalie && x > 0} goalie={goalie} seatX={x} />
           </group>
         );
       })}

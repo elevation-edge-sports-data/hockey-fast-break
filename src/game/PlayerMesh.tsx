@@ -2,9 +2,9 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNetTexture, createNumberTexture } from "./iceTexture";
-import { attackDir, cheerFor, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, world, type Referee, type Skater } from "./sim";
+import { attackDir, burstPoseWeight, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, world, type Referee, type Skater } from "./sim";
 import { GOALIE_BUTTERFLY_BLADE_LEAD, GOALIE_Z, GOALIE_Z_BLADE_LEAD, poseGoalieButterflyArms, poseGoalieButterflyLimbs, poseGoalieHand, poseGoalieButterflyStanceLimbs, poseGoaliePlay, poseGoalieZArms, poseGoalieZLimbs } from "./goalieStance";
-import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, carryStickAim, dekePull, dekeStickAim, neutralCarryBlend, neutralCarryStickAim, shotStickAim, skillCarryStickAim, stickFrame, type StickAim } from "./stickSide";
+import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, SKATER_TAPE_Z0, SKATER_TAPE_Z1, burstCarryStickAim, carryStickAim, dekePull, dekeStickAim, neutralCarryBlend, neutralCarryStickAim, shotStickAim, skaterBladeCurveX, skaterBladeLiePoint, skillCarryStickAim, stickFrame, type StickAim } from "./stickSide";
 import { kitById, type UniformKit } from "./uniforms";
 import { useGame } from "./store";
 import { BLUE_X, GOAL_H, GOAL_LINE_X } from "./rink";
@@ -188,15 +188,17 @@ const blockerBoardGeo = new THREE.BoxGeometry(0.055, 0.36, 0.18);
 const blockerCuffGeo = new THREE.BoxGeometry(0.14, 0.12, 0.18);
 const stickShaftGeo = new THREE.CylinderGeometry(0.009, 0.014, 1, 8);
 /**
- * Skater blade in the stick frame. +Z runs to the toe, +Y is face height, X is thickness.
+ * Skater blade in the stick frame, before the lie rotation.
+ * +Z runs to the toe, +Y is face height, X is thickness.
  * Thickness matches the shaft at the heel (diameter 0.028). The face is taller than that.
- * Heel and toe stay the shaft color. White tape covers only the middle, and that
- * section is taller at the toe end. The rounded toe is the end of the blade.
+ * Heel and toe stay the shaft color. The heel is straight. The tape turns inward
+ * toward local +X (player's left), and the toe stays straight on that exit angle.
+ * The taped span is only the tape mesh, so the black blade cannot show through it.
+ * Vertices are then rotated +45° around X so the shaft and the sole meet at 135°.
+ * The rounded toe is the end of the blade.
  * Along the heel, the top edge turns into the blade before the sole does.
  */
 const SKATER_BLADE_HALF = 0.014;
-const SKATER_TAPE_Z0 = 0.115;
-const SKATER_TAPE_Z1 = 0.292;
 const SKATER_TAPE_PAD = 0.0015;
 
 function catmullBlade(pts: { z: number; y: number }[], nPer: number) {
@@ -266,86 +268,108 @@ function skaterBladeOutline() {
   return pts;
 }
 
-function yOnBlade(outline: { z: number; y: number }[], z: number) {
-  const ys: number[] = [];
-  for (let i = 0; i < outline.length; i++) {
-    const a = outline[i];
-    const b = outline[(i + 1) % outline.length];
-    if (Math.abs(b.z - a.z) < 1e-8) continue;
-    const t = (z - a.z) / (b.z - a.z);
-    if (t < -1e-4 || t > 1 + 1e-4) continue;
-    ys.push(a.y + (b.y - a.y) * t);
-  }
-  ys.sort((p, q) => p - q);
-  return { y0: ys[0] ?? 0, y1: ys[ys.length - 1] ?? 0 };
+function bladeVert(x: number, y: number, z: number): [number, number, number] {
+  const lied = skaterBladeLiePoint(x + skaterBladeCurveX(z), y, z);
+  return [lied.x, lied.y, lied.z];
 }
 
-function makeSkaterStickBlade() {
-  const outline = skaterBladeOutline();
+/** Keep the part of a closed outline on one side of a z cut. */
+function clipBladeZ(pts: { z: number; y: number }[], limit: number, keepAbove: boolean): { z: number; y: number }[] {
+  const inside = (z: number) => (keepAbove ? z >= limit - 1e-8 : z <= limit + 1e-8);
+  const cross = (a: { z: number; y: number }, b: { z: number; y: number }) => {
+    const t = (limit - a.z) / (b.z - a.z || 1e-8);
+    return { z: limit, y: a.y + (b.y - a.y) * t };
+  };
+  const out: { z: number; y: number }[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i]!;
+    const b = pts[(i + 1) % pts.length]!;
+    const ain = inside(a.z);
+    const bin = inside(b.z);
+    if (ain && bin) out.push(b);
+    else if (ain && !bin) out.push(cross(a, b));
+    else if (!ain && bin) {
+      out.push(cross(a, b));
+      out.push(b);
+    }
+  }
+  return out;
+}
+
+function extrudeBlade(poly: { z: number; y: number }[], inflate: number): THREE.BufferGeometry | null {
+  if (poly.length < 3) return null;
   const verts: number[] = [];
   const idx: number[] = [];
   const add = (x: number, y: number, z: number) => {
     const i = verts.length / 3;
-    verts.push(x, y, z);
+    const bow = skaterBladeCurveX(z);
+    const p = skaterBladeLiePoint(bow + x, y, z);
+    verts.push(p.x, p.y, p.z);
     return i;
   };
   const right: number[] = [];
   const left: number[] = [];
-  for (const p of outline) {
-    right.push(add(SKATER_BLADE_HALF, p.y, p.z));
-    left.push(add(-SKATER_BLADE_HALF, p.y, p.z));
+  for (const p of poly) {
+    const pad = Math.sign(1) * inflate;
+    right.push(add(SKATER_BLADE_HALF + pad, p.y, p.z));
+    left.push(add(-SKATER_BLADE_HALF - pad, p.y, p.z));
   }
   const faces = THREE.ShapeUtils.triangulateShape(
-    outline.map((p) => new THREE.Vector2(p.z, p.y)),
+    poly.map((p) => new THREE.Vector2(p.z, p.y)),
     [],
   );
-  const n = outline.length;
+  const n = poly.length;
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
-    idx.push(right[i], left[i], right[j], left[i], left[j], right[j]);
+    idx.push(right[i]!, left[i]!, right[j]!, left[i]!, left[j]!, right[j]!);
   }
   for (const [a, b, c] of faces) {
-    idx.push(right[a], right[c], right[b]);
-    idx.push(left[a], left[b], left[c]);
+    idx.push(right[a]!, right[c]!, right[b]!);
+    idx.push(left[a]!, left[b]!, left[c]!);
   }
-  const blade = new THREE.BufferGeometry();
-  blade.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
-  blade.setIndex(idx);
-  blade.computeVertexNormals();
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
 
-  const segs = 16;
-  const tapeVerts: number[] = [];
-  const tapeIdx: number[] = [];
-  const tapeAdd = (x: number, y: number, z: number) => {
-    const i = tapeVerts.length / 3;
-    tapeVerts.push(x, y, z);
-    return i;
+function mergeBladeGeos(parts: Array<THREE.BufferGeometry | null>): THREE.BufferGeometry {
+  const verts: number[] = [];
+  const idx: number[] = [];
+  for (const geo of parts) {
+    if (!geo) continue;
+    const base = verts.length / 3;
+    const pos = geo.getAttribute("position");
+    for (let i = 0; i < pos.count; i++) verts.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+    const index = geo.getIndex();
+    if (!index) continue;
+    for (let i = 0; i < index.count; i++) idx.push(index.getX(i) + base);
+    geo.dispose();
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+  out.setIndex(idx);
+  out.computeVertexNormals();
+  return out;
+}
+
+function makeSkaterStickBlade() {
+  const outline = skaterBladeOutline();
+  const heel = clipBladeZ(outline, SKATER_TAPE_Z0, false);
+  const toe = clipBladeZ(outline, SKATER_TAPE_Z1, true);
+  const tape = clipBladeZ(clipBladeZ(outline, SKATER_TAPE_Z0, true), SKATER_TAPE_Z1, false);
+  return {
+    blade: mergeBladeGeos([extrudeBlade(heel, 0), extrudeBlade(toe, 0)]),
+    tape: extrudeBlade(tape, SKATER_TAPE_PAD) ?? new THREE.BufferGeometry(),
   };
-  const rings: number[][] = [];
-  for (let i = 0; i <= segs; i++) {
-    const z = SKATER_TAPE_Z0 + ((SKATER_TAPE_Z1 - SKATER_TAPE_Z0) * i) / segs;
-    const { y0, y1 } = yOnBlade(outline, z);
-    const hx = SKATER_BLADE_HALF + SKATER_TAPE_PAD;
-    const yb = y0 - 0.0006;
-    const yt = y1 + 0.0012;
-    rings.push([tapeAdd(hx, yb, z), tapeAdd(hx, yt, z), tapeAdd(-hx, yt, z), tapeAdd(-hx, yb, z)]);
-  }
-  for (let i = 0; i < segs; i++) {
-    const a = rings[i];
-    const b = rings[i + 1];
-    for (let k = 0; k < 4; k++) {
-      const k2 = (k + 1) % 4;
-      tapeIdx.push(a[k], b[k2], b[k], a[k], a[k2], b[k2]);
-    }
-  }
-  const tape = new THREE.BufferGeometry();
-  tape.setAttribute("position", new THREE.Float32BufferAttribute(tapeVerts, 3));
-  tape.setIndex(tapeIdx);
-  tape.computeVertexNormals();
-  return { blade, tape };
 }
 
 const { blade: skaterBladeGeo, tape: skaterTapeGeo } = makeSkaterStickBlade();
+/** Sole corners after the lie, used to plant the low point without treating the blade as a putter. */
+const SKATER_SOLE_SAMPLES: ReadonlyArray<readonly [number, number, number]> = [0.07, 0.2, 0.318, 0.38].flatMap((z) =>
+  ([-1, 1] as const).map((side) => bladeVert(side * (SKATER_BLADE_HALF + SKATER_TAPE_PAD), 0, z)),
+);
 const knobGeo = new THREE.BoxGeometry(0.036, 0.026, 0.036);
 /** Wide lower stick. Length is 1 so the shaft group can scale it. */
 const goaliePaddleGeo = new THREE.BoxGeometry(0.1, 1, 0.04);
@@ -434,14 +458,61 @@ function strideThigh(knee: number): number {
   return (thighDeg * Math.PI) / 180;
 }
 const READY_SHAFT_PITCH = (40 * Math.PI) / 180;
-/** Faceoff set. Deep knees, feet angled out, both skates on one plant. */
-const PUCK_DROP_PITCH = (20 * Math.PI) / 180;
-const PUCK_DROP_KNEE = (74 * Math.PI) / 180;
-const PUCK_DROP_DROP = -0.134;
-const PUCK_DROP_FOOT_Z = 0.24;
-const PUCK_DROP_STANCE = SKATER_HIP_X + 0.02;
-const PUCK_DROP_ABDUCT = (28 * Math.PI) / 180;
-const PUCK_DROP_ANKLE = (25 * Math.PI) / 180;
+/** Faceoff set. Chest over a flat blade. Back skate, then the left skate a step ahead. */
+const PUCK_DROP_PITCH = (36 * Math.PI) / 180;
+const PUCK_DROP_KNEE = (82 * Math.PI) / 180;
+const PUCK_DROP_KNEE_F = (100 * Math.PI) / 180;
+const PUCK_DROP_DROP = -0.12;
+const PUCK_DROP_FOOT_Z = 0.26;
+const PUCK_DROP_FOOT_Z_F = 0.42;
+const PUCK_DROP_STANCE = SKATER_HIP_X + 0.06;
+const PUCK_DROP_ABDUCT = (14 * Math.PI) / 180;
+const PUCK_DROP_ANKLE = (8 * Math.PI) / 180;
+/** Shaft angle off vertical. A diagonal down to the dot, not a near-vertical plant. */
+const PUCK_DROP_SHAFT = (50 * Math.PI) / 180;
+/** 90° would lay the shaft out to the player's left. 130° brings the heel forward. */
+const PUCK_DROP_YAW = (130 * Math.PI) / 180;
+/** Lower than the carry knob. Hands stay 0.30 m apart on the shortened shaft. */
+const PUCK_DROP_GRIP_TOP = 0.58;
+const PUCK_DROP_GRIP_BOT = PUCK_DROP_GRIP_TOP - 0.3 / SKATER_STICK_LEN;
+/**
+ * Draw crouch for the two dot takers. The gallery "Puck drop" skater is one of them.
+ * The body stays on the skater root. The heel stays in front of the hips in that frame.
+ * Shaft is 44° off vertical. The old [0.05, 0.92, -0.15] shaft was about 10° off vertical.
+ */
+const DRAW_PITCH = (42 * Math.PI) / 180;
+const DRAW_DROP = -0.12;
+const DRAW_HIP_BACK = 1.05;
+/** How far the pitched helmet sits ahead of the hips. The crouch shifts back by this so the head stays over the root. */
+const DRAW_HEAD_OVER_ROOT = 1.115;
+const DRAW_STANCE = SKATER_HIP_X + 0.1;
+const DRAW_KNEE_F = (108 * Math.PI) / 180;
+const DRAW_KNEE_B = (110 * Math.PI) / 180;
+const DRAW_TOE_F = (8 * Math.PI) / 180;
+const DRAW_TOE_B = (6 * Math.PI) / 180;
+const DRAW_ABDUCT = (14 * Math.PI) / 180;
+const DRAW_ANKLE = (6 * Math.PI) / 180;
+/** Sole centers this far behind the heel on local −Z. A shorter gap than a full stride. */
+const DRAW_FOOT_F = 0.36;
+const DRAW_FOOT_B = 0.52;
+/** Between the planted skates. The sweep stops here so both hands stay on the shaft. */
+const DRAW_SWEEP_Z = 0.58;
+const DRAW_SWEEP_T = 0.32;
+/**
+ * Same distances up the shaft as before (0.76 m and the old 1.58 m).
+ * The upper grip stops at the knob now that the stick is chin height.
+ */
+const DRAW_GRIP_BOT = 0.616;
+const DRAW_GRIP_TOP = 0.99;
+const DRAW_HEEL_X = -1.12;
+/** Back from the near-side gap. The blade still reaches toward the dot along +Z. */
+const DRAW_HEEL_ADVANCE = -0.201;
+/**
+ * Flat 135° sole. The shaft runs from outside the right knee,
+ * in front of both knees, to outside the left knee.
+ */
+const DRAW_SHAFT: [number, number, number] = [0.9544, 0.2389, 0.1789];
+const DRAW_BLADE: [number, number, number] = [-0.842, 0, 0.5395];
 /** Athletic stand. Taller than the faceoff crouch. Both skates share one plant. */
 const READY_HIP = (10 * Math.PI) / 180;
 const READY_KNEE = (40 * Math.PI) / 180;
@@ -467,6 +538,52 @@ const NEUTRAL_ABDUCT = (18 * Math.PI) / 180;
 const NEUTRAL_TOE_F = (24 * Math.PI) / 180;
 const NEUTRAL_TOE_B = (12 * Math.PI) / 180;
 const NEUTRAL_ANKLE = (14 * Math.PI) / 180;
+/** Top-speed carry. Chest over the stick. Legs swap on the stride phase. */
+const BURST_PITCH = (52 * Math.PI) / 180;
+const BURST_DROP = 0.08;
+const BURST_STANCE = SKATER_HIP_X + 0.04;
+const BURST_KNEE_F = (90 * Math.PI) / 180;
+const BURST_KNEE_B = (16 * Math.PI) / 180;
+const BURST_TOE_F = (14 * Math.PI) / 180;
+const BURST_TOE_B = (18 * Math.PI) / 180;
+/** Sole-center z of the near ice crossing. The far crossing sits near z 0.8 and 1.1. */
+const BURST_Z_F = 0.573;
+const BURST_Z_B = 0.271;
+const BURST_SOLE: ReadonlyArray<readonly [number, number, number]> = [
+  [0, -0.1375, -0.14],
+  [0, -0.1375, 0.02],
+  [0, -0.1375, 0.18],
+];
+/** Goal glide. Chest up, knees soft, legs swap on the celebrate clock. */
+const CHEER_PITCH = (16 * Math.PI) / 180;
+const CHEER_DROP = -0.105;
+const CHEER_HEAD = -0.35;
+/** Cheer head sits slightly forward so the standard helmet stays against the chest. */
+const CHEER_HEAD_Z = 0.05;
+const CHEER_STANCE = SKATER_HIP_X + 0.04;
+const CHEER_KNEE_F = (56 * Math.PI) / 180;
+const CHEER_KNEE_B = (34 * Math.PI) / 180;
+const CHEER_Z_F = 0.4;
+const CHEER_Z_B = 0.04;
+const CHEER_GLIDE = (5 * Math.PI) / 4;
+/** Left glove, body +X. The IK point is short of the socket so the glove lands 0.25 m forward. */
+const CHEER_HAND_OUT = 0.08;
+const CHEER_HAND_FWD = 0.23;
+const CHEER_HAND_Y = 1.42;
+/** Right glove. The rest pitch (0.4) bends the wrist down; this continues the forearm. */
+const CHEER_FIST_PITCH = 0.04;
+const _burstRoot = new THREE.Group();
+const _burstBody = new THREE.Group();
+const _burstLeg = new THREE.Group();
+const _burstShin = new THREE.Group();
+const _burstBoot = new THREE.Group();
+const _burstSole = new THREE.Vector3();
+_burstShin.position.set(0, -0.32, 0);
+_burstBoot.position.set(0, -0.3, 0.04);
+_burstShin.add(_burstBoot);
+_burstLeg.add(_burstShin);
+_burstBody.add(_burstLeg);
+_burstRoot.add(_burstBody);
 const POKE_HIP = (10 * Math.PI) / 180;
 const POKE_TILT = (50 * Math.PI) / 180;
 const POKE_FRONT_KNEE = (16 * Math.PI) / 180;
@@ -739,12 +856,19 @@ function readyStickAim(): StickAim {
   };
 }
 
-/** Pre-drop set. Knob at the left hip, blade flat in front. Local +X is the player's left. */
+/**
+ * Pre-drop set. Blade sole flat on the ice, toe ahead of the chest.
+ * Shaft runs from that heel back up toward the left hand.
+ * Local +X is the player's left. Local −X is the shot side.
+ */
 function puckDropStickAim(): StickAim {
+  const sx = Math.sin(PUCK_DROP_SHAFT) * Math.sin(PUCK_DROP_YAW);
+  const sy = Math.cos(PUCK_DROP_SHAFT);
+  const sz = Math.sin(PUCK_DROP_SHAFT) * Math.cos(PUCK_DROP_YAW);
   return {
-    heel: [-0.945, 0.043, 0.888],
-    shaft: [0.802, 0.535, -0.267],
-    blade: [0, -0.2, 1],
+    heel: [-0.35, STICK_ICE_Y, 1.25],
+    shaft: [sx, sy, sz],
+    blade: [-sz, 0, sx],
   };
 }
 
@@ -778,9 +902,25 @@ type WristKey = {
   kneeL: number;
   kneeR: number;
   drop: number;
+  /** Horizontal toe, so a forward shaft can lie the sole on the ice. */
+  flat: boolean;
 };
 
 const WRIST_BOT_ALONG = SKATER_STICK_LEN * SKATER_GRIP_BOT;
+/** 10 cm further down the shaft than the carry grip. 0.60 sat past the right arm. */
+const WRIST_LOW_GRIP = SKATER_GRIP_BOT - 0.1 / SKATER_STICK_LEN;
+/** Both grips this much further forward in the yaw-0 root frame. */
+const WRIST_REACH_Z = 0.06;
+/** Chest yaw toward the player's right. The old gallery lean was about −39°. */
+const WRIST_OPEN = (8 * Math.PI) / 180;
+/** Lied-sole roll that lays the taped bottom flat after the chest yaw. */
+const WRIST_FLAT_ROLL = (43 * Math.PI) / 180;
+/** Horizontal blade-hint angle. Negative leans the toe back along the shaft so the 135° lie lies flat. */
+const WRIST_BLADE_ALPHA = (-59.5 * Math.PI) / 180;
+const WRIST_DIR: [number, number, number] = [0.897, 0.442, -0.005];
+function wristBot(): [number, number, number] {
+  return [-0.08, 0.56, 0.908 + WRIST_REACH_Z];
+}
 const WRIST_CARRY: WristKey = {
   bot: [-1.15 + Math.sin(CARRY_SHAFT_PITCH) * WRIST_BOT_ALONG, 0.03 + Math.cos(CARRY_SHAFT_PITCH) * WRIST_BOT_ALONG, 0.65],
   dir: [Math.sin(CARRY_SHAFT_PITCH), Math.cos(CARRY_SHAFT_PITCH), 0],
@@ -793,60 +933,74 @@ const WRIST_CARRY: WristKey = {
   kneeL: 0.22,
   kneeR: 0.22,
   drop: CARRY_DROP,
+  flat: true,
 };
 const WRIST_SETTLE: WristKey = { ...WRIST_CARRY, hip: 0, drop: 0 };
 const WRIST_LOAD: WristKey = {
-  bot: [-0.46, 0.96, -0.06],
-  dir: [0.55, 0.8, 0.16],
-  roll: (-24 * Math.PI) / 180,
-  yaw: (30 * Math.PI) / 180,
-  hip: (10 * Math.PI) / 180,
-  aim: 0.2,
-  open: -0.42,
-  weight: -0.055,
-  kneeL: (50 * Math.PI) / 180,
-  kneeR: (44 * Math.PI) / 180,
-  drop: -0.152,
+  bot: wristBot(),
+  dir: WRIST_DIR,
+  roll: WRIST_FLAT_ROLL,
+  yaw: 0,
+  hip: (34 * Math.PI) / 180,
+  aim: 0,
+  open: WRIST_OPEN,
+  weight: 0,
+  kneeL: (34 * Math.PI) / 180,
+  kneeR: (72 * Math.PI) / 180,
+  drop: -0.06,
+  flat: true,
 };
 const WRIST_PLANT: WristKey = {
-  bot: [-0.32, 1.02, 0.5],
-  dir: [0.58, 0.78, 0.1],
-  roll: (-8 * Math.PI) / 180,
-  yaw: (8 * Math.PI) / 180,
-  hip: (18 * Math.PI) / 180,
-  aim: 0.9,
-  open: 0,
-  weight: 0.03,
-  kneeL: (42 * Math.PI) / 180,
-  kneeR: (16 * Math.PI) / 180,
-  drop: -0.16,
+  bot: wristBot(),
+  dir: WRIST_DIR,
+  roll: WRIST_FLAT_ROLL,
+  yaw: 0,
+  hip: (38 * Math.PI) / 180,
+  aim: 0,
+  open: WRIST_OPEN,
+  weight: 0,
+  kneeL: (28 * Math.PI) / 180,
+  kneeR: (90 * Math.PI) / 180,
+  drop: -0.05,
+  flat: true,
 };
 const WRIST_RELEASE: WristKey = {
-  bot: [-0.22, 1.02, 0.66],
-  dir: [0.2, 0.74, -0.68],
-  roll: (52 * Math.PI) / 180,
-  yaw: (-36 * Math.PI) / 180,
-  hip: (24 * Math.PI) / 180,
-  aim: 1,
-  open: 0.18,
-  weight: 0.02,
-  kneeL: (36 * Math.PI) / 180,
-  kneeR: (20 * Math.PI) / 180,
-  drop: -0.168,
+  bot: wristBot(),
+  dir: WRIST_DIR,
+  roll: WRIST_FLAT_ROLL + (8 * Math.PI) / 180,
+  yaw: (-6 * Math.PI) / 180,
+  hip: (38 * Math.PI) / 180,
+  aim: 0,
+  open: WRIST_OPEN,
+  weight: 0,
+  kneeL: (28 * Math.PI) / 180,
+  kneeR: (86 * Math.PI) / 180,
+  drop: -0.05,
+  flat: true,
 };
 const WRIST_FOLLOW: WristKey = {
-  bot: [0.08, 1.34, -0.02],
-  dir: [0.58, 0.68, -0.42],
-  roll: (6 * Math.PI) / 180,
-  yaw: (-22 * Math.PI) / 180,
-  hip: (12 * Math.PI) / 180,
-  aim: 0.65,
-  open: 0.32,
+  bot: wristBot(),
+  dir: WRIST_DIR,
+  roll: WRIST_FLAT_ROLL,
+  yaw: 0,
+  hip: (32 * Math.PI) / 180,
+  aim: 0,
+  open: WRIST_OPEN,
   weight: 0,
-  kneeL: (26 * Math.PI) / 180,
-  kneeR: (22 * Math.PI) / 180,
-  drop: -0.15,
+  kneeL: (30 * Math.PI) / 180,
+  kneeR: (64 * Math.PI) / 180,
+  drop: -0.06,
+  flat: true,
 };
+/** Outward elbow for the top wrist hand. +X is the player's left, away from the chest. */
+const _wristTopPole = new THREE.Vector3(0.7, -0.03, 0.02);
+/**
+ * watchPoint's downward clamp (0.6) plants the visor in the chest and opens a
+ * red neck gap behind the helmet. Positive rotation.x looks down.
+ */
+const WRIST_HEAD_DOWN = 0.36;
+/** Fraction of the full two-bone bend. 1 folds the top arm back into the chest. */
+const WRIST_TOP_BEND = 0.45;
 const BH_LOAD: WristKey = {
   bot: [0.12, 0.94, 0.12],
   dir: [-0.75, 0.9, 0.11],
@@ -859,6 +1013,7 @@ const BH_LOAD: WristKey = {
   kneeL: (50 * Math.PI) / 180,
   kneeR: (42 * Math.PI) / 180,
   drop: -0.18,
+  flat: false,
 };
 const BH_PLANT: WristKey = {
   bot: [0.14, 1, 0.44],
@@ -872,6 +1027,7 @@ const BH_PLANT: WristKey = {
   kneeL: (40 * Math.PI) / 180,
   kneeR: (16 * Math.PI) / 180,
   drop: -0.16,
+  flat: false,
 };
 const BH_RELEASE: WristKey = {
   bot: [-0.22, 1.08, 0.45],
@@ -885,6 +1041,7 @@ const BH_RELEASE: WristKey = {
   kneeL: (34 * Math.PI) / 180,
   kneeR: (22 * Math.PI) / 180,
   drop: -0.16,
+  flat: false,
 };
 const BH_FOLLOW: WristKey = {
   bot: [-0.08, 1.14, 0.14],
@@ -898,6 +1055,7 @@ const BH_FOLLOW: WristKey = {
   kneeL: (28 * Math.PI) / 180,
   kneeR: (24 * Math.PI) / 180,
   drop: -0.14,
+  flat: false,
 };
 
 function lerpWrist(a: WristKey, b: WristKey, u: number): WristKey {
@@ -915,7 +1073,20 @@ function lerpWrist(a: WristKey, b: WristKey, u: number): WristKey {
     kneeL: n(a.kneeL, b.kneeL),
     kneeR: n(a.kneeR, b.kneeR),
     drop: n(a.drop, b.drop),
+    flat: a.flat && b.flat,
   };
+}
+
+/** Horizontal toe hint. Leaned back along the shaft so the taped sole, not a ramp, meets the ice. */
+function flatWristBlade(dx: number, dz: number): [number, number, number] {
+  const horiz = Math.hypot(dx, dz) || 1;
+  const hx = -dz / horiz;
+  const hz = dx / horiz;
+  const ax = dx / horiz;
+  const az = dz / horiz;
+  const c = Math.cos(WRIST_BLADE_ALPHA);
+  const s = Math.sin(WRIST_BLADE_ALPHA);
+  return [c * hx + s * ax, 0, c * hz + s * az];
 }
 
 function wristStickAim(key: WristKey): StickAim {
@@ -923,36 +1094,55 @@ function wristStickAim(key: WristKey): StickAim {
   const dx = key.dir[0] / m;
   const dy = key.dir[1] / m;
   const dz = key.dir[2] / m;
+  const blade: [number, number, number] = key.flat ? flatWristBlade(dx, dz) : [0, 0, 1];
   return {
     heel: [key.bot[0] - dx * WRIST_BOT_ALONG, key.bot[1] - dy * WRIST_BOT_ALONG, key.bot[2] - dz * WRIST_BOT_ALONG],
     shaft: [dx, dy, dz],
-    blade: [0, 0, 1],
+    blade,
   };
 }
 
-function bladeFlatRoll(stick: THREE.Group): number {
-  stick.updateMatrix();
-  const el = stick.matrix.elements;
-  return -Math.PI / 2 - Math.atan2(-el[5], el[1]);
+const _wristMount = new THREE.Object3D();
+const _wristInv = new THREE.Matrix4();
+
+/** Authored aim is root space at chest yaw 0. Reapply it through the pitched, yawed chest. */
+function mountWristAim(body: THREE.Group, aim: StickAim): StickAim {
+  if (Math.abs(body.rotation.y) < 1e-4) return aim;
+  _wristMount.position.copy(body.position);
+  _wristMount.rotation.set(body.rotation.x, 0, body.rotation.z);
+  _wristMount.scale.set(1, 1, 1);
+  _wristMount.updateMatrix();
+  _wristInv.copy(_wristMount.matrix).invert();
+  _corner.set(aim.heel[0], aim.heel[1], aim.heel[2]).applyMatrix4(_wristInv);
+  _ikTo.set(aim.heel[0] + aim.shaft[0], aim.heel[1] + aim.shaft[1], aim.heel[2] + aim.shaft[2]).applyMatrix4(_wristInv);
+  _ikD1.set(aim.heel[0] + aim.blade[0], aim.heel[1] + aim.blade[1], aim.heel[2] + aim.blade[2]).applyMatrix4(_wristInv);
+  body.updateMatrix();
+  _corner.applyMatrix4(body.matrix);
+  _ikTo.applyMatrix4(body.matrix);
+  _ikD1.applyMatrix4(body.matrix);
+  _ikTo.sub(_corner);
+  _ikD1.sub(_corner);
+  return {
+    heel: [_corner.x, _corner.y, _corner.z],
+    shaft: [_ikTo.x, _ikTo.y, _ikTo.z],
+    blade: [_ikD1.x, _ikD1.y, _ikD1.z],
+  };
 }
 
-function poseWristBlade(blade: THREE.Group, stick: THREE.Group, roll: number, yaw: number) {
-  const rz = bladeFlatRoll(stick);
-  _ikInv.setFromAxisAngle(_ikN.set(1, 0, 0), roll);
+/** Roll around the lied sole, then yaw around the shaft, so the side-view angle stays 135°. */
+function poseWristBlade(blade: THREE.Group, _stick: THREE.Group, roll: number, yaw: number) {
   _parentQ.setFromAxisAngle(_ikD1.set(0, 1, 0), yaw);
-  _stickQ.setFromAxisAngle(_ikD2.set(0, 0, 1), rz);
-  blade.quaternion.copy(_stickQ).multiply(_parentQ).multiply(_ikInv);
+  _ikInv.setFromAxisAngle(_ikN.set(0, -Math.SQRT1_2, Math.SQRT1_2), roll);
+  blade.quaternion.copy(_parentQ).multiply(_ikInv);
 }
 
 function seatBlade(stick: THREE.Group, blade: THREE.Group, lock = true) {
   stick.updateWorldMatrix(true, true);
   let minY = Infinity;
-  for (const x of [-0.0375, 0.0375]) {
-    for (const z of [0, 0.38]) {
-      _corner.set(x, 0, z);
-      blade.localToWorld(_corner);
-      if (_corner.y < minY) minY = _corner.y;
-    }
+  for (const p of SKATER_SOLE_SAMPLES) {
+    _corner.set(p[0], p[1], p[2]);
+    blade.localToWorld(_corner);
+    if (_corner.y < minY) minY = _corner.y;
   }
   if (minY < Infinity && (lock || minY < STICK_ICE_Y)) stick.position.y += STICK_ICE_Y - minY;
 }
@@ -984,8 +1174,14 @@ function wristHipYaw(s: Skater, aim: number, open: number): number {
   return Math.max(-0.75, Math.min(0.75, y));
 }
 
-function poseWristLeg(leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number, knee: number, hip: number) {
-  const thigh = strideThigh(knee);
+/** Player's left (x > 0) steps forward as the knee flexes. The other skate stays back. */
+function wristFootZ(x: number, knee: number): number {
+  const bend = Math.max(0, Math.min(1, ((knee * 180) / Math.PI - 16) / 80));
+  return x > 0 ? 0.12 + bend * 0.56 : 0.2 - bend * 0.04;
+}
+
+function poseWristLeg(leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number, knee: number, hip: number, drop: number, flat: boolean) {
+  const thigh = flat ? plantThigh(hip, drop, knee, -2.4, 0.8, wristFootZ(x, knee)) : strideThigh(knee);
   leg.position.set(x, SKATER_HIP_Y, 0);
   leg.rotation.set(thigh, 0, 0);
   if (shin) shin.rotation.set(knee, 0, 0);
@@ -1030,6 +1226,7 @@ function slapFill(bot: [number, number, number], dir: [number, number, number], 
     kneeL: 0.22,
     kneeR: 0.22,
     drop: 0,
+    flat: false,
   };
 }
 
@@ -1178,43 +1375,209 @@ function posePuckDrop(
   layout: { len: number },
 ): void {
   const pitch = PUCK_DROP_PITCH;
-  const knee = PUCK_DROP_KNEE;
   const drop = PUCK_DROP_DROP;
-  const thigh = plantThigh(pitch, drop, knee, -1.2, 0.45, PUCK_DROP_FOOT_Z);
-  const bootX = -(pitch + thigh + knee);
   body.position.set(0, drop, 0);
   body.rotation.set(pitch, 0, 0);
-  const plant = (leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number) => {
+  const plant = (leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number, knee: number, wantZ: number) => {
     const side = x < 0 ? -1 : 1;
+    const thigh = plantThigh(pitch, drop, knee, -1.7, 0.5, wantZ);
     leg.position.set(x, SKATER_HIP_Y, 0);
     leg.rotation.set(thigh, 0, side * PUCK_DROP_ABDUCT);
     if (shin) shin.rotation.set(knee, 0, 0);
-    if (boot) boot.rotation.set(bootX, 0, -side * PUCK_DROP_ANKLE);
+    if (boot) boot.rotation.set(-(pitch + thigh + knee), 0, -side * PUCK_DROP_ANKLE);
   };
-  plant(lLeg, lShin, lBoot, -PUCK_DROP_STANCE);
-  plant(rLeg, rShin, rBoot, PUCK_DROP_STANCE);
-  if (rBoot) {
+  plant(lLeg, lShin, lBoot, -PUCK_DROP_STANCE, PUCK_DROP_KNEE, PUCK_DROP_FOOT_Z);
+  plant(rLeg, rShin, rBoot, PUCK_DROP_STANCE, PUCK_DROP_KNEE_F, PUCK_DROP_FOOT_Z_F);
+  if (lBoot && rBoot) {
     body.updateWorldMatrix(true, true);
-    _corner.set(0, -0.1375, 0.02);
-    rBoot.localToWorld(_corner);
-    body.position.y -= _corner.y - 0.02;
+    let low = Infinity;
+    for (const boot of [lBoot, rBoot]) {
+      _corner.set(0, -0.1375, 0.02);
+      boot.localToWorld(_corner);
+      if (_corner.y < low) low = _corner.y;
+    }
+    if (low < Infinity) body.position.y -= low - 0.02;
   }
   applyStickAim(stick, puckDropStickAim());
   poseWristBlade(blade, stick, 0, 0);
   seatBlade(stick, blade, false);
   stick.updateWorldMatrix(true, true);
   body.updateWorldMatrix(true, false);
-  _handTop.set(0, layout.len * SKATER_GRIP_TOP, 0);
+  _handTop.set(0, layout.len * PUCK_DROP_GRIP_TOP, 0);
   stick.localToWorld(_handTop);
   body.worldToLocal(_handTop);
-  _handBot.set(0, layout.len * SKATER_GRIP_BOT, 0);
+  _handBot.set(0, layout.len * PUCK_DROP_GRIP_BOT, 0);
   stick.localToWorld(_handBot);
   body.worldToLocal(_handBot);
   gripSkaterHand(body, rArm, rFore, 0.24, 1.46, 0.06, _handTop.x, _handTop.y, _handTop.z, 1, true, stick);
   gripSkaterHand(body, lArm, lFore, -0.26, 1.46, 0.06, _handBot.x, _handBot.y, _handBot.z, -1, true);
   if (head) {
     head.position.set(0, 1.54, 0.02);
-    watchPoint(head, body, world.faceX, 1.2, world.faceZ);
+    watchPoint(head, body, world.faceX, 0.1, world.faceZ);
+  }
+}
+
+/** Dot center in the skater frame. Local +Z is toward the opponent. */
+function faceoffDotLocal(root: THREE.Object3D, out: THREE.Vector3): void {
+  root.updateWorldMatrix(true, false);
+  out.set(world.faceX, 0, world.faceZ);
+  root.worldToLocal(out);
+}
+
+/** +1 keeps the player's left skate forward. Center ice has no boards side. */
+function faceoffInside(root: THREE.Object3D): 1 | -1 {
+  if (Math.abs(world.faceZ) < 0.2) return 1;
+  faceoffDotLocal(root, _ikTo);
+  _corner.set(world.faceX, 0, 0);
+  root.worldToLocal(_corner);
+  return _corner.x - _ikTo.x >= 0 ? 1 : -1;
+}
+
+/** 0 while the blades wait in the gaps. 1 once the puck is down and the draw has pulled back. */
+function faceoffDrawSweep(): number {
+  if (world.faceoffPhase !== "live") return 0;
+  const u = Math.min(1, world.faceoffT / DRAW_SWEEP_T);
+  return u * u * (3 - 2 * u);
+}
+
+function pointSegDist(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number {
+  _ikD2.subVectors(b, a);
+  const len2 = _ikD2.lengthSq() || 1e-8;
+  const t = Math.max(0, Math.min(1, _liftPt.subVectors(p, a).dot(_ikD2) / len2));
+  _liftPt.copy(a).addScaledVector(_ikD2, t);
+  return p.distanceTo(_liftPt);
+}
+
+const DRAW_CLEAR_LOCAL: ReadonlyArray<readonly [number, number, number]> = [
+  ...([0.05, 0.2, 0.38] as const).map((z) => {
+    const p = skaterBladeLiePoint(0, 0, z);
+    return [p.x, p.y, p.z] as const;
+  }),
+  [0, 0.3, 0],
+  [0, 0.6, 0],
+  [0, 0.95, 0],
+  [0, 1.3, 0],
+  [0, 1.55, 0],
+];
+
+/** If the stick meets a leg or the torso, slide it forward. seatBlade keeps the sole on the ice. */
+function clearStickOfSkater(
+  stick: THREE.Group,
+  blade: THREE.Group,
+  body: THREE.Group,
+  lLeg: THREE.Group,
+  rLeg: THREE.Group,
+  lShin: THREE.Group | null,
+  rShin: THREE.Group | null,
+  lBoot: THREE.Group | null,
+  rBoot: THREE.Group | null,
+): void {
+  const legs: Array<[THREE.Group, THREE.Group | null, THREE.Group | null]> = [
+    [lLeg, lShin, lBoot],
+    [rLeg, rShin, rBoot],
+  ];
+  for (let pass = 0; pass < 8; pass++) {
+    stick.updateWorldMatrix(true, true);
+    body.updateWorldMatrix(true, true);
+    let shift = 0;
+    for (const local of DRAW_CLEAR_LOCAL) {
+      _corner.set(local[0], local[1], local[2]);
+      stick.localToWorld(_corner);
+      for (const [leg, shin, boot] of legs) {
+        leg.getWorldPosition(_ikTo);
+        (shin ?? leg).getWorldPosition(_ikD1);
+        if (pointSegDist(_corner, _ikTo, _ikD1) < 0.12) shift += 0.03;
+        if (shin && boot) {
+          shin.getWorldPosition(_ikTo);
+          boot.getWorldPosition(_ikD1);
+          if (pointSegDist(_corner, _ikTo, _ikD1) < 0.1) shift += 0.03;
+        }
+      }
+      _ikTo.copy(_corner);
+      body.worldToLocal(_ikTo);
+      if (Math.abs(_ikTo.x) < 0.24 && _ikTo.y > 0.88 && _ikTo.y < 1.56 && _ikTo.z > -0.17 && _ikTo.z < 0.18) {
+        shift += 0.03;
+      }
+    }
+    if (shift < 0.001) break;
+    stick.position.z += Math.min(0.04, shift);
+  }
+  seatBlade(stick, blade, true);
+}
+
+/** Low faceoff crouch. Both hands on a flat blade just ahead of the skates, then the draw pulls it back. */
+function poseFaceoffDraw(
+  body: THREE.Group,
+  head: THREE.Group | null,
+  lLeg: THREE.Group,
+  rLeg: THREE.Group,
+  lShin: THREE.Group | null,
+  rShin: THREE.Group | null,
+  lBoot: THREE.Group | null,
+  rBoot: THREE.Group | null,
+  lArm: THREE.Group,
+  rArm: THREE.Group,
+  lFore: THREE.Group,
+  rFore: THREE.Group,
+  stick: THREE.Group,
+  blade: THREE.Group,
+  layout: { len: number },
+  root: THREE.Object3D,
+  sweep: number,
+): void {
+  const inside = faceoffInside(root);
+  const pitch = DRAW_PITCH;
+  const drop = DRAW_DROP;
+  body.position.set(0, drop, -DRAW_HEAD_OVER_ROOT);
+  body.rotation.set(pitch, 0, 0);
+  const plant = (leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, side: 1 | -1) => {
+    const front = side === inside;
+    const knee = front ? DRAW_KNEE_F : DRAW_KNEE_B;
+    const toe = front ? DRAW_TOE_F : DRAW_TOE_B;
+    const wantZ = DRAW_HIP_BACK - (front ? DRAW_FOOT_F : DRAW_FOOT_B);
+    const thigh = plantThigh(pitch, drop, knee, -2.8, -0.4, wantZ);
+    leg.position.set(side * DRAW_STANCE, SKATER_HIP_Y, 0);
+    leg.rotation.set(thigh, 0, side * DRAW_ABDUCT);
+    if (shin) shin.rotation.set(knee, 0, 0);
+    if (boot) boot.rotation.set(-(pitch + thigh + knee), side * toe, -side * DRAW_ANKLE);
+  };
+  plant(lLeg, lShin, lBoot, -1);
+  plant(rLeg, rShin, rBoot, 1);
+  if (lBoot && rBoot) {
+    body.updateWorldMatrix(true, true);
+    let low = Infinity;
+    for (const boot of [lBoot, rBoot]) {
+      _corner.set(0, -0.1375, 0.02);
+      boot.localToWorld(_corner);
+      if (_corner.y < low) low = _corner.y;
+    }
+    if (low < Infinity) body.position.y -= low - 0.02;
+  }
+  const u = sweep < 0 ? 0 : sweep > 1 ? 1 : sweep;
+  const parkZ = -DRAW_HEAD_OVER_ROOT + DRAW_HIP_BACK + DRAW_HEEL_ADVANCE;
+  const sweepZ = -DRAW_HEAD_OVER_ROOT + DRAW_SWEEP_Z;
+  const heelZ = parkZ + (Math.min(parkZ, sweepZ) - parkZ) * u;
+  applyStickAim(stick, {
+    heel: [DRAW_HEEL_X, STICK_ICE_Y, heelZ],
+    shaft: DRAW_SHAFT,
+    blade: DRAW_BLADE,
+  });
+  poseWristBlade(blade, stick, 0, 0);
+  seatBlade(stick, blade, true);
+  clearStickOfSkater(stick, blade, body, lLeg, rLeg, lShin, rShin, lBoot, rBoot);
+  stick.updateWorldMatrix(true, true);
+  body.updateWorldMatrix(true, false);
+  _handTop.set(0, layout.len * DRAW_GRIP_TOP, 0);
+  stick.localToWorld(_handTop);
+  body.worldToLocal(_handTop);
+  _handBot.set(0, layout.len * DRAW_GRIP_BOT, 0);
+  stick.localToWorld(_handBot);
+  body.worldToLocal(_handBot);
+  gripSkaterHand(body, rArm, rFore, 0.24, 1.46, 0.06, _handTop.x, _handTop.y, _handTop.z, 1, true, stick);
+  gripSkaterHand(body, lArm, lFore, -0.26, 1.46, 0.06, _handBot.x, _handBot.y, _handBot.z, -1, true);
+  if (head) {
+    head.position.set(0, 1.54, 0.02);
+    watchPoint(head, body, world.faceX, 0.04, world.faceZ);
   }
 }
 
@@ -1398,6 +1761,159 @@ function poseNeutralCarry(
     head.position.set(0, 1.54, 0.02);
     head.rotation.order = "XYZ";
     head.rotation.set(-NEUTRAL_PITCH, 0, 0);
+    if (w < 1) {
+      _stickQ.copy(head.quaternion);
+      head.quaternion.copy(_blendQ).slerp(_stickQ, w);
+    }
+  }
+}
+
+/**
+ * Thigh that plants this skate on the near ice crossing.
+ * plantThigh ignores abduct and toe yaw, so the sole is sampled on the rig chain.
+ * The far crossing (straight leg, z past 0.8) loses to wantZ.
+ */
+function burstPlantThigh(knee: number, side: 1 | -1, toe: number, wantZ: number): number {
+  _burstBody.position.set(0, BURST_DROP, 0);
+  _burstBody.rotation.set(BURST_PITCH, 0, 0);
+  let bestT = -0.6;
+  let best = Infinity;
+  const score = (thigh: number) => {
+    _burstLeg.position.set(side * BURST_STANCE, SKATER_HIP_Y, 0);
+    _burstLeg.rotation.set(thigh, 0, 0);
+    _burstShin.rotation.set(knee, 0, 0);
+    _burstBoot.rotation.set(-(BURST_PITCH + thigh + knee), side * toe, 0);
+    _burstRoot.updateWorldMatrix(true, true);
+    let low = Infinity;
+    let cz = 0;
+    for (const [x, y, z] of BURST_SOLE) {
+      _burstSole.set(x, y, z);
+      _burstBoot.localToWorld(_burstSole);
+      _burstRoot.worldToLocal(_burstSole);
+      if (z === 0.02) cz = _burstSole.z;
+      if (_burstSole.y < low) low = _burstSole.y;
+    }
+    return Math.abs(low - 0.02) * 4 + Math.abs(cz - wantZ);
+  };
+  const step = (a: number, b: number, n: number) => {
+    for (let i = 0; i <= n; i++) {
+      const t = a + ((b - a) * i) / n;
+      const err = score(t);
+      if (err < best) {
+        best = err;
+        bestT = t;
+      }
+    }
+  };
+  step(-2.2, 0.5, 36);
+  step(bestT - 0.08, bestT + 0.08, 8);
+  step(bestT - 0.02, bestT + 0.02, 8);
+  return bestT;
+}
+
+/**
+ * Driving carry. One stride frame, cycled by stride.
+ * sin(stride) > 0 sets the right skate (local −X) in front. The next half swaps.
+ * Grips stay SKATER_GRIP_TOP and SKATER_GRIP_BOT, a forearm apart near the knob,
+ * so the lower hand is a forearm down the shaft from the left chest.
+ * The blade continues to the stick side, ahead of the front skate.
+ */
+function poseBurstCarry(
+  body: THREE.Group,
+  head: THREE.Group | null,
+  lLeg: THREE.Group,
+  rLeg: THREE.Group,
+  lShin: THREE.Group | null,
+  rShin: THREE.Group | null,
+  lBoot: THREE.Group | null,
+  rBoot: THREE.Group | null,
+  lArm: THREE.Group,
+  rArm: THREE.Group,
+  lFore: THREE.Group,
+  rFore: THREE.Group,
+  stick: THREE.Group,
+  blade: THREE.Group,
+  layout: { len: number },
+  weight: number,
+  stride: number,
+): void {
+  const w = weight < 0 ? 0 : weight > 1 ? 1 : weight;
+  if (w <= 0) return;
+  const mix = (from: number, to: number) => from + (to - from) * w;
+  const sin = Math.sin(stride);
+  body.position.x = mix(body.position.x, 0);
+  body.position.y = mix(body.position.y, BURST_DROP);
+  body.position.z = mix(body.position.z, 0);
+  body.rotation.x = mix(body.rotation.x, BURST_PITCH);
+  body.rotation.y = mix(body.rotation.y, 0);
+  body.rotation.z = mix(body.rotation.z, 0);
+  const plant = (leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, side: 1 | -1) => {
+    const drive = side < 0 ? sin : -sin;
+    const u = drive * 0.5 + 0.5;
+    const knee = BURST_KNEE_B + (BURST_KNEE_F - BURST_KNEE_B) * u;
+    const toe = BURST_TOE_B + (BURST_TOE_F - BURST_TOE_B) * u;
+    const wantZ = BURST_Z_B + (BURST_Z_F - BURST_Z_B) * u;
+    const thigh = burstPlantThigh(knee, side, toe, wantZ);
+    leg.position.x = mix(leg.position.x, side * BURST_STANCE);
+    leg.position.y = SKATER_HIP_Y;
+    leg.position.z = mix(leg.position.z, 0);
+    leg.rotation.x = mix(leg.rotation.x, thigh);
+    leg.rotation.y = mix(leg.rotation.y, 0);
+    leg.rotation.z = mix(leg.rotation.z, 0);
+    if (shin) {
+      shin.rotation.x = mix(shin.rotation.x, knee);
+      shin.rotation.y = mix(shin.rotation.y, 0);
+      shin.rotation.z = mix(shin.rotation.z, 0);
+    }
+    if (boot) {
+      boot.rotation.x = mix(boot.rotation.x, -(BURST_PITCH + thigh + knee));
+      boot.rotation.y = mix(boot.rotation.y, side * toe);
+      boot.rotation.z = mix(boot.rotation.z, 0);
+    }
+  };
+  plant(lLeg, lShin, lBoot, -1);
+  plant(rLeg, rShin, rBoot, 1);
+  if (w >= 1 && lBoot && rBoot) {
+    body.updateWorldMatrix(true, true);
+    let low = Infinity;
+    for (const boot of [lBoot, rBoot]) {
+      for (const [x, y, z] of BURST_SOLE) {
+        _corner.set(x, y, z);
+        boot.localToWorld(_corner);
+        if (_corner.y < low) low = _corner.y;
+      }
+    }
+    if (low < Infinity) body.position.y -= low - 0.02;
+  }
+  _gripQ.copy(stick.quaternion);
+  _blendP.copy(stick.position);
+  _bootQ.copy(blade.quaternion);
+  applyStickAim(stick, burstCarryStickAim());
+  poseWristBlade(blade, stick, 0, 0);
+  seatBlade(stick, blade, true);
+  if (w < 1) {
+    _blendQ.copy(stick.quaternion);
+    stick.quaternion.copy(_gripQ).slerp(_blendQ, w);
+    _corner.copy(stick.position);
+    stick.position.copy(_blendP).lerp(_corner, w);
+    _blendQ.copy(blade.quaternion);
+    blade.quaternion.copy(_bootQ).slerp(_blendQ, w);
+  }
+  stick.updateWorldMatrix(true, true);
+  body.updateWorldMatrix(true, false);
+  _handTop.set(0, layout.len * SKATER_GRIP_TOP, 0);
+  stick.localToWorld(_handTop);
+  body.worldToLocal(_handTop);
+  _handBot.set(0, layout.len * SKATER_GRIP_BOT, 0);
+  stick.localToWorld(_handBot);
+  body.worldToLocal(_handBot);
+  gripSkaterHand(body, rArm, rFore, 0.24, 1.46, 0.06, _handTop.x, _handTop.y, _handTop.z, 1, true, stick);
+  gripSkaterHand(body, lArm, lFore, -0.26, 1.46, 0.06, _handBot.x, _handBot.y, _handBot.z, -1, true);
+  if (head) {
+    _blendQ.copy(head.quaternion);
+    head.position.set(0, 1.54, 0.02);
+    head.rotation.order = "XYZ";
+    head.rotation.set(-BURST_PITCH, 0, 0);
     if (w < 1) {
       _stickQ.copy(head.quaternion);
       head.quaternion.copy(_blendQ).slerp(_stickQ, w);
@@ -1636,33 +2152,9 @@ function pokeStickAim(shX: number, shY: number, shZ: number, px: number, pz: num
   };
 }
 
-/** Blade local +Y becomes world up, toe stays horizontal toward the puck. Sole sits on the heel plane. */
-function posePokeBlade(blade: THREE.Group, stick: THREE.Group, toeX: number, toeZ: number) {
-  stick.updateMatrix();
-  const e = stick.matrix.elements;
-  _ikTo.set(toeX, 0, toeZ);
-  if (_ikTo.lengthSq() < 1e-8) _ikTo.set(0, 0, 1);
-  else _ikTo.normalize();
-  const ax = e[0];
-  const ay = e[1];
-  const az = e[2];
-  const bx = e[4];
-  const by = e[5];
-  const bz = e[6];
-  const cx = e[8];
-  const cy = e[9];
-  const cz = e[10];
-  _ikN.set(ay, by, cy);
-  if (_ikN.lengthSq() < 1e-8) _ikN.set(0, 1, 0);
-  else _ikN.normalize();
-  _ikD2.set(ax * _ikTo.x + ay * _ikTo.y + az * _ikTo.z, bx * _ikTo.x + by * _ikTo.y + bz * _ikTo.z, cx * _ikTo.x + cy * _ikTo.y + cz * _ikTo.z);
-  _ikD2.addScaledVector(_ikN, -_ikD2.dot(_ikN));
-  if (_ikD2.lengthSq() < 1e-8) _ikD2.set(cx, cy, cz);
-  _ikD2.normalize();
-  _ikD1.crossVectors(_ikN, _ikD2).normalize();
-  _ikD2.crossVectors(_ikD1, _ikN).normalize();
-  _stickM.makeBasis(_ikD1, _ikN, _ikD2);
-  blade.quaternion.setFromRotationMatrix(_stickM);
+/** Leave the baked 135° lie on the shaft. The poke aim already points the toe. */
+function posePokeBlade(blade: THREE.Group, _stick: THREE.Group, _toeX: number, _toeZ: number) {
+  blade.rotation.set(0, 0, 0);
 }
 
 type PokeSnap = {
@@ -1713,6 +2205,7 @@ function freshPokeSnap(): PokeSnap {
 }
 
 const SKATER_TOP_GLOVE = "skaterTopGlove";
+const SKATER_FIST_GLOVE = "skaterFistGlove";
 const GRIP_PALM_DOWN = 0.12;
 const _topGloveRest = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.5, -0.1, -0.08, "XYZ"));
 const _gripShaft = new THREE.Vector3();
@@ -1728,6 +2221,19 @@ const _gripInv = new THREE.Quaternion();
 function resetTopGlove(fore: THREE.Object3D) {
   const glove = fore.getObjectByName(SKATER_TOP_GLOVE);
   if (glove) glove.quaternion.copy(_topGloveRest);
+}
+
+function resetFistGlove(fore: THREE.Object3D) {
+  const glove = fore.getObjectByName(SKATER_FIST_GLOVE);
+  if (!glove) return;
+  glove.rotation.set(0.4, 0.18, 0.1);
+}
+
+/** Cheer only. Drop the fixed downward wrist pitch so the fist follows the forearm. */
+function alignCheerFist(fore: THREE.Object3D) {
+  const glove = fore.getObjectByName(SKATER_FIST_GLOVE);
+  if (!glove) return;
+  glove.rotation.set(CHEER_FIST_PITCH, 0, 0);
 }
 
 function releaseTopGlove(fore: THREE.Object3D, w: number) {
@@ -1781,7 +2287,7 @@ function orientTopHand(body: THREE.Object3D, fore: THREE.Object3D, stick: THREE.
   glove.quaternion.copy(_gripInv).multiply(_gripQ);
 }
 
-function gripSkaterHand(body: THREE.Group, arm: THREE.Group, fore: THREE.Group, sx: number, sy: number, sz: number, gx: number, gy: number, gz: number, poleSign: number, coincide = false, stick: THREE.Object3D | null = null) {
+function gripSkaterHand(body: THREE.Group, arm: THREE.Group, fore: THREE.Group, sx: number, sy: number, sz: number, gx: number, gy: number, gz: number, poleSign: number, coincide = false, stick: THREE.Object3D | null = null, pole: THREE.Vector3 | null = null, freeElbow = false, bendScale = 1) {
   arm.position.set(sx, sy, sz);
   const ox = poleSign < 0 ? 0.02 : -0.01;
   const oz = poleSign < 0 ? 0.06 : 0.07;
@@ -1791,7 +2297,7 @@ function gripSkaterHand(body: THREE.Group, arm: THREE.Group, fore: THREE.Group, 
   const passes = coincide ? 16 : 4;
   const eps = coincide ? 0.001 : 0.03;
   for (let n = 0; n < passes; n++) {
-    poseArmIk(arm, fore, sx, sy, sz, tx, ty, tz, poleSign, true);
+    poseArmIk(arm, fore, sx, sy, sz, tx, ty, tz, poleSign, true, false, pole, freeElbow, bendScale);
     body.updateWorldMatrix(true, true);
     _corner.set(ox, -0.28, oz);
     fore.localToWorld(_corner);
@@ -1849,7 +2355,7 @@ function clampHandOutsideTorso(
   return { x: tx, y: ty, z: tz };
 }
 
-function poseArmIk(arm: THREE.Group, fore: THREE.Group | null, sx: number, sy: number, sz: number, tx: number, ty: number, tz: number, poleSign: number, allowFront = false, fitGlove = false) {
+function poseArmIk(arm: THREE.Group, fore: THREE.Group | null, sx: number, sy: number, sz: number, tx: number, ty: number, tz: number, poleSign: number, allowFront = false, fitGlove = false, pole: THREE.Vector3 | null = null, freeElbow = false, bendScale = 1) {
   const clamped = clampHandOutsideTorso(tx, ty, tz, poleSign, allowFront || fitGlove);
   tx = clamped.x;
   ty = clamped.y;
@@ -1869,8 +2375,9 @@ function poseArmIk(arm: THREE.Group, fore: THREE.Group | null, sx: number, sy: n
   }
   _ikTo.normalize();
   const a = (UPPER * UPPER - LOWER * LOWER + dist * dist) / (2 * dist);
-  const h = Math.sqrt(Math.max(0, UPPER * UPPER - a * a));
-  if (fitGlove) _ikPole.set(poleSign * (ty > sy ? 0.85 : 0.35), ty > sy ? 0.2 : -0.9, 0.28);
+  const h = Math.sqrt(Math.max(0, UPPER * UPPER - a * a)) * bendScale;
+  if (pole) _ikPole.copy(pole);
+  else if (fitGlove) _ikPole.set(poleSign * (ty > sy ? 0.85 : 0.35), ty > sy ? 0.2 : -0.9, 0.28);
   else if (allowFront) _ikPole.set(-poleSign * 0.08, -0.42, 0.4);
   else _ikPole.set(poleSign * 0.28, -0.48, 0.32);
   _ikN.copy(_ikTo).cross(_ikPole);
@@ -1878,13 +2385,13 @@ function poseArmIk(arm: THREE.Group, fore: THREE.Group | null, sx: number, sy: n
   if (_ikN.lengthSq() < 1e-6) _ikN.set(poleSign, 0, 0);
   _ikN.normalize();
   _ikElbow.set(sx, sy, sz).addScaledVector(_ikTo, a).addScaledVector(_ikN, h);
-  if (!fitGlove) {
+  if (!fitGlove && !freeElbow) {
     _ikElbow.y = Math.min(_ikElbow.y, sy - (poleSign < 0 ? 0.22 : 0.14));
     _ikElbow.z = Math.max(_ikElbow.z, sz + 0.08);
   }
   if (!fitGlove && allowFront) {
-    if (poleSign < 0) _ikElbow.x = Math.min(_ikElbow.x, sx + 0.12);
-  } else if (!fitGlove) {
+    if (poleSign < 0 && !freeElbow) _ikElbow.x = Math.min(_ikElbow.x, sx + 0.12);
+  } else if (!fitGlove && !freeElbow) {
     const elbow = clampHandOutsideTorso(_ikElbow.x, _ikElbow.y, _ikElbow.z, poleSign, allowFront);
     _ikElbow.set(elbow.x, Math.min(elbow.y, sy - 0.18), elbow.z);
   }
@@ -1929,13 +2436,6 @@ function poseStickOneHand(stick: THREE.Group, parent: THREE.Group, hand: THREE.G
   stick.position.set(_handTop.x - _ikD2.x, _handTop.y - _ikD2.y, _handTop.z - _ikD2.z);
 }
 
-function skaterPoint(s: Skater, lx: number, ly: number, lz: number, out: THREE.Vector3): void {
-  const ry = s.yaw + Math.PI;
-  const c = Math.cos(ry);
-  const sn = Math.sin(ry);
-  out.set(s.x + lx * c + lz * sn, ly, s.z - lx * sn + lz * c);
-}
-
 function poseGloveAt(body: THREE.Group, arm: THREE.Group, fore: THREE.Group, sx: number, sy: number, sz: number, gx: number, gy: number, gz: number, poleSign: number): void {
   const ox = poleSign < 0 ? 0.02 : -0.01;
   const oz = poleSign < 0 ? 0.06 : 0.07;
@@ -1965,100 +2465,6 @@ function poseGloveAt(body: THREE.Group, arm: THREE.Group, fore: THREE.Group, sx:
   }
   arm.quaternion.copy(_stickQ);
   fore.quaternion.copy(_parentQ);
-}
-
-function cheerNeutral(body: THREE.Group, arm: THREE.Group, fore: THREE.Group, side: -1 | 1): void {
-  const sx = side < 0 ? -0.26 : 0.24;
-  poseGloveAt(body, arm, fore, sx, 1.46, 0.06, side * 0.46, 0.98, 0.16, side);
-}
-
-function slapOpen(t: number): number {
-  const u = (t % 0.85) / 0.85;
-  if (u < 0.5) return 0.06;
-  if (u < 0.68) {
-    const c = (u - 0.5) / 0.18;
-    return 0.06 + c * c * (3 - 2 * c) * 0.94;
-  }
-  return 1;
-}
-
-function patReach(t: number): number {
-  const u = t % 0.5;
-  if (u < 0.25) return 1;
-  return 1 - ((u - 0.25) / 0.25) * 0.38;
-}
-
-function lateralMates(s: Skater): { neg: Skater | null; pos: Skater | null } {
-  const ry = s.yaw + Math.PI;
-  const c = Math.cos(ry);
-  const sn = Math.sin(ry);
-  let neg: Skater | null = null;
-  let pos: Skater | null = null;
-  let negD = 1.85;
-  let posD = 1.85;
-  for (const o of world.skaters) {
-    if (o.id === s.id || o.kind === "goalie" || o.side !== s.side || o.celebrate <= 0.05) continue;
-    const dx = o.x - s.x;
-    const dz = o.z - s.z;
-    const lx = dx * c - dz * sn;
-    const d = Math.hypot(dx, dz);
-    if (d > 1.85 || d < 0.05) continue;
-    const lz = dx * sn + dz * c;
-    if (Math.abs(lx) < Math.abs(lz) * 0.4) continue;
-    if (lx >= 0 && d < posD) {
-      pos = o;
-      posD = d;
-    } else if (lx < 0 && d < negD) {
-      neg = o;
-      negD = d;
-    }
-  }
-  return { neg, pos };
-}
-
-function nearShoulder(mate: Skater, from: Skater, out: THREE.Vector3): void {
-  skaterPoint(mate, -0.3, 1.44, -0.07, _handTop);
-  skaterPoint(mate, 0.28, 1.44, -0.07, _handBot);
-  const dl = (_handTop.x - from.x) ** 2 + (_handTop.z - from.z) ** 2;
-  const dr = (_handBot.x - from.x) ** 2 + (_handBot.z - from.z) ** 2;
-  out.copy(dl <= dr ? _handTop : _handBot);
-}
-
-function bestMeet(a: Skater, b: Skater, yWant: number): { x: number; y: number; z: number; handA: 0 | 1; handB: 0 | 1 } {
-  const preferA = cheerFor(a.id)?.hand ?? 0;
-  const preferB = cheerFor(b.id)?.hand ?? 0;
-  const reach = 0.53;
-  let bestScore = Infinity;
-  let pick = {
-    x: (a.x + b.x) * 0.5,
-    y: yWant,
-    z: (a.z + b.z) * 0.5,
-    handA: preferA,
-    handB: preferB,
-  };
-  for (const ha of [0, 1] as const) {
-    for (const hb of [0, 1] as const) {
-      skaterPoint(a, ha === 0 ? -0.26 : 0.24, 1.46, 0.06, _handTop);
-      skaterPoint(b, hb === 0 ? -0.26 : 0.24, 1.46, 0.06, _handBot);
-      const ax = _handTop.x;
-      const az = _handTop.z;
-      const bx = _handBot.x;
-      const bz = _handBot.z;
-      const mx = (ax + bx) * 0.5;
-      const mz = (az + bz) * 0.5;
-      const h = Math.max(Math.hypot(mx - ax, mz - az), Math.hypot(mx - bx, mz - bz));
-      const yMax = 1.46 + Math.sqrt(Math.max(0, reach * reach - h * h));
-      const y = Math.max(1.05, Math.min(yWant, yMax));
-      const miss = Math.max(0, Math.min(yWant, 1.8) - y);
-      const prefer = (ha === preferA ? 0 : 1) + (hb === preferB ? 0 : 1);
-      const score = miss * 30 + prefer + h * 0.02;
-      if (score < bestScore) {
-        bestScore = score;
-        pick = { x: mx, y, z: mz, handA: ha, handB: hb };
-      }
-    }
-  }
-  return pick;
 }
 
 function mountRagePiece(
@@ -2187,85 +2593,162 @@ function poseRage(s: Skater, root: THREE.Group, body: THREE.Group | null, lArm: 
   else flyShaft.visible = false;
 }
 
-function poseCheer(s: Skater, body: THREE.Group, lArm: THREE.Group, rArm: THREE.Group, lFore: THREE.Group | null, rFore: THREE.Group | null): void {
-  lArm.position.set(-0.26, 1.46, 0.06);
-  rArm.position.set(0.24, 1.46, 0.06);
-  if (!lFore || !rFore) return;
-  const plan = cheerFor(s.id);
-  const kind = plan?.kind ?? 0;
-  const hand = plan?.hand ?? 0;
-  const straight = plan?.straight ?? 1;
-  const mate = plan && plan.mate >= 0 ? world.skaters[plan.mate] : undefined;
-  const near = !!mate && Math.hypot(mate.x - s.x, mate.z - s.z) < 2.4;
-  body.updateWorldMatrix(true, false);
-  const toBody = (src: THREE.Vector3) => {
-    _liftPt.copy(src);
-    body.worldToLocal(_liftPt);
-    return { x: _liftPt.x, y: _liftPt.y, z: _liftPt.z };
+/**
+ * Folded reach used only by the goal glide. The pole is the elbow hint in body space.
+ * The glove point, not the forearm origin, lands on the target.
+ */
+function poseCheerReach(
+  arm: THREE.Group,
+  fore: THREE.Group,
+  sx: number,
+  sy: number,
+  sz: number,
+  gx: number,
+  gy: number,
+  gz: number,
+  px: number,
+  py: number,
+  pz: number,
+): void {
+  arm.position.set(sx, sy, sz);
+  const UPPER = 0.2807;
+  const LOWER = 0.2888;
+  _ikTo.set(gx - sx, gy - sy, gz - sz);
+  let dist = _ikTo.length();
+  const maxR = UPPER + LOWER - 0.02;
+  const minR = Math.abs(LOWER - UPPER) + 0.02;
+  if (dist < minR) {
+    if (dist < 1e-8) _ikTo.set(0.2, -1, 0.2);
+    _ikTo.multiplyScalar(minR / _ikTo.length());
+    dist = minR;
+  } else if (dist > maxR) {
+    _ikTo.multiplyScalar(maxR / dist);
+    dist = maxR;
+  }
+  const tx = sx + _ikTo.x;
+  const ty = sy + _ikTo.y;
+  const tz = sz + _ikTo.z;
+  _ikTo.normalize();
+  const along = (UPPER * UPPER - LOWER * LOWER + dist * dist) / (2 * dist);
+  const lift = Math.sqrt(Math.max(0, UPPER * UPPER - along * along));
+  _ikPole.set(px, py, pz);
+  _ikN.copy(_ikTo).cross(_ikPole);
+  _ikN.cross(_ikTo);
+  if (_ikN.lengthSq() < 1e-6) _ikN.set(1, 0, 0);
+  _ikN.normalize();
+  _ikElbow.set(sx, sy, sz).addScaledVector(_ikTo, along).addScaledVector(_ikN, lift);
+  _ikD1.set(_ikElbow.x - sx, _ikElbow.y - sy, _ikElbow.z - sz);
+  if (_ikD1.lengthSq() < 1e-8) _ikD1.set(0, -1, 0);
+  else _ikD1.normalize();
+  _ikN.set(1, 0, 0.15);
+  _ikN.addScaledVector(_ikD1, -_ikN.dot(_ikD1));
+  if (_ikN.lengthSq() < 1e-6) _ikN.set(0, 0, 1);
+  _ikN.normalize();
+  _ikD2.crossVectors(_ikD1, _ikN).normalize();
+  _ikTo.copy(_ikD1).multiplyScalar(-1);
+  _stickM.makeBasis(_ikN, _ikTo, _ikD2);
+  arm.quaternion.setFromRotationMatrix(_stickM);
+  _ikD1.set(tx - _ikElbow.x, ty - _ikElbow.y, tz - _ikElbow.z);
+  if (_ikD1.lengthSq() < 1e-8) _ikD1.set(-0.01, -0.28, 0.07);
+  else _ikD1.normalize();
+  _ikInv.copy(arm.quaternion).invert();
+  _ikD1.applyQuaternion(_ikInv);
+  _handBot.set(-0.01, -0.28, 0.07).normalize();
+  fore.quaternion.setFromUnitVectors(_handBot, _ikD1);
+}
+
+/**
+ * Cheer only. Inverted one-hand grip: local +Y (the knob) points down from the
+ * player's left glove, so the blade group sits above the knob.
+ */
+function poseCheerStick(stick: THREE.Group, parent: THREE.Object3D, hand: THREE.Group, layout: { len: number }) {
+  parent.updateWorldMatrix(true, false);
+  hand.updateWorldMatrix(true, false);
+  _handTop.set(-0.01, -0.28, 0.07);
+  hand.localToWorld(_handTop);
+  parent.worldToLocal(_handTop);
+  const grip = layout.len * 0.86;
+  _ikD1.set(-0.08, -0.98, 0.12);
+  if (_ikD1.lengthSq() < 1e-8) _ikD1.set(0, -1, 0);
+  else _ikD1.normalize();
+  stick.quaternion.setFromUnitVectors(_fromY, _ikD1);
+  _ikD2.set(0, grip, 0).applyQuaternion(stick.quaternion);
+  stick.position.set(_handTop.x - _ikD2.x, _handTop.y - _ikD2.y, _handTop.z - _ikD2.z);
+}
+
+/**
+ * Skating glide after a goal. One skate leads, the other trails, on the celebrate clock.
+ * The left hand holds the stick in front of the shoulder, blade above the knob.
+ * The right hand is a fist in front of the chest, in line with the forearm.
+ * Yaw stays on the root. Home and away share this local pose.
+ */
+function poseCheer(
+  s: Skater,
+  root: THREE.Object3D,
+  body: THREE.Group,
+  head: THREE.Group | null,
+  lLeg: THREE.Group,
+  rLeg: THREE.Group,
+  lShin: THREE.Group | null,
+  rShin: THREE.Group | null,
+  lBoot: THREE.Group | null,
+  rBoot: THREE.Group | null,
+  lArm: THREE.Group,
+  rArm: THREE.Group,
+  lFore: THREE.Group,
+  rFore: THREE.Group,
+  stick: THREE.Group,
+  blade: THREE.Group,
+  layout: { len: number },
+): void {
+  const glide = Math.sin(s.celebrate * CHEER_GLIDE);
+  const pitch = CHEER_PITCH;
+  body.position.set(0, CHEER_DROP, 0);
+  body.rotation.set(pitch, 0, 0);
+  const plant = (leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, side: 1 | -1) => {
+    const drive = side < 0 ? glide : -glide;
+    const u = drive * 0.5 + 0.5;
+    const knee = CHEER_KNEE_B + (CHEER_KNEE_F - CHEER_KNEE_B) * u;
+    const wantZ = CHEER_Z_B + (CHEER_Z_F - CHEER_Z_B) * u;
+    const thigh = plantThigh(pitch, CHEER_DROP, knee, -1.6, 0.6, wantZ);
+    leg.position.set(side * CHEER_STANCE, SKATER_HIP_Y, 0);
+    leg.rotation.set(thigh, 0, 0);
+    if (shin) shin.rotation.set(knee, 0, 0);
+    if (boot) boot.rotation.set(-(pitch + thigh + knee), 0, 0);
   };
-  const aim = (side: -1 | 1, gx: number, gy: number, gz: number) => {
-    const arm = side < 0 ? lArm : rArm;
-    const fore = side < 0 ? lFore : rFore;
-    const sx = side < 0 ? -0.26 : 0.24;
-    poseGloveAt(body, arm, fore, sx, 1.46, 0.06, gx, gy, gz, side);
-  };
-  const park = (active: -1 | 1 | 2) => {
-    if (active !== -1) cheerNeutral(body, lArm, lFore, -1);
-    if (active !== 1) cheerNeutral(body, rArm, rFore, 1);
-  };
-  if (kind === 2) {
-    const sides = lateralMates(s);
-    const k = patReach(world.time);
-    const patSide = (side: -1 | 1, mateS: Skater | null) => {
-      const sx = side < 0 ? -0.26 : 0.24;
-      if (!mateS) {
-        aim(side, side * 0.46, 0.98, 0.16);
-        return;
+  plant(lLeg, lShin, lBoot, -1);
+  plant(rLeg, rShin, rBoot, 1);
+  if (lBoot && rBoot) {
+    body.updateWorldMatrix(true, true);
+    let low = Infinity;
+    for (const boot of [lBoot, rBoot]) {
+      for (const z of [-0.14, 0.02, 0.18]) {
+        _corner.set(0, -0.1375, z);
+        boot.localToWorld(_corner);
+        if (_corner.y < low) low = _corner.y;
       }
-      nearShoulder(mateS, s, _ikTo);
-      const c = toBody(_ikTo);
-      aim(side, sx + (c.x - sx) * k, 1.46 + (c.y - 1.46) * k, 0.06 + (c.z - 0.06) * k);
-    };
-    patSide(-1, sides.neg);
-    patSide(1, sides.pos);
-    return;
+    }
+    if (low < Infinity) body.position.y -= low - 0.02;
   }
-  let active: 0 | 1 = hand;
-  let mx = (hand === 0 ? -1 : 1) * 0.08;
-  let my = kind === 1 ? (straight ? 1.42 : 1.36) : straight ? 1.96 : 1.8;
-  let mz = 0.42;
-  if ((kind === 0 || kind === 1) && mate && near) {
-    const yWant = kind === 0 ? (straight ? 1.96 : 1.8) : straight ? 1.42 : 1.36;
-    const meet = bestMeet(s, mate, yWant);
-    active = meet.handA;
-    _ikTo.set(meet.x, meet.y, meet.z);
-    const c = toBody(_ikTo);
-    mx = c.x;
-    my = c.y;
-    mz = c.z;
-  } else if (kind === 3 && mate && near && mate.id !== s.id) {
-    const dx = s.x - mate.x;
-    const dz = s.z - mate.z;
-    const d = Math.hypot(dx, dz) || 1;
-    skaterPoint(mate, 0, 1.68, 0.02, _ikTo);
-    _ikTo.x += (dx / d) * 0.16;
-    _ikTo.z += (dz / d) * 0.16;
-    _ikTo.y = 1.7;
-    const c = toBody(_ikTo);
-    const side: -1 | 1 = hand === 0 ? -1 : 1;
-    const sx = side < 0 ? -0.26 : 0.24;
-    const k = patReach(world.time);
-    park(side);
-    aim(side, sx + (c.x - sx) * k, 1.46 + (c.y - 1.46) * k, 0.06 + (c.z - 0.06) * k);
-    return;
+  const sockX = 0.24;
+  const sockY = 1.46;
+  const sockZ = 0.06;
+  const gx = sockX + CHEER_HAND_OUT;
+  const gy = CHEER_HAND_Y;
+  const gz = sockZ + CHEER_HAND_FWD;
+  poseCheerReach(rArm, rFore, sockX, sockY, sockZ, gx, gy, gz, 1, -0.35, 0.8);
+  poseCheerStick(stick, root, rFore, layout);
+  blade.rotation.set(0, 0, 0);
+  orientTopHand(body, rFore, stick);
+  lArm.position.set(-0.26, 1.46, 0.06);
+  const fistY = 1.24 + glide * 0.04;
+  poseGloveAt(body, lArm, lFore, -0.26, 1.46, 0.06, -0.18, fistY, 0.34, -1);
+  alignCheerFist(lFore);
+  if (head) {
+    head.position.set(0, 1.54, CHEER_HEAD_Z);
+    head.rotation.order = "XYZ";
+    head.rotation.set(CHEER_HEAD, 0, 0);
   }
-  const side: -1 | 1 = active === 0 ? -1 : 1;
-  park(side);
-  const open = kind === 3 ? patReach(world.time) : slapOpen(world.time + (kind === 1 ? 0.2 : 0));
-  const cockY = kind === 0 ? 1.64 : kind === 3 ? 1.35 : 1.18;
-  const cockX = side * 0.34;
-  const cockZ = 0.1;
-  aim(side, cockX + (mx - cockX) * open, cockY + (my - cockY) * open, cockZ + (mz - cockZ) * open);
 }
 
 function poseGoalieCheer(s: Skater, body: THREE.Group, lArm: THREE.Group, rArm: THREE.Group, lFore: THREE.Group | null, rFore: THREE.Group | null, stick: THREE.Group | null) {
@@ -3066,6 +3549,8 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
   const rBoot = useRef<THREE.Group>(null);
   const lArm = useRef<THREE.Group>(null);
   const rArm = useRef<THREE.Group>(null);
+  const rSleeve = useRef<THREE.Group>(null);
+  const rForeSleeve = useRef<THREE.Group>(null);
   const lFore = useRef<THREE.Group>(null);
   const rFore = useRef<THREE.Group>(null);
   const blocker = useRef<THREE.Group>(null);
@@ -3208,11 +3693,21 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       s.struck <= 0.2 &&
       !brawlPoseFor(s.id) &&
       !rage;
-    const pokeReach = !puckDrop && !goalie && world.puck.owner !== index && (poke || puckNearSkater(s)) && !slapping && !wrist && !diving && !tumbling && !cheer && !rage && s.hit <= 0 && s.struck <= 0.2 && !brawlPoseFor(s.id);
+    const faceoffTaker =
+      !goalie &&
+      world.faceoff &&
+      (s.id === world.homeDot || s.id === world.awayDot) &&
+      !tumbling &&
+      !diving &&
+      s.celebrate <= 0.05 &&
+      s.struck <= 0.2 &&
+      !brawlPoseFor(s.id) &&
+      !rage;
+    const pokeReach = !puckDrop && !faceoffTaker && !goalie && world.puck.owner !== index && (poke || puckNearSkater(s)) && !slapping && !wrist && !diving && !tumbling && !cheer && !rage && s.hit <= 0 && s.struck <= 0.2 && !brawlPoseFor(s.id);
     let pokePosed = false;
     let pokeToeX = 0;
     let pokeToeZ = 1;
-    const pokeStop = puckDrop || diving || tumbling || cheer || !!rage || !!brawlPoseFor(s.id) || slapping || wrist || s.hit > 0 || s.struck > 0.2;
+    const pokeStop = puckDrop || faceoffTaker || diving || tumbling || cheer || !!rage || !!brawlPoseFor(s.id) || slapping || wrist || s.hit > 0 || s.struck > 0.2;
     if (goalie && !tumbling) {
       poseGoaliePads(s, g, body.current, lLeg.current, rLeg.current, lShin.current, rShin.current, lBoot.current, rBoot.current);
     }
@@ -3229,12 +3724,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     const checkT = checking ? checkTargets(checkSide.current, checkElapsed.current, s.hit) : null;
     const absorbK = !goalie && !tumbling && !diving && !rage && !checking && s.struck > 0.2 ? smooth01(Math.min(1, (Math.min(s.struck, 1.15) - 0.2) / 0.7)) : 0;
     if (body.current && !butterflied && !goalie && !rage) {
-      if (cheer && s.hit <= 0) {
-        body.current.position.x = 0;
-        body.current.position.y = 0;
-        body.current.position.z = 0;
-        body.current.rotation.set(0, 0, 0);
-      } else if (wrist && wristKey) {
+      if (wrist && wristKey) {
         body.current.position.x = wristKey.weight;
         body.current.position.y = wristKey.drop;
         body.current.position.z = 0;
@@ -3334,8 +3824,18 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         if (rBoot.current) rBoot.current.rotation.x = mix(rBoot.current.rotation.x, -(CARRY_HIP + thighR + kneeR));
       }
     } else if (!goalie && wrist && wristKey && s.poke <= 0.04) {
-      if (lLeg.current) poseWristLeg(lLeg.current, lShin.current, lBoot.current, -SKATER_HIP_X, wristKey.kneeL, wristKey.hip);
-      if (rLeg.current) poseWristLeg(rLeg.current, rShin.current, rBoot.current, SKATER_HIP_X, wristKey.kneeR, wristKey.hip);
+      if (lLeg.current) poseWristLeg(lLeg.current, lShin.current, lBoot.current, -SKATER_HIP_X, wristKey.kneeL, wristKey.hip, wristKey.drop, wristKey.flat);
+      if (rLeg.current) poseWristLeg(rLeg.current, rShin.current, rBoot.current, SKATER_HIP_X, wristKey.kneeR, wristKey.hip, wristKey.drop, wristKey.flat);
+      if (wristKey.flat && body.current && lBoot.current && rBoot.current) {
+        body.current.updateWorldMatrix(true, true);
+        let low = Infinity;
+        for (const boot of [lBoot.current, rBoot.current]) {
+          _corner.set(0, -0.1375, 0.02);
+          boot.localToWorld(_corner);
+          if (_corner.y < low) low = _corner.y;
+        }
+        if (low < Infinity) body.current.position.y -= low - 0.02;
+      }
     } else if (!goalie && carryPose && s.poke <= 0.04) {
       const sinL = Math.sin(s.stride);
       const kneeL = strideKnee(sinL);
@@ -3419,11 +3919,10 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       }
     }
     if (!goalie && rFore.current) resetTopGlove(rFore.current);
+    if (!goalie && lFore.current) resetFistGlove(lFore.current);
     if (lArm.current && rArm.current && !butterflied && !rage) {
       if (goalieCheer && body.current) {
         poseGoalieCheer(s, body.current, lArm.current, rArm.current, lFore.current, rFore.current, stick.current);
-      } else if (cheer && s.hit <= 0 && body.current) {
-        poseCheer(s, body.current, lArm.current, rArm.current, lFore.current, rFore.current);
       } else if (s.dive > 0.04 && !goalie) {
         lArm.current.rotation.set(-0.15, 0.4, 1.15);
         rArm.current.rotation.set(-0.15, -0.4, -1.15);
@@ -3442,7 +3941,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
           lFore.current.rotation.set(-0.85, 0, 0);
           rFore.current.rotation.set(-0.55, 0, 0);
         } else if (wrist && wristKey && bladeGrp.current) {
-          applyStickAim(stick.current, wristStickAim(wristKey));
+          applyStickAim(stick.current, wristKey.flat ? mountWristAim(body.current, wristStickAim(wristKey)) : wristStickAim(wristKey));
           poseWristBlade(bladeGrp.current, stick.current, wristKey.roll, wristKey.yaw);
           if (wristIce) seatBlade(stick.current, bladeGrp.current);
         } else if (slap && bladeGrp.current) {
@@ -3487,15 +3986,16 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
           _handTop.set(0, layout.len * SKATER_GRIP_TOP, 0);
           stick.current.localToWorld(_handTop);
           body.current.worldToLocal(_handTop);
-          _handBot.set(0, layout.len * (slap ? slap.bot : SKATER_GRIP_BOT), 0);
+          _handBot.set(0, layout.len * (wrist && wristKey?.flat ? WRIST_LOW_GRIP : slap ? slap.bot : SKATER_GRIP_BOT), 0);
           stick.current.localToWorld(_handBot);
           body.current.worldToLocal(_handBot);
           const armOpp = carryPose && s.poke <= 0.04 ? Math.sin(s.stride) * STRIDE_ARM : 0;
           const shX = -DEKE_SHOULDER * dekeAmt;
           const handsOn = carryPose || wrist || !!slap || (tumbleRise && hasPuck);
-          gripSkaterHand(body.current, rArm.current, rFore.current, 0.24 + shX, 1.46, 0.06 + armOpp, _handTop.x, _handTop.y, _handTop.z, 1, handsOn, stick.current);
+          const wristHands = !!(wrist && wristKey && wristKey.flat);
+          gripSkaterHand(body.current, rArm.current, rFore.current, 0.24 + shX, 1.46, 0.06 + armOpp, _handTop.x, _handTop.y, _handTop.z, 1, handsOn, stick.current, wristHands ? _wristTopPole : null, wristHands, wristHands ? WRIST_TOP_BEND : 1);
           if (reach && !slapping && !wrist && !tumbleRise && !checkT) hangSkaterArm(lArm.current, lFore.current, -1);
-          else gripSkaterHand(body.current, lArm.current, lFore.current, -0.26 + shX, 1.46, 0.06 - armOpp, _handBot.x, _handBot.y, _handBot.z, -1, handsOn);
+          else gripSkaterHand(body.current, lArm.current, lFore.current, -0.26 + shX, 1.46, 0.06 - armOpp, _handBot.x, _handBot.y, _handBot.z, -1, handsOn, null, null, wristHands);
         }
         if (checkT && lFore.current && rFore.current) {
           const w = checkT.influence;
@@ -3528,8 +4028,6 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
           ice.getWorldPosition(_corner);
           noteGoalieMidBlade(s, _corner.x, _corner.z);
         }
-      } else if (cheer && s.hit <= 0 && !rage) {
-        if (lFore.current) poseStickOneHand(stick.current, g, lFore.current, layout);
       } else if (s.dive > 0.04) {
         applyStickAim(stick.current, carryStickAim());
       } else if (!goalie && fallHand && lFore.current) {
@@ -3545,16 +4043,10 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
       shaftHold.current.position.set(0, layout.len * 0.5, 0);
       shaftHold.current.scale.set(1, layout.len, 1);
       bladeGrp.current.visible = true;
-      const idleReady = !slapping && world.puck.owner !== index && !poke && !puckNearSkater(s) && !(cheer && s.hit <= 0) && !tumbling && s.dive <= 0.04 && !brawlPoseFor(s.id) && !!body.current && !!lArm.current && !!rArm.current && !!lFore.current && !!rFore.current;
       if (pokePosed) posePokeBlade(bladeGrp.current, stick.current, pokeToeX, pokeToeZ);
       else if (tumbling || (!wrist && !slap)) {
-        let bladeYaw = dekePose || sidePose ? -DEKE_BLADE_YAW * dekeAmt : 0;
-        let bladeZ = carryPose ? CARRY_SHAFT_PITCH : idleReady ? READY_SHAFT_PITCH : 0;
-        if (tumbling) {
-          bladeYaw = 0;
-          bladeZ = tumbleRise && world.puck.owner === index ? CARRY_SHAFT_PITCH * struckRise(tumbleU) : 0;
-        }
-        bladeGrp.current.rotation.set(0, bladeYaw, bladeZ);
+        const bladeYaw = !tumbling && (dekePose || sidePose) ? -DEKE_BLADE_YAW * dekeAmt : 0;
+        bladeGrp.current.rotation.set(0, bladeYaw, 0);
       }
       knobRef.current.visible = true;
       if (flyBlade.current) flyBlade.current.visible = false;
@@ -3681,6 +4173,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         head.current.position.set(0, 1.54, 0.02);
         if (wristWatch === "puck") watchPoint(head.current, body.current, world.puck.x, world.puck.y, world.puck.z);
         else watchPoint(head.current, body.current, attackDir(s.side) * GOAL_LINE_X, GOAL_H * 0.45, 0);
+        head.current.rotation.x = Math.min(head.current.rotation.x, WRIST_HEAD_DOWN);
       } else if ((dekePose || sidePose) && body.current) {
         head.current.position.set(0, 1.54, 0.02);
         watchPoint(head.current, body.current, attackDir(s.side) * GOAL_LINE_X, GOAL_H * 0.45, 0);
@@ -3727,6 +4220,48 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         neutralW,
         -DEKE_SHOULDER * dekeAmt,
         Math.sin(s.stride) * STRIDE_ARM,
+      );
+    }
+    const burstW = goalie ? 0 : burstPoseWeight(s.id);
+    const burstPose =
+      burstW > 0 &&
+      carryPose &&
+      s.deke <= 0.02 &&
+      Math.abs(s.stickPull) <= 0.02 &&
+      s.poke <= 0.04 &&
+      s.hit <= 0 &&
+      !puckDrop &&
+      pokeLeft.current <= 0;
+    if (
+      burstPose &&
+      body.current &&
+      stick.current &&
+      bladeGrp.current &&
+      lArm.current &&
+      rArm.current &&
+      lFore.current &&
+      rFore.current &&
+      lLeg.current &&
+      rLeg.current
+    ) {
+      poseBurstCarry(
+        body.current,
+        head.current,
+        lLeg.current,
+        rLeg.current,
+        lShin.current,
+        rShin.current,
+        lBoot.current,
+        rBoot.current,
+        lArm.current,
+        rArm.current,
+        lFore.current,
+        rFore.current,
+        stick.current,
+        bladeGrp.current,
+        layout,
+        burstW,
+        s.stride,
       );
     }
     const readyHold =
@@ -3782,6 +4317,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     }
     if (
       puckDrop &&
+      !faceoffTaker &&
       body.current &&
       stick.current &&
       bladeGrp.current &&
@@ -3809,6 +4345,85 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         bladeGrp.current,
         layout,
       );
+    }
+    if (
+      faceoffTaker &&
+      body.current &&
+      stick.current &&
+      bladeGrp.current &&
+      lArm.current &&
+      rArm.current &&
+      lFore.current &&
+      rFore.current &&
+      lLeg.current &&
+      rLeg.current
+    ) {
+      poseFaceoffDraw(
+        body.current,
+        head.current,
+        lLeg.current,
+        rLeg.current,
+        lShin.current,
+        rShin.current,
+        lBoot.current,
+        rBoot.current,
+        lArm.current,
+        rArm.current,
+        lFore.current,
+        rFore.current,
+        stick.current,
+        bladeGrp.current,
+        layout,
+        g,
+        faceoffDrawSweep(),
+      );
+    }
+    if (
+      cheer &&
+      s.hit <= 0 &&
+      !tumbling &&
+      s.struck <= 0.2 &&
+      !brawlPoseFor(s.id) &&
+      !rage &&
+      s.dive <= 0.04 &&
+      body.current &&
+      stick.current &&
+      bladeGrp.current &&
+      lArm.current &&
+      rArm.current &&
+      lFore.current &&
+      rFore.current &&
+      lLeg.current &&
+      rLeg.current
+    ) {
+      poseCheer(
+        s,
+        g,
+        body.current,
+        head.current,
+        lLeg.current,
+        rLeg.current,
+        lShin.current,
+        rShin.current,
+        lBoot.current,
+        rBoot.current,
+        lArm.current,
+        rArm.current,
+        lFore.current,
+        rFore.current,
+        stick.current,
+        bladeGrp.current,
+        layout,
+      );
+    }
+    if (rSleeve.current) rSleeve.current.rotation.y = !goalie && wrist && wristKey?.flat ? Math.PI / 2 : 0;
+    if (rForeSleeve.current) {
+      if (!goalie && wrist && wristKey?.flat && rFore.current) {
+        // Upper blue is arm-local +X after the sleeve yaw. Match the forearm's +Z to it.
+        _ikInv.copy(rFore.current.quaternion).invert();
+        _ikN.set(1, 0, 0).applyQuaternion(_ikInv);
+        rForeSleeve.current.rotation.y = Math.atan2(_ikN.x, _ikN.z);
+      } else rForeSleeve.current.rotation.y = 0;
     }
     if (shadow.current) plantRinkShadow(shadow.current, 0, 0, goalie ? 1.14 : 1);
   });
@@ -3897,29 +4512,33 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
                 </group>
               </>
             ) : (
-              <mesh geometry={gloveGeo} material={mats.gloves} position={[0.02, -0.28, 0.06]} rotation={[0.4, 0.18, 0.1]} castShadow />
+              <mesh name={SKATER_FIST_GLOVE} geometry={gloveGeo} material={mats.gloves} position={[0.02, -0.28, 0.06]} rotation={[0.4, 0.18, 0.1]} castShadow />
             )}
           </group>
         </group>
         <group ref={rArm} position={[0.24, 1.46, 0.06]}>
-          {kit.id === 0 ? (
-            <>
-              <mesh geometry={upperArmGeo} material={mats.yoke} position={[0, -0.14, 0.055]} scale={[1, 1, 0.5]} castShadow />
-              <mesh geometry={upperArmGeo} material={mats.jersey} position={[0, -0.14, -0.015]} scale={[1, 1, 0.5]} castShadow />
-            </>
-          ) : (
-            <mesh geometry={upperArmGeo} material={mats.sleeves} position={[0, -0.14, 0.02]} castShadow />
-          )}
-          {kit.id === 1 ? <mesh geometry={armStripeGeo} material={mats.pants} position={[0, -0.08, 0.02]} /> : null}
-          <group ref={rFore} position={[0, -0.28, 0.02]}>
+          <group ref={rSleeve}>
             {kit.id === 0 ? (
               <>
-                <mesh geometry={forearmGeo} material={mats.yoke} position={[0, -0.13, 0.062]} scale={[1, 1, 0.5]} />
-                <mesh geometry={forearmGeo} material={mats.jersey} position={[0, -0.13, -0.002]} scale={[1, 1, 0.5]} />
+                <mesh geometry={upperArmGeo} material={mats.yoke} position={[0, -0.14, 0.055]} scale={[1, 1, 0.5]} castShadow />
+                <mesh geometry={upperArmGeo} material={mats.jersey} position={[0, -0.14, -0.015]} scale={[1, 1, 0.5]} castShadow />
               </>
             ) : (
-              <mesh geometry={forearmGeo} material={mats.sleeves} position={[0, -0.13, 0.03]} />
+              <mesh geometry={upperArmGeo} material={mats.sleeves} position={[0, -0.14, 0.02]} castShadow />
             )}
+            {kit.id === 1 ? <mesh geometry={armStripeGeo} material={mats.pants} position={[0, -0.08, 0.02]} /> : null}
+          </group>
+          <group ref={rFore} position={[0, -0.28, 0.02]}>
+            <group ref={rForeSleeve}>
+              {kit.id === 0 ? (
+                <>
+                  <mesh geometry={forearmGeo} material={mats.yoke} position={[0, -0.13, 0.062]} scale={[1, 1, 0.5]} />
+                  <mesh geometry={forearmGeo} material={mats.jersey} position={[0, -0.13, -0.002]} scale={[1, 1, 0.5]} />
+                </>
+              ) : (
+                <mesh geometry={forearmGeo} material={mats.sleeves} position={[0, -0.13, 0.03]} />
+              )}
+            </group>
             {goalie ? <Catcher mats={mats} /> : <mesh name={SKATER_TOP_GLOVE} geometry={gloveGeo} material={mats.gloves} position={[-0.01, -0.28, 0.07]} rotation={[0.5, -0.1, -0.08]} castShadow />}
           </group>
         </group>

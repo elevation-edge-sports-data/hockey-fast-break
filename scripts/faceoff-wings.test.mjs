@@ -1,6 +1,7 @@
 /**
- * Non-dot forwards at a faceoff stand on their own defending side of the dot,
- * outside the circle, about 2 m from the opposing forward on the same hash.
+ * Faceoff spacing. Dot takers stay on the dot line, just outside the center-line paint.
+ * Extra forwards keep their hash and stand on their own defending side,
+ * outside the circle. The crouch reaches about 1.6 m, so the pair is 3.28 m apart.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -44,7 +45,7 @@ const input = await server.ssrLoadModule("/src/game/input.ts");
 
 const { resetWorld, stepSim, world, defendDir, faceYaw } = sim;
 const { useGame } = store;
-const { FACEOFF_EZ_X, FACEOFF_R, FACEOFF_SPOT_Z } = rink;
+const { FACEOFF_EZ_X, FACEOFF_NZ_X, FACEOFF_R, FACEOFF_SPOT_Z } = rink;
 const { setInjectedKeys } = input;
 
 function drop({ lineup, attack, face } = {}) {
@@ -99,7 +100,7 @@ function assertWingPair(h, a, label) {
   const dx = Math.abs(h.x - a.x);
   const dz = Math.abs(h.z - a.z);
   assert.ok(dz < 0.05, `${label} share a hash, |dz|=${dz.toFixed(3)}`);
-  assert.ok(dx >= 1.8 && dx <= 2.2, `${label} center gap ${dx.toFixed(3)} m`);
+  assert.ok(dx >= 3.2 && dx <= 3.36, `${label} center gap ${dx.toFixed(3)} m`);
   assert.ok((h.x - world.faceX) * defendDir("home") > 0.5, `${label} home is on the defending half`);
   assert.ok((a.x - world.faceX) * defendDir("away") > 0.5, `${label} away is on the defending half`);
   for (const s of [h, a]) {
@@ -116,12 +117,15 @@ function assertCentersAndPuck() {
   const home = world.skaters.find((s) => s.id === world.homeDot);
   const away = world.skaters.find((s) => s.id === world.awayDot);
   assert.ok(home && away);
-  assert.ok(Math.abs(home.x - (world.faceX + defendDir("home") * 1.15)) < 1e-9);
-  assert.ok(Math.abs(away.x - (world.faceX + defendDir("away") * 1.15)) < 1e-9);
   assert.ok(Math.abs(home.z - world.faceZ) < 1e-9);
   assert.ok(Math.abs(away.z - world.faceZ) < 1e-9);
-  const gap = Math.hypot(home.x - away.x, home.z - away.z);
-  assert.ok(gap > home.radius + away.radius, `dot takers overlap (${gap.toFixed(3)})`);
+  assert.ok((home.x - world.faceX) * defendDir("home") > 0);
+  assert.ok((away.x - world.faceX) * defendDir("away") > 0);
+  assert.equal(home.yaw, faceYaw("home"));
+  assert.equal(away.yaw, faceYaw("away"));
+  assert.ok(Math.abs(Math.abs(home.x - world.faceX) - 0.393) < 1e-9);
+  assert.ok(Math.abs(Math.abs(away.x - world.faceX) - 0.393) < 1e-9);
+  assert.ok((home.x - world.faceX) * (away.x - world.faceX) < 0);
   assert.equal(world.puck.x, world.faceX);
   assert.equal(world.puck.z, world.faceZ);
 }
@@ -185,24 +189,48 @@ test("an end-zone dot and a flipped attack use the same gap", () => {
   assertCentersAndPuck();
 });
 
+test("every faceoff dot uses the same spacing", () => {
+  const dots = [
+    [0, 0],
+    [FACEOFF_EZ_X, FACEOFF_SPOT_Z],
+    [FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
+    [-FACEOFF_EZ_X, FACEOFF_SPOT_Z],
+    [-FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
+    [FACEOFF_NZ_X, FACEOFF_SPOT_Z],
+    [FACEOFF_NZ_X, -FACEOFF_SPOT_Z],
+    [-FACEOFF_NZ_X, FACEOFF_SPOT_Z],
+    [-FACEOFF_NZ_X, -FACEOFF_SPOT_Z],
+  ];
+  for (const [x, z] of dots) {
+    drop({ face: { x, z } });
+    const pairs = pairByHash(extras("home"), extras("away"));
+    assert.equal(pairs.length, 2, `dot (${x}, ${z})`);
+    for (const [h, a] of pairs) assertWingPair(h, a, `dot (${x}, ${z})`);
+    assertCentersAndPuck();
+    assertDefenseParked();
+  }
+});
+
 test("the hash-fourth forward stays on the hash", () => {
   drop({ lineup: { g: 1, d: 1, o: 4 } });
   const home = extras("home");
   const away = extras("away");
   assert.equal(home.length, 3);
   assert.equal(away.length, 3);
-  const hashZ = (world.refLane >= 0 ? 1 : -1) * 3.4;
+  const parked = {};
   for (const side of ["home", "away"]) {
     const sign = defendDir(side);
     const hash = extras(side).filter(
       (s) => Math.abs(s.x - (world.faceX + sign * (FACEOFF_R + 1.05))) < 1e-9,
     );
     assert.equal(hash.length, 1, `${side} hash forward`);
-    assert.ok(Math.abs(hash[0].z - (world.faceZ + hashZ)) < 1e-9);
+    assert.ok(Math.abs(Math.abs(hash[0].z - world.faceZ) - 3.4) < 1e-9);
     assert.equal(hash[0].yaw, faceYaw(side));
+    parked[side] = hash[0].z;
   }
-  const wingHome = home.filter((s) => Math.abs(s.z - (world.faceZ + hashZ)) > 0.2);
-  const wingAway = away.filter((s) => Math.abs(s.z - (world.faceZ + hashZ)) > 0.2);
+  assert.ok(Math.abs(parked.home - parked.away) < 1e-9);
+  const wingHome = home.filter((s) => Math.abs(s.z - parked.home) > 0.2);
+  const wingAway = away.filter((s) => Math.abs(s.z - parked.away) > 0.2);
   const pairs = pairByHash(wingHome, wingAway);
   assert.equal(pairs.length, 2);
   for (const [h, a] of pairs) assertWingPair(h, a, "hash fourth");

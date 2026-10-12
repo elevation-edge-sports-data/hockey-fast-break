@@ -28,8 +28,6 @@ const AVS_BLUE = "#236192";
 const AVS_BURGUNDY = "#5a1021";
 
 export function kitName(id: number): string {
-  if (id === 0) return "Burgundy & Blue";
-  if (id === 2) return "Green & Black";
   return `Kit ${id + 1}`;
 }
 

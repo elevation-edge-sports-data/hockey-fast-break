@@ -10,33 +10,53 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as PoseGalleryRouteImport } from './routes/pose-gallery'
+import { Route as PoseGalleryFullRouteImport } from './routes/pose-gallery-full'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PoseGalleryRoute = PoseGalleryRouteImport.update({
+  id: '/pose-gallery',
+  path: '/pose-gallery',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PoseGalleryFullRoute = PoseGalleryFullRouteImport.update({
+  id: '/pose-gallery-full',
+  path: '/pose-gallery-full',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/pose-gallery': typeof PoseGalleryRoute
+  '/pose-gallery-full': typeof PoseGalleryFullRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/pose-gallery': typeof PoseGalleryRoute
+  '/pose-gallery-full': typeof PoseGalleryFullRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/pose-gallery': typeof PoseGalleryRoute
+  '/pose-gallery-full': typeof PoseGalleryFullRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/pose-gallery' | '/pose-gallery-full'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/pose-gallery' | '/pose-gallery-full'
+  id: '__root__' | '/' | '/pose-gallery' | '/pose-gallery-full'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  PoseGalleryRoute: typeof PoseGalleryRoute
+  PoseGalleryFullRoute: typeof PoseGalleryFullRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +68,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/pose-gallery': {
+      id: '/pose-gallery'
+      path: '/pose-gallery'
+      fullPath: '/pose-gallery'
+      preLoaderRoute: typeof PoseGalleryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pose-gallery-full': {
+      id: '/pose-gallery-full'
+      path: '/pose-gallery-full'
+      fullPath: '/pose-gallery-full'
+      preLoaderRoute: typeof PoseGalleryFullRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  PoseGalleryRoute: PoseGalleryRoute,
+  PoseGalleryFullRoute: PoseGalleryFullRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

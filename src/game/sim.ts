@@ -28,7 +28,7 @@ import {
 } from "./rink";
 import { goalieRaisedHandCovers } from "./goalieStance";
 import { readActions, setInjectedKeys, type Actions } from "./input";
-import { dekePuckLocal, neutralCarryBlend, neutralCarryLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal } from "./stickSide";
+import { burstCarryLocal, dekePuckLocal, neutralCarryBlend, neutralCarryLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal } from "./stickSide";
 import {
   CHAOS_CAP,
   GAME_CLOCK_DISPLAY_MINUTES,
@@ -758,6 +758,17 @@ function spawnSide(side: "home" | "away", lu: Lineup, startId: number): Skater[]
   return out;
 }
 
+/** Root offset. Posed reach toward the dot is 0.269 m, so this stops just outside the center-line paint. */
+const FACEOFF_DOT_X = 0.393;
+/** Extra wingers on one hash. The crouch reaches about 1.6 m, so 2.2 m still crosses. */
+const FACEOFF_WING_X = 1.64;
+
+function faceoffWingX(zOff: number): number {
+  const minR = FACEOFF_R + 0.08;
+  if (Math.hypot(FACEOFF_WING_X, zOff) >= minR) return FACEOFF_WING_X;
+  return Math.sqrt(minR * minR - zOff * zOff);
+}
+
 function parkFaceoffWingers(skaters: Skater[], homeDot: number, awayDot: number): void {
   const ox = world.faceX;
   const oz = world.faceZ;
@@ -782,18 +793,8 @@ function parkFaceoffWingers(skaters: Skater[], homeDot: number, awayDot: number)
         extras.length === 1
           ? zSpread * (side === "home" ? 1 : -1)
           : laneZ(extras.length, i, zSpread);
-      const flank = 1;
-      let x = ox + sign * flank;
-      let z = oz + zOff;
-      const dz = z - oz;
-      const min = FACEOFF_R + 0.42;
-      if (Math.hypot(flank, dz) < min) {
-        const zNeed = Math.sqrt(min * min - flank * flank);
-        const zSign = Math.abs(dz) > 1e-4 ? Math.sign(dz) : side === "home" ? 1 : -1;
-        z = oz + zSign * zNeed;
-      }
-      s.x = x;
-      s.z = z;
+      s.x = ox + sign * faceoffWingX(zOff);
+      s.z = oz + zOff;
       s.vx = 0;
       s.vz = 0;
       s.yaw = faceYaw(side);
@@ -821,7 +822,7 @@ function placeFaceoff(skaters: Skater[]): { userId: number; homeDot: number; awa
   const ox = world.faceX;
   const oz = world.faceZ;
   if (user) {
-    user.x = ox + defendDir("home") * 1.15;
+    user.x = ox + defendDir("home") * FACEOFF_DOT_X;
     user.z = oz;
     user.yaw = faceYaw("home");
     user.vx = 0;
@@ -829,7 +830,7 @@ function placeFaceoff(skaters: Skater[]): { userId: number; homeDot: number; awa
   }
   const foe = awaySkate.find((s) => s.kind === "winger") ?? awaySkate[0];
   if (foe) {
-    foe.x = ox + defendDir("away") * 1.15;
+    foe.x = ox + defendDir("away") * FACEOFF_DOT_X;
     foe.z = oz;
     foe.yaw = faceYaw("away");
     foe.vx = 0;
@@ -2047,6 +2048,7 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
   const heldPhi = world.freeCam.phi;
   const heldRadius = world.freeCam.radius;
   checkAbsorbed.clear();
+  burstPoseW.clear();
   checkCloseLeft.clear();
   passerCheckedAt.clear();
   passSpeedCutFor = -1;
@@ -6109,10 +6111,62 @@ function skillStickCarryPull(s: Skater): number | null {
   return 0;
 }
 
-/** Forwards and defense who own the puck, coasting. Shots, burst, and the faceoff set win. */
+/** Blend from the neutral plate to the top-speed plate. Release eases. A press snaps on. */
+const BURST_POSE_S = 0.18;
+const burstPoseW = new Map<number, number>();
+
+export function burstPoseWeight(id: number): number {
+  return burstPoseW.get(id) ?? 0;
+}
+
+/** Gallery still. A held burst snaps this weight to 1 in easeBurstPoses. */
+export function holdBurstPose(id: number): void {
+  burstPoseW.set(id, 1);
+}
+
+/** Forwards and defense who own the puck and are holding burst. Shots, dekes, and pulls win. */
+function burstCarryPose(s: Skater): boolean {
+  if (s.kind === "goalie" || world.puck.owner !== s.id || s.burst <= 0) return false;
+  if (s.deke > 0.02 || Math.abs(s.stickPull) > 0.02) return false;
+  if (s.poke > 0.04 || s.hit > 0 || s.dive > 0.04) return false;
+  if (s.tumble !== 0 && s.struck > 0.1) return false;
+  if (s.celebrate > 0.05 || s.struck > 0.2) return false;
+  if (s.windup > 0.04 || s.follow > 0.02) return false;
+  if (world.faceoff && world.faceoffPhase !== "live") return false;
+  if (rageDraw(s.id)) return false;
+  const brawl = world.lineBrawl;
+  if (brawl) {
+    for (const p of brawl.pairs) {
+      if (p.home === s.id || p.away === s.id) return false;
+    }
+  }
+  return true;
+}
+
+function easeBurstPoses(dt: number): void {
+  const step = dt / BURST_POSE_S;
+  const live = new Set<number>();
+  for (const s of world.skaters) {
+    live.add(s.id);
+    const cur = burstPoseW.get(s.id) ?? 0;
+    let next = 0;
+    if (burstCarryPose(s)) next = 1;
+    else if (s.deke > 0.02 || Math.abs(s.stickPull) > 0.02) next = 0;
+    else if (cur > 0 && neutralCarryOn(s)) next = Math.max(0, cur - step);
+    if (next <= 0) burstPoseW.delete(s.id);
+    else burstPoseW.set(s.id, next);
+  }
+  for (const id of burstPoseW.keys()) {
+    if (!live.has(id)) burstPoseW.delete(id);
+  }
+}
+
+/** Forwards and defense who own the puck, coasting. Shots and the faceoff set win.
+ *  Burst uses the top-speed plate, except an active deke, which stays on this blend.
+ */
 function neutralCarryOn(s: Skater): boolean {
   if (s.kind === "goalie" || world.puck.owner !== s.id) return false;
-  if (s.burst > 0 || s.poke > 0.04 || s.hit > 0 || s.dive > 0.04) return false;
+  if ((s.burst > 0 && s.deke <= 0.02) || s.poke > 0.04 || s.hit > 0 || s.dive > 0.04) return false;
   if (s.tumble !== 0 && s.struck > 0.1) return false;
   if (s.celebrate > 0.05 || s.struck > 0.2) return false;
   if (s.windup > 0.5 || s.follow > 0.02) return false;
@@ -6163,6 +6217,19 @@ export function stickBlade(s: Skater): { x: number; z: number } {
       lx += (at.x - lx) * n;
       lz += (at.z - lz) * n;
     }
+  }
+  const bw = burstPoseW.get(s.id) ?? 0;
+  if (
+    bw > 0 &&
+    plate &&
+    s.deke <= 0.02 &&
+    Math.abs(s.stickPull) <= 0.02 &&
+    (burstCarryPose(s) || neutralCarryOn(s))
+  ) {
+    const at = burstCarryLocal();
+    const from = neutralCarryLocal();
+    lx = from.x + (at.x - from.x) * bw;
+    lz = from.z + (at.z - from.z) * bw;
   }
   if (s.kind === "goalie" && goalieZKind(s)) {
     const noted = goalieMidBlade.get(s.id);
@@ -14103,8 +14170,8 @@ function stepFaceoff(dt: number, act: Actions, user: Skater): void {
   world.faceoffT += dt;
   const home = world.skaters[world.homeDot];
   const away = world.skaters.find((s) => s.id === world.awayDot);
-  lockDot(home, world.faceX + defendDir("home") * 1.15, world.faceZ, faceYaw("home"));
-  lockDot(away, world.faceX + defendDir("away") * 1.15, world.faceZ, faceYaw("away"));
+  lockDot(home, world.faceX + defendDir("home") * FACEOFF_DOT_X, world.faceZ, faceYaw("home"));
+  lockDot(away, world.faceX + defendDir("away") * FACEOFF_DOT_X, world.faceZ, faceYaw("away"));
   if (world.faceoffPhase !== "live") {
     parkFaceoffWingers(world.skaters, world.homeDot, world.awayDot);
   }
@@ -15148,6 +15215,16 @@ function applyRage(r: StickRage | null | undefined): void {
   };
 }
 
+/** Still stick-smash for the pose gallery. The skater's smash fields are already set. */
+export function armStickRage(id: number): void {
+  const s = world.skaters[id];
+  if (!s || s.kind === "goalie" || s.smashKind <= 0) {
+    stickRage = null;
+    return;
+  }
+  stickRage = { id, kind: s.smashKind, blade: blankPiece(), shaft: blankPiece() };
+}
+
 export function rageDraw(id: number): {
   t: number;
   hit: number;
@@ -15975,6 +16052,28 @@ function stepPlay(dt: number, act: Actions): void {
     }
     stepRef(dt);
     separateSkaters();
+    if (useGame.getState().clockMode !== "drill") {
+      lockDot(
+        world.skaters[world.homeDot],
+        world.faceX + defendDir("home") * FACEOFF_DOT_X,
+        world.faceZ,
+        faceYaw("home"),
+      );
+      lockDot(
+        world.skaters.find((s) => s.id === world.awayDot),
+        world.faceX + defendDir("away") * FACEOFF_DOT_X,
+        world.faceZ,
+        faceYaw("away"),
+      );
+      if (world.faceoffPhase !== "live") {
+        const lane = dropperLane();
+        const drop = refForLane(lane);
+        drop.x = world.faceX;
+        drop.z = world.faceZ + lane * REF_STAND;
+        drop.vx = 0;
+        drop.vz = 0;
+      }
+    }
     recordReplay();
     return;
   }
@@ -16318,6 +16417,7 @@ function stepPlay(dt: number, act: Actions): void {
     world.idlePokeT = 0;
   }
 
+  easeBurstPoses(dt);
   stepPuck(dt);
   if (!world.stoppage) checkCover(dt, act);
   updateCoverPose(dt);

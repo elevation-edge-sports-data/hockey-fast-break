@@ -38,4 +38,13 @@ recordings/
 scratch/
 tmp/
 dist-play/
+dist-gallery-public/
+dist-gallery-full/
 artifacts/
+
+# Private full pose gallery. The public gallery page does not import this.
+src/game/poseGalleryFull.tsx
+public/pose-gallery-full.js
+public/pose-gallery-full.html
+src/game/poseGalleryFullEntry.tsx
+src/routes/pose-gallery-full.tsx
