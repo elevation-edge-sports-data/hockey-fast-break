@@ -412,6 +412,9 @@ const _rinkShadowZ = new THREE.Vector3();
 const _rinkShadowX = new THREE.Vector3();
 const _rinkShadowWorld = new THREE.Matrix4();
 const _rinkShadowFlat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+/** Identity. The mark group's children are already laid flat, so the group itself must not take the shadow's −90° X. */
+const _rinkMarkLevel = new THREE.Quaternion();
+const _shadowCom = new THREE.Vector3();
 const SHADOW_ICE_Y = 0.015;
 const STICK_ICE_Y = 0.03;
 const GOALIE_STICK_LEN = 1.02;
@@ -3242,9 +3245,25 @@ function tumbleRoot(struck: number, tumble: number, yaw: number) {
 }
 
 /**
- * Circle on the rink. `localX` / `localZ` are the offset in the parent's yaw frame
- * before this replaces the mesh matrix. Pitch, roll, and a non-uniform parent scale
- * shear a position/quaternion/scale, so the matrix is written directly.
+ * Flat circle on the rink at world `(worldX, SHADOW_ICE_Y, worldZ)`.
+ * Parent pitch, roll, and a non-uniform scale shear a position/quaternion/scale
+ * into a tilted ellipse, so the matrix is written directly.
+ */
+function plantRinkShadowAt(shadow: THREE.Object3D, worldX: number, worldZ: number, uniform: number) {
+  const parent = shadow.parent;
+  if (!parent) return;
+  parent.updateWorldMatrix(true, false);
+  _rinkShadowPos.set(worldX, SHADOW_ICE_Y, worldZ);
+  _rinkShadowScale.set(uniform, uniform, uniform);
+  _rinkShadowWorld.compose(_rinkShadowPos, _rinkShadowFlat, _rinkShadowScale);
+  shadow.matrix.copy(parent.matrixWorld).invert().multiply(_rinkShadowWorld);
+  shadow.matrixAutoUpdate = false;
+  shadow.matrixWorldNeedsUpdate = true;
+}
+
+/**
+ * Referee circle. `localX` / `localZ` are the offset in the parent's yaw frame
+ * (the get-up foot midpoint is written onto the mesh before this runs).
  */
 function plantRinkShadow(shadow: THREE.Object3D, localX: number, localZ: number, uniform: number) {
   const parent = shadow.parent;
@@ -3258,14 +3277,33 @@ function plantRinkShadow(shadow: THREE.Object3D, localX: number, localZ: number,
   if (_rinkShadowZ.lengthSq() < 1e-8) _rinkShadowZ.set(0, 0, 1);
   else _rinkShadowZ.normalize();
   _rinkShadowX.set(_rinkShadowZ.z, 0, -_rinkShadowZ.x);
-  _rinkShadowPos.x += (_rinkShadowX.x * localX + _rinkShadowZ.x * localZ) * uniform;
-  _rinkShadowPos.z += (_rinkShadowX.z * localX + _rinkShadowZ.z * localZ) * uniform;
-  _rinkShadowPos.y = SHADOW_ICE_Y;
-  _rinkShadowScale.set(uniform, uniform, uniform);
-  _rinkShadowWorld.compose(_rinkShadowPos, _rinkShadowFlat, _rinkShadowScale);
-  shadow.matrix.copy(parent.matrixWorld).invert().multiply(_rinkShadowWorld);
-  shadow.matrixAutoUpdate = false;
-  shadow.matrixWorldNeedsUpdate = true;
+  const worldX = _rinkShadowPos.x + (_rinkShadowX.x * localX + _rinkShadowZ.x * localZ) * uniform;
+  const worldZ = _rinkShadowPos.z + (_rinkShadowX.z * localX + _rinkShadowZ.z * localZ) * uniform;
+  plantRinkShadowAt(shadow, worldX, worldZ, uniform);
+}
+
+/** Pants center in the body group. Skaters and goalies both hang the pelvis here. */
+function playerShadowCom(body: THREE.Object3D, out: THREE.Vector3) {
+  out.set(0, SKATER_HIP_Y, 0);
+  body.updateWorldMatrix(true, false);
+  body.localToWorld(out);
+}
+
+/**
+ * Flat team mark on the rink at world `(worldX, 0, worldZ)`.
+ * Child meshes already sit in XZ at y=0.02 and y=0.03, so this group stays level.
+ * `scaleX` / `scaleZ` are the world radii factors (goalie pulse, after undoing root scale).
+ */
+function plantFlatRinkMark(mark: THREE.Object3D, worldX: number, worldZ: number, scaleX: number, scaleZ: number) {
+  const parent = mark.parent;
+  if (!parent) return;
+  parent.updateWorldMatrix(true, false);
+  _rinkShadowPos.set(worldX, 0, worldZ);
+  _rinkShadowScale.set(scaleX, 1, scaleZ);
+  _rinkShadowWorld.compose(_rinkShadowPos, _rinkMarkLevel, _rinkShadowScale);
+  mark.matrix.copy(parent.matrixWorld).invert().multiply(_rinkShadowWorld);
+  mark.matrixAutoUpdate = false;
+  mark.matrixWorldNeedsUpdate = true;
 }
 
 /** 0 when the fall finishes tipping, 1 when tumbling ends (struck just above 0.1). */
@@ -4425,7 +4463,13 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         rForeSleeve.current.rotation.y = Math.atan2(_ikN.x, _ikN.z);
       } else rForeSleeve.current.rotation.y = 0;
     }
-    if (shadow.current) plantRinkShadow(shadow.current, 0, 0, goalie ? 1.14 : 1);
+    if (shadow.current || ring.current) playerShadowCom(body.current ?? g, _shadowCom);
+    if (shadow.current) plantRinkShadowAt(shadow.current, _shadowCom.x, _shadowCom.z, goalie ? 1.14 : 1);
+    if (ring.current) {
+      // Same ice XZ as the shadow, including a holding goalie. seatGoalieRing still runs above for that hold.
+      const fit = goalie ? 1.14 : 1;
+      plantFlatRinkMark(ring.current, _shadowCom.x, _shadowCom.z, ring.current.scale.x * fit, ring.current.scale.z * fit);
+    }
   });
 
   return (
