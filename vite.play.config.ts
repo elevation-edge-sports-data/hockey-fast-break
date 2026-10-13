@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { poseOverridesDataPlugin } from "./scripts/pose-overrides-plugin.mjs";
 
 /**
  * Client-only IIFE build for a double-clickable HTML file.
@@ -8,7 +9,7 @@ import tailwindcss from "@tailwindcss/vite";
  */
 export default defineConfig({
   publicDir: false,
-  plugins: [tailwindcss(), viteReact()],
+  plugins: [poseOverridesDataPlugin(), tailwindcss(), viteReact()],
   define: {
     "process.env.NODE_ENV": JSON.stringify("production"),
   },

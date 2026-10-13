@@ -42,9 +42,34 @@ dist-gallery-public/
 dist-gallery-full/
 artifacts/
 
-# Private full pose gallery. The public gallery page does not import this.
+# --- Public pose editor and gallery (commit these) ---
+# public/pose-editor-public.html
+# public/pose-gallery.html
+# public/pose-gallery.js
+# src/game/poseEditorPublicEntry.tsx
+# src/game/PoseEditor.tsx
+# src/game/poseOverrides.ts
+# src/game/poseOverrides.example.json
+# scripts/pack-pose-editor.mjs
+# scripts/pack-pose-editor-public.mjs
+
+# --- Private full pose editor and gallery (local only) ---
+# The public page is public/pose-editor-public.html. Do not commit the full editor.
+public/pose-editor.html
+src/game/poseEditorEntry.tsx
+src/game/FullPoseEditor.tsx
+src/routes/pose-editor.tsx
 src/game/poseGalleryFull.tsx
-public/pose-gallery-full.js
-public/pose-gallery-full.html
 src/game/poseGalleryFullEntry.tsx
 src/routes/pose-gallery-full.tsx
+public/pose-gallery-full.js
+public/pose-gallery-full.html
+
+# Generated editor bundles. Commit the HTML pages, not these build folders.
+dist-pose-editor/
+dist-pose-editor-public/
+
+# Local pose overrides. This file may contain private poses (bench, deke, and so on).
+# Only the five public pose keys are safe to commit. A fresh checkout can copy
+# src/game/poseOverrides.example.json to src/game/poseOverrides.json.
+src/game/poseOverrides.json

@@ -1,5 +1,5 @@
-import { useLayoutEffect, useMemo, useRef } from "react";
-import { useFrame } from "@react-three/fiber";
+import { useLayoutEffect, useMemo, useRef, type RefObject } from "react";
+import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNetTexture, createNumberTexture } from "./iceTexture";
 import { attackDir, burstPoseWeight, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, shotFollowTime, world, type Referee, type Skater } from "./sim";
@@ -8,6 +8,7 @@ import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, SKATER_TAPE_Z0, SKA
 import { kitById, type UniformKit } from "./uniforms";
 import { useGame } from "./store";
 import { BLUE_X, GOAL_H, GOAL_LINE_X } from "./rink";
+import { applyPoseJoints, stampPoseOverride, type PoseJointId } from "./poseOverrides";
 
 export const USER_MARK_INNER = 0.44;
 export const USER_MARK_OUTER = 0.54;
@@ -587,11 +588,17 @@ _burstShin.add(_burstBoot);
 _burstLeg.add(_burstShin);
 _burstBody.add(_burstLeg);
 _burstRoot.add(_burstBody);
-const POKE_HIP = (10 * Math.PI) / 180;
+const POKE_HIP = (28 * Math.PI) / 180;
 const POKE_TILT = (50 * Math.PI) / 180;
-const POKE_FRONT_KNEE = (16 * Math.PI) / 180;
-const POKE_BACK_KNEE = (46 * Math.PI) / 180;
+const POKE_FRONT_KNEE = (88 * Math.PI) / 180;
+const POKE_BACK_KNEE = (28 * Math.PI) / 180;
 const POKE_RELEASE = 0.15;
+/** Right-shot rear skate (rLeg). Knee stays ahead of the ankle, with a modest forward shin. */
+const POKE_BACK_FOOT_Z = -0.13;
+/** Right-shot lead skate (lLeg). The shin stays nearly under the knee. */
+const POKE_FRONT_FOOT_Z = 0.47;
+/** Left hand at or above the knob-side grip. */
+const POKE_LEFT_GRIP = 0.96;
 const RAGE_HX = 0.14;
 const RAGE_HY = 1.2;
 const RAGE_HZ = 0.34;
@@ -1481,6 +1488,9 @@ const _slapBotPole = new THREE.Vector3(-0.7, 0.15, -1);
 /** Follow elbows stay outside the chest: left to +X, right to -X, both forward. */
 const _followTopPole = new THREE.Vector3(0.9, 0.05, 0.5);
 const _followBotPole = new THREE.Vector3(-0.95, 0.05, 0.55);
+const _pokeElbowLocal = new THREE.Vector3(0, -0.28, 0.02);
+const _pokeLeftGlove = new THREE.Vector3(0.02, -0.28, 0.06);
+const _pokeRightGlove = new THREE.Vector3(-0.01, -0.28, 0.07);
 
 function slapFill(bot: [number, number, number], dir: [number, number, number], roll: number, yaw: number): WristKey {
   return {
@@ -1584,10 +1594,72 @@ function slapStick(wind: number, follow: number): { key: WristKey; lock: boolean
   return { key, lock: false, bot: key.botGrip, shR: SLAP_SH_FOLLOW, wide: true };
 }
 
-function hangSkaterArm(arm: THREE.Group, fore: THREE.Group | null, side: -1 | 1) {
+/** Upper arm along dirBody. up lifts the forearm a little above that line. */
+function posePokeStraightArm(arm: THREE.Group, fore: THREE.Group, gloveLocal: THREE.Vector3, dirBody: THREE.Vector3, up = 0) {
+  _ikD1.copy(_pokeElbowLocal).normalize();
+  const elbowDir = _ikD1.clone();
+  _ikTo.copy(gloveLocal).normalize();
+  const gloveDir = _ikTo.clone();
+  _ikD2.copy(dirBody).normalize();
+  _gripInv.setFromUnitVectors(elbowDir, _ikD2);
+  arm.quaternion.copy(_gripInv);
+  _ikN.copy(_ikD2);
+  _ikN.y += up;
+  _ikN.normalize();
+  _ikTo.copy(_ikN).applyQuaternion(_gripQ.copy(arm.quaternion).invert());
+  _gripQ.setFromUnitVectors(gloveDir, _ikTo);
+  fore.quaternion.copy(_gripQ);
+}
+
+/**
+ * Right-shot poke. On this mesh +X (rArm) is the player's left hand: nearly
+ * straight, bent a little up at the elbow, and the only grip near the knob.
+ * −X (lArm) is the player's right hand: upper arm down and slightly to the
+ * player's right, forearm toward the midline, off the shaft.
+ * Places the stick heel. posePoke then writes the authored joint rotations.
+ */
+function posePokeReachArms(body: THREE.Group, lArm: THREE.Group, lFore: THREE.Group, rArm: THREE.Group, rFore: THREE.Group, stick: THREE.Group, layout: { len: number }) {
+  lArm.position.set(-0.26, 1.46, 0.06);
+  rArm.position.set(0.24, 1.46, 0.06);
+  _ikN.set(0, -1, 0).applyQuaternion(_gripInv.copy(body.quaternion).invert());
+  _ikN.x -= 0.18;
+  _ikN.normalize();
+  _ikD1.copy(_pokeElbowLocal).normalize();
+  _gripQ.setFromUnitVectors(_ikD1, _ikN);
+  lArm.quaternion.copy(_gripQ);
+  // Still toward the midline, but less +X so the hand stays on the player's right.
+  _ikD2.set(0.55, 0.08, 0.3).normalize();
+  _ikTo.copy(_ikD2).applyQuaternion(_gripInv.copy(lArm.quaternion).invert());
+  _ikN.copy(_pokeLeftGlove).normalize();
+  _gripQ.setFromUnitVectors(_ikN, _ikTo);
+  lFore.quaternion.copy(_gripQ);
+  const fist = lFore.getObjectByName(SKATER_FIST_GLOVE);
+  if (fist) fist.rotation.set(0.4, 0.18, 0.1);
+  posePokeStraightArm(rArm, rFore, _pokeRightGlove, _ikD2.set(-0.08, -0.22, 1), 0.3);
+  const parent = stick.parent;
+  if (!parent) return;
+  body.updateWorldMatrix(true, true);
+  parent.updateWorldMatrix(true, false);
+  _handTop.copy(_pokeRightGlove);
+  rFore.localToWorld(_handTop);
+  parent.worldToLocal(_handTop);
+  // Shaft from the heel up to the knob. Y is just shallow enough that the lied sole clears the ice.
+  // The 0.96 point stays on the glove; do not translate the heel after this.
+  _ikD1.set(-0.02, 0.58, -0.815).normalize();
+  const along = layout.len * Math.max(POKE_LEFT_GRIP, SKATER_GRIP_TOP);
+  _ikD2.copy(_handTop).addScaledVector(_ikD1, -along);
+  applyStickAim(stick, {
+    heel: [_ikD2.x, _ikD2.y, _ikD2.z],
+    shaft: [_ikD1.x, _ikD1.y, _ikD1.z],
+    blade: [0, 0, 1],
+  });
+  orientTopHand(body, rFore, stick);
+}
+
+function hangSkaterArm(arm: THREE.Group, fore: THREE.Group | null, side: -1 | 1, forePitch = 0.25) {
   arm.position.set(side < 0 ? -0.26 : 0.24, 1.46, 0.06);
   arm.rotation.set(0.22, 0, side * 0.16);
-  if (fore) fore.rotation.set(0.25, 0, 0);
+  if (fore) fore.rotation.set(forePitch, 0, 0);
 }
 
 function pokeBodyDrop(pitch: number): number {
@@ -2445,6 +2517,45 @@ function pokeStickAim(shX: number, shY: number, shZ: number, px: number, pz: num
 /** Leave the baked 135° lie on the shaft. The poke aim already points the toe. */
 function posePokeBlade(blade: THREE.Group, _stick: THREE.Group, _toeX: number, _toeZ: number) {
   blade.rotation.set(0, 0, 0);
+}
+
+/** Active poke. Local XYZ eulers from the pose editor. Stick position stays on the reach aim. */
+function posePoke(
+  body: THREE.Group,
+  head: THREE.Group | null,
+  lArm: THREE.Group,
+  lFore: THREE.Group,
+  lHand: THREE.Object3D | null,
+  rArm: THREE.Group,
+  rFore: THREE.Group,
+  rHand: THREE.Object3D | null,
+  lLeg: THREE.Group,
+  lShin: THREE.Group | null,
+  lBoot: THREE.Group | null,
+  rLeg: THREE.Group,
+  rShin: THREE.Group | null,
+  rBoot: THREE.Group | null,
+  stick: THREE.Group,
+  shaftHold: THREE.Group | null,
+  bladeGrp: THREE.Group | null,
+) {
+  body.rotation.set(0.489, 0, 0);
+  if (head) head.rotation.set(0, 0, 0);
+  lArm.rotation.set(-0.408, 0.002, -0.461);
+  lFore.rotation.set(-0.7, -0.256, 1.225);
+  if (lHand) lHand.rotation.set(0.4, 0.18, 0.1);
+  rArm.rotation.set(-1.538, 0.171, 0.128);
+  rFore.rotation.set(-0.137, -0.217, -0.497);
+  if (rHand) rHand.rotation.set(-0.031, -0.057, 1.652);
+  lLeg.rotation.set(-1.715, 0, 0);
+  if (lShin) lShin.rotation.set(1.536, 0, 0);
+  if (lBoot) lBoot.rotation.set(-0.31, 0, 0);
+  rLeg.rotation.set(0.194, 0, 0);
+  if (rShin) rShin.rotation.set(0.489, 0, 0);
+  if (rBoot) rBoot.rotation.set(-1.171, 0, 0);
+  stick.rotation.set(-0.99, -0.032, -0.189);
+  if (shaftHold) shaftHold.rotation.set(0, 0, 0);
+  if (bladeGrp) bladeGrp.rotation.set(0, 0, 0);
 }
 
 type PokeSnap = {
@@ -3858,11 +3969,22 @@ function Catcher({ mats }: { mats: KitMats }) {
   );
 }
 
-export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
+export function PlayerMesh({
+  index,
+  kitId,
+  onJointRefs,
+  onJointClick,
+}: {
+  index: number;
+  kitId: number;
+  onJointRefs?: (refs: Record<string, THREE.Object3D | null>) => void;
+  /** Pose editor only. Clicks select the nearest tagged joint while world.poseEditorActive is set. */
+  onJointClick?: (id: string) => void;
+}) {
   const homeKit = useGame((s) => s.homeKit);
   const awayKit = useGame((s) => s.awayKit);
   const side = world.skaters[index]?.side;
-  const liveKitId = (side === "away" ? awayKit : homeKit) ?? kitId;
+  const liveKitId = onJointRefs ? kitId : ((side === "away" ? awayKit : homeKit) ?? kitId);
   const root = useRef<THREE.Group>(null);
   const body = useRef<THREE.Group>(null);
   const head = useRef<THREE.Group>(null);
@@ -3878,6 +4000,9 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
   const rForeSleeve = useRef<THREE.Group>(null);
   const lFore = useRef<THREE.Group>(null);
   const rFore = useRef<THREE.Group>(null);
+  const lGlove = useRef<THREE.Mesh>(null);
+  const rGlove = useRef<THREE.Mesh>(null);
+  const catcherGrp = useRef<THREE.Group>(null);
   const blocker = useRef<THREE.Group>(null);
   const stick = useRef<THREE.Group>(null);
   const shaftHold = useRef<THREE.Group>(null);
@@ -3904,6 +4029,40 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
   const checkWas = useRef(false);
   const checkSide = useRef<1 | -1>(-1);
 
+  useLayoutEffect(() => {
+    const groups = {
+      body: body.current,
+      head: head.current,
+      lArm: lArm.current,
+      lFore: lFore.current,
+      lHand: lGlove.current ?? blocker.current,
+      rArm: rArm.current,
+      rFore: rFore.current,
+      rHand: rGlove.current ?? catcherGrp.current,
+      lLeg: lLeg.current,
+      lShin: lShin.current,
+      lBoot: lBoot.current,
+      rLeg: rLeg.current,
+      rShin: rShin.current,
+      rBoot: rBoot.current,
+      stick: stick.current,
+      bladeGrp: bladeGrp.current,
+      shaftHold: shaftHold.current,
+    };
+    // Tag only for the editor. Gameplay never passes onJointClick, so these groups stay untouched.
+    if (onJointClick && world.poseEditorActive) {
+      for (const [id, obj] of Object.entries(groups)) {
+        if (obj) obj.userData.poseJoint = id;
+      }
+    }
+    onJointRefs?.(groups);
+    return () => {
+      for (const obj of Object.values(groups)) {
+        if (obj) delete obj.userData.poseJoint;
+      }
+    };
+  }, [onJointRefs, onJointClick]);
+
   useLayoutEffect(() => () => disposeKit(mats), [mats]);
 
   useLayoutEffect(() => {
@@ -3913,6 +4072,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
   }, []);
 
   useFrame((_, delta) => {
+    if (world.poseEditorActive || world.poseEditorLock) return;
     const s: Skater | undefined = world.skaters[index];
     const g = root.current;
     if (!s || !g) return;
@@ -4258,10 +4418,10 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     } else if (pokeReach && body.current) {
       const pitch = body.current.rotation.x;
       const drop = body.current.position.y;
-      const frontThigh = plantThigh(pitch, drop, POKE_FRONT_KNEE, -1.15, -0.2, 0.42);
-      const backThigh = plantThigh(pitch, drop, POKE_BACK_KNEE, -0.55, 0.45, -0.06);
-      if (lLeg.current) posePokeLeg(lLeg.current, lShin.current, lBoot.current, -SKATER_HIP_X, backThigh, POKE_BACK_KNEE, pitch);
-      if (rLeg.current) posePokeLeg(rLeg.current, rShin.current, rBoot.current, SKATER_HIP_X, frontThigh, POKE_FRONT_KNEE, pitch);
+      const frontThigh = plantThigh(pitch, drop, POKE_FRONT_KNEE, -1.85, -1.35, POKE_FRONT_FOOT_Z);
+      const backThigh = plantThigh(pitch, drop, POKE_BACK_KNEE, -0.35, 0.55, POKE_BACK_FOOT_Z);
+      if (lLeg.current) posePokeLeg(lLeg.current, lShin.current, lBoot.current, -SKATER_HIP_X, frontThigh, POKE_FRONT_KNEE, pitch);
+      if (rLeg.current) posePokeLeg(rLeg.current, rShin.current, rBoot.current, SKATER_HIP_X, backThigh, POKE_BACK_KNEE, pitch);
     } else if (!goalie) {
       if (lLeg.current) {
         lLeg.current.position.set(-SKATER_HIP_X, SKATER_HIP_Y, 0);
@@ -4395,7 +4555,9 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
           const handsOn = carryPose || wrist || !!slap || (tumbleRise && hasPuck);
           const wristHands = !!(wrist && wristKey && wristKey.flat);
           const followArms = (!!slap && slap.key.lift > 0.35) || (!!wristKey && wristKey.lift > 0.35);
-          gripSkaterHand(
+          const pokeArm = poke && reach && !slapping && !wrist && !tumbleRise && !checkT;
+          if (pokeArm) posePokeReachArms(body.current, lArm.current, lFore.current, rArm.current, rFore.current, stick.current, layout);
+          else gripSkaterHand(
             body.current,
             rArm.current,
             rFore.current,
@@ -4412,8 +4574,8 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
             !!slap || wristHands || followArms,
             wristHands ? (followArms ? 0.85 : WRIST_TOP_BEND) : 1,
           );
-          if (reach && !slapping && !wrist && !tumbleRise && !checkT) hangSkaterArm(lArm.current, lFore.current, -1);
-          else
+          if (!pokeArm && reach && !slapping && !wrist && !tumbleRise && !checkT) hangSkaterArm(lArm.current, lFore.current, -1, 0.25);
+          else if (!pokeArm)
             gripSkaterHand(
               body.current,
               lArm.current,
@@ -4497,6 +4659,27 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     const lLegM = lLeg.current;
     const rLegM = rLeg.current;
     if (!goalie && bodyM && stickM && bladeM && lArmM && rArmM && lForeM && rForeM && lLegM && rLegM) {
+      if (poke && pokePosed) {
+        posePoke(
+          bodyM,
+          head.current,
+          lArmM,
+          lForeM,
+          lGlove.current,
+          rArmM,
+          rForeM,
+          rGlove.current,
+          lLegM,
+          lShin.current,
+          lBoot.current,
+          rLegM,
+          rShin.current,
+          rBoot.current,
+          stickM,
+          shaftHold.current,
+          bladeM,
+        );
+      }
       if (pokePosed) {
         const snap = pokeSnap.current ?? (pokeSnap.current = freshPokeSnap());
         snap.stickQ.copy(stickM.quaternion);
@@ -4855,6 +5038,58 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
         layout,
       );
     }
+    const stamped = stampPoseOverride(index, s, {
+      body: body.current,
+      head: head.current,
+      lArm: lArm.current,
+      lFore: lFore.current,
+      lHand: lGlove.current ?? blocker.current,
+      rArm: rArm.current,
+      rFore: rFore.current,
+      rHand: rGlove.current ?? catcherGrp.current,
+      lLeg: lLeg.current,
+      lShin: lShin.current,
+      lBoot: lBoot.current,
+      rLeg: rLeg.current,
+      rShin: rShin.current,
+      rBoot: rBoot.current,
+      stick: stick.current,
+      bladeGrp: bladeGrp.current,
+      shaftHold: shaftHold.current,
+    } satisfies Partial<Record<PoseJointId, THREE.Object3D | null>>);
+    if (
+      stamped &&
+      pokePosed &&
+      pokeSnap.current &&
+      stick.current &&
+      bladeGrp.current &&
+      rArm.current &&
+      rFore.current &&
+      lArm.current &&
+      lFore.current &&
+      body.current &&
+      lLeg.current &&
+      rLeg.current
+    ) {
+      const snap = pokeSnap.current;
+      snap.stickQ.copy(stick.current.quaternion);
+      snap.stickP.copy(stick.current.position);
+      snap.bladeQ.copy(bladeGrp.current.quaternion);
+      snap.topQ.copy(rArm.current.quaternion);
+      snap.topF.copy(rFore.current.quaternion);
+      snap.botQ.copy(lArm.current.quaternion);
+      snap.botF.copy(lFore.current.quaternion);
+      snap.topP.copy(rArm.current.position);
+      snap.botP.copy(lArm.current.position);
+      snap.pitch = body.current.rotation.x;
+      snap.drop = body.current.position.y;
+      snap.lThigh = lLeg.current.rotation.x;
+      snap.rThigh = rLeg.current.rotation.x;
+      snap.lKnee = lShin.current ? lShin.current.rotation.x : 0;
+      snap.rKnee = rShin.current ? rShin.current.rotation.x : 0;
+      snap.lBoot = lBoot.current ? lBoot.current.rotation.x : 0;
+      snap.rBoot = rBoot.current ? rBoot.current.rotation.x : 0;
+    }
     if (rSleeve.current) rSleeve.current.rotation.y = !goalie && wrist && wristKey?.flat ? Math.PI / 2 : 0;
     if (rForeSleeve.current) {
       if (!goalie && wrist && wristKey?.flat && rFore.current) {
@@ -4873,8 +5108,22 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
     }
   });
 
+  const selectPoseJoint = (event: ThreeEvent<MouseEvent>) => {
+    if (!world.poseEditorActive || !onJointClick || event.delta > 2) return;
+    let obj: THREE.Object3D | null = event.object;
+    while (obj) {
+      const id = obj.userData.poseJoint;
+      if (typeof id === "string") {
+        event.stopPropagation();
+        onJointClick(id);
+        return;
+      }
+      obj = obj.parent;
+    }
+  };
+
   return (
-    <group ref={root}>
+    <group ref={root} onClick={onJointClick && world.poseEditorActive ? selectPoseJoint : undefined}>
       <mesh ref={shadow} geometry={shadowGeo} material={mats.shadow} rotation={[-Math.PI / 2, 0, 0]} position={[0, SHADOW_ICE_Y, 0]} />
       <group ref={ring} visible={false}>
         {goalie ? <mesh geometry={goalieDiscGeo} material={mats.ringFill} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]} /> : null}
@@ -4957,7 +5206,7 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
                 </group>
               </>
             ) : (
-              <mesh name={SKATER_FIST_GLOVE} geometry={gloveGeo} material={mats.gloves} position={[0.02, -0.28, 0.06]} rotation={[0.4, 0.18, 0.1]} castShadow />
+              <mesh ref={lGlove} name={SKATER_FIST_GLOVE} geometry={gloveGeo} material={mats.gloves} position={[0.02, -0.28, 0.06]} rotation={[0.4, 0.18, 0.1]} castShadow />
             )}
           </group>
         </group>
@@ -4984,7 +5233,13 @@ export function PlayerMesh({ index, kitId }: { index: number; kitId: number }) {
                 <mesh geometry={forearmGeo} material={mats.sleeves} position={[0, -0.13, 0.03]} />
               )}
             </group>
-            {goalie ? <Catcher mats={mats} /> : <mesh name={SKATER_TOP_GLOVE} geometry={gloveGeo} material={mats.gloves} position={[-0.01, -0.28, 0.07]} rotation={[0.5, -0.1, -0.08]} castShadow />}
+            {goalie ? (
+              <group ref={catcherGrp}>
+                <Catcher mats={mats} />
+              </group>
+            ) : (
+              <mesh ref={rGlove} name={SKATER_TOP_GLOVE} geometry={gloveGeo} material={mats.gloves} position={[-0.01, -0.28, 0.07]} rotation={[0.5, -0.1, -0.08]} castShadow />
+            )}
           </group>
         </group>
 
@@ -5085,30 +5340,46 @@ function GoalieThigh({ side, mats }: { side: -1 | 1; mats: Pick<KitMats, "pants"
   );
 }
 
-function SeatedLeg({ side, mats, goalie = false }: { side: -1 | 1; mats: KitMats; goalie?: boolean }) {
+function SeatedLeg({
+  side,
+  mats,
+  goalie = false,
+  thighRef,
+  shinRef,
+  bootRef,
+}: {
+  side: -1 | 1;
+  mats: KitMats;
+  goalie?: boolean;
+  thighRef?: RefObject<THREE.Group | null>;
+  shinRef?: RefObject<THREE.Group | null>;
+  bootRef?: RefObject<THREE.Group | null>;
+}) {
   if (goalie) {
     return (
-      <group position={[side * 0.16, 0.12, 0.02]} rotation={[-Math.PI / 2, 0, side * 0.06]}>
+      <group ref={thighRef} position={[side * 0.16, 0.12, 0.02]} rotation={[-Math.PI / 2, 0, side * 0.06]}>
         <GoalieThigh side={side} mats={mats} />
         <mesh geometry={goaliePadThighGeo} material={mats.pads} position={[0, -0.16, 0.04]} scale={[1.42, 1.08, 1.5]} castShadow />
         <mesh geometry={goaliePadKneeGeo} material={mats.pads} position={[0, -0.34, 0.05]} scale={[1.42, 1.05, 1.45]} />
-        <group position={[0, -0.36, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <group ref={shinRef} position={[0, -0.36, 0]} rotation={[Math.PI / 2, 0, 0]}>
           <mesh geometry={goaliePadShinGeo} material={mats.pads} position={[0, -GOALIE_SHIN_HALF_L, GOALIE_SHIN_MESH_Z]} castShadow />
-          <mesh geometry={goalieBootGeo} material={mats.skates} position={[0, -0.42, 0.06]} />
-          <SkateSole mats={mats} goalie position={[0, -0.48, 0.06]} />
+          <group ref={bootRef}>
+            <mesh geometry={goalieBootGeo} material={mats.skates} position={[0, -0.42, 0.06]} />
+            <SkateSole mats={mats} goalie position={[0, -0.48, 0.06]} />
+          </group>
         </group>
       </group>
     );
   }
   return (
-    <group position={[side * 0.19, 0.1, 0.02]} rotation={[-Math.PI / 2, 0, side * 0.08]}>
+    <group ref={thighRef} position={[side * 0.19, 0.1, 0.02]} rotation={[-Math.PI / 2, 0, side * 0.08]}>
       <mesh geometry={thighGeo} material={mats.pants} position={[0, -0.17, 0]} scale={[1.55, 1.08, 1.5]} castShadow />
       <mesh geometry={thighStripeGeo} material={mats.stripe} position={[side * 0.12, -0.17, 0]} scale={[1, 1.08, 1.45]} />
-      <group position={[0, -0.36, 0]} rotation={[Math.PI / 2, 0, 0]}>
+      <group ref={shinRef} position={[0, -0.36, 0]} rotation={[Math.PI / 2, 0, 0]}>
         <mesh geometry={shinGeo} material={mats.socks} position={[0, -0.15, 0]} scale={[1.45, 1, 1.45]} />
         <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.1, 0]} scale={[1.45, 1, 1.45]} />
         <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, 0]} scale={[1.45, 1, 1.45]} />
-        <group position={[0, -0.3, 0.05]}>
+        <group ref={bootRef} position={[0, -0.3, 0.05]}>
           <mesh geometry={bootGeo} material={mats.skates} position={[0, -0.05, 0.02]} scale={[1.28, 1, 1.12]} />
           <SkateSole mats={mats} position={[0, -0.12, 0.02]} />
         </group>
@@ -5117,14 +5388,77 @@ function SeatedLeg({ side, mats, goalie = false }: { side: -1 | 1; mats: KitMats
   );
 }
 
-export function SeatedPlayer({ kit, number, holdStick = false, goalie = false, seatX }: { kit: UniformKit; number: number; holdStick?: boolean; goalie?: boolean; seatX?: number }) {
+export function SeatedPlayer({
+  kit,
+  number,
+  holdStick = false,
+  goalie = false,
+  seatX,
+  poseId,
+  onJointRefs,
+  onJointClick,
+}: {
+  kit: UniformKit;
+  number: number;
+  holdStick?: boolean;
+  goalie?: boolean;
+  seatX?: number;
+  poseId?: string;
+  onJointRefs?: (refs: Record<string, THREE.Object3D | null>) => void;
+  onJointClick?: (id: string) => void;
+}) {
   const mats = useMemo(() => makeKitMats(kit, number, goalie), [kit, kit.id, number, goalie]);
-  const lean = useRef<THREE.Group>(null);
+  const body = useRef<THREE.Group>(null);
+  const head = useRef<THREE.Group>(null);
+  const lArm = useRef<THREE.Group>(null);
+  const lFore = useRef<THREE.Group>(null);
+  const lHand = useRef<THREE.Object3D>(null);
+  const rArm = useRef<THREE.Group>(null);
+  const rFore = useRef<THREE.Group>(null);
+  const rHand = useRef<THREE.Object3D>(null);
+  const lLeg = useRef<THREE.Group>(null);
+  const lShin = useRef<THREE.Group>(null);
+  const lBoot = useRef<THREE.Group>(null);
+  const rLeg = useRef<THREE.Group>(null);
+  const rShin = useRef<THREE.Group>(null);
+  const rBoot = useRef<THREE.Group>(null);
+  const stick = useRef<THREE.Group>(null);
   // Positive seats rest the paddle on -X so the shaft stays inside the end glass.
   const goalieStickSide = (seatX ?? 0) > 0 ? -1 : 1;
   useLayoutEffect(() => () => disposeKit(mats), [mats]);
+  useLayoutEffect(() => {
+    const groups = {
+      body: body.current,
+      head: head.current,
+      lArm: lArm.current,
+      lFore: lFore.current,
+      lHand: lHand.current,
+      rArm: rArm.current,
+      rFore: rFore.current,
+      rHand: rHand.current,
+      lLeg: lLeg.current,
+      lShin: lShin.current,
+      lBoot: lBoot.current,
+      rLeg: rLeg.current,
+      rShin: rShin.current,
+      rBoot: rBoot.current,
+      stick: stick.current,
+    };
+    if (onJointClick && world.poseEditorActive) {
+      for (const [id, obj] of Object.entries(groups)) {
+        if (obj) obj.userData.poseJoint = id;
+      }
+    }
+    onJointRefs?.(groups);
+    return () => {
+      for (const obj of Object.values(groups)) {
+        if (obj) delete obj.userData.poseJoint;
+      }
+    };
+  }, [onJointClick, onJointRefs]);
   useFrame(() => {
-    const g = lean.current;
+    if (world.poseEditorActive) return;
+    const g = body.current;
     if (!g) return;
     const d = world.benchDump;
     const near = seatX !== undefined && !!d && (d.phase !== "fly" || d.t > d.dur * 0.45) && ((d.kind === "help" && seatX > 0.4) || (d.kind === "shove" && seatX < -0.4)) && Math.abs(seatX - d.x1) < 2.8;
@@ -5140,14 +5474,48 @@ export function SeatedPlayer({ kit, number, holdStick = false, goalie = false, s
       const jab = Math.max(0, Math.sin(world.time * 11));
       g.rotation.x = 0.08 + jab * 0.62;
       g.rotation.z = Math.sin(world.time * 11) * 0.16;
+      return;
+    }
+    const name = poseId ?? world.namedPose;
+    if (name) {
+      applyPoseJoints(name, {
+        body: body.current,
+        head: head.current,
+        lArm: lArm.current,
+        lFore: lFore.current,
+        lHand: lHand.current,
+        rArm: rArm.current,
+        rFore: rFore.current,
+        rHand: rHand.current,
+        lLeg: lLeg.current,
+        lShin: lShin.current,
+        lBoot: lBoot.current,
+        rLeg: rLeg.current,
+        rShin: rShin.current,
+        rBoot: rBoot.current,
+        stick: stick.current,
+      });
     }
   });
+  const selectPoseJoint = (event: ThreeEvent<MouseEvent>) => {
+    if (!world.poseEditorActive || !onJointClick || event.delta > 2) return;
+    let obj: THREE.Object3D | null = event.object;
+    while (obj) {
+      const id = obj.userData.poseJoint;
+      if (typeof id === "string") {
+        event.stopPropagation();
+        onJointClick(id);
+        return;
+      }
+      obj = obj.parent;
+    }
+  };
   return (
-    <group>
+    <group onClick={onJointClick && world.poseEditorActive ? selectPoseJoint : undefined}>
       <mesh geometry={shadowGeo} material={mats.shadow} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0.18]} scale={[0.9, 1.15, 0.7]} />
-      <group ref={lean} rotation={[0.08, 0, 0]}>
+      <group ref={body} rotation={[0.08, 0, 0]}>
         <mesh geometry={neckGeo} material={mats.jersey} position={[0, 0.86, 0.04]} />
-        <group position={[0, 0.88, 0.04]}>
+        <group ref={head} position={[0, 0.88, 0.04]}>
           <mesh geometry={helmetGeo} material={mats.helmet} position={[0, 0.08, 0]} scale={[1.05, 0.92, 1.12]} castShadow />
           {goalie ? (
             <>
@@ -5184,7 +5552,7 @@ export function SeatedPlayer({ kit, number, holdStick = false, goalie = false, s
         <mesh geometry={pantStripeGeo} material={mats.stripe} position={[-0.185, 0.16, 0.02]} />
         <mesh geometry={pantStripeGeo} material={mats.stripe} position={[0.185, 0.16, 0.02]} />
 
-        <group position={[-0.28, 0.76, 0.02]} rotation={[0.25, -0.2, -0.6]}>
+        <group ref={lArm} position={[-0.28, 0.76, 0.02]} rotation={[0.25, -0.2, -0.6]}>
           {kit.id === 0 ? (
             <>
               <mesh geometry={upperArmGeo} material={mats.yoke} position={[0, -0.14, 0.055]} scale={[1, 1, 0.5]} castShadow />
@@ -5194,7 +5562,7 @@ export function SeatedPlayer({ kit, number, holdStick = false, goalie = false, s
             <mesh geometry={upperArmGeo} material={mats.sleeves} position={[0, -0.14, 0.02]} castShadow />
           )}
           {kit.id === 1 ? <mesh geometry={armStripeGeo} material={mats.pants} position={[0, -0.08, 0.02]} /> : null}
-          <group position={[0, -0.28, 0.02]} rotation={[-1, 0.2, 0.4]}>
+          <group ref={lFore} position={[0, -0.28, 0.02]} rotation={[-1, 0.2, 0.4]}>
             {kit.id === 0 ? (
               <>
                 <mesh geometry={forearmGeo} material={mats.yoke} position={[0, -0.13, 0.062]} scale={[1, 1, 0.5]} />
@@ -5204,16 +5572,16 @@ export function SeatedPlayer({ kit, number, holdStick = false, goalie = false, s
               <mesh geometry={forearmGeo} material={mats.sleeves} position={[0, -0.13, 0.03]} />
             )}
             {goalie ? (
-              <>
+              <group ref={lHand}>
                 <mesh geometry={blockerCuffGeo} material={mats.blocker} position={[0, -0.18, 0.01]} rotation={[0.08, 0, 0]} />
                 <mesh geometry={blockerBoardGeo} material={mats.blocker} position={[0, -0.28, 0.03]} rotation={[0.12, 0, 0]} castShadow />
-              </>
+              </group>
             ) : (
-              <mesh geometry={gloveGeo} material={mats.gloves} position={[0.02, -0.28, 0.04]} rotation={[0.35, 0.1, 0.08]} castShadow />
+              <mesh ref={lHand} geometry={gloveGeo} material={mats.gloves} position={[0.02, -0.28, 0.04]} rotation={[0.35, 0.1, 0.08]} castShadow />
             )}
           </group>
         </group>
-        <group position={[0.28, 0.76, 0.02]} rotation={[0.25, 0.2, 0.6]}>
+        <group ref={rArm} position={[0.28, 0.76, 0.02]} rotation={[0.25, 0.2, 0.6]}>
           {kit.id === 0 ? (
             <>
               <mesh geometry={upperArmGeo} material={mats.yoke} position={[0, -0.14, 0.055]} scale={[1, 1, 0.5]} castShadow />
@@ -5223,7 +5591,7 @@ export function SeatedPlayer({ kit, number, holdStick = false, goalie = false, s
             <mesh geometry={upperArmGeo} material={mats.sleeves} position={[0, -0.14, 0.02]} castShadow />
           )}
           {kit.id === 1 ? <mesh geometry={armStripeGeo} material={mats.pants} position={[0, -0.08, 0.02]} /> : null}
-          <group position={[0, -0.28, 0.02]} rotation={[-1, -0.2, -0.4]}>
+          <group ref={rFore} position={[0, -0.28, 0.02]} rotation={[-1, -0.2, -0.4]}>
             {kit.id === 0 ? (
               <>
                 <mesh geometry={forearmGeo} material={mats.yoke} position={[0, -0.13, 0.062]} scale={[1, 1, 0.5]} />
@@ -5232,23 +5600,29 @@ export function SeatedPlayer({ kit, number, holdStick = false, goalie = false, s
             ) : (
               <mesh geometry={forearmGeo} material={mats.sleeves} position={[0, -0.13, 0.03]} />
             )}
-            {goalie ? <Catcher mats={mats} /> : <mesh geometry={gloveGeo} material={mats.gloves} position={[-0.01, -0.28, 0.05]} rotation={[0.4, -0.08, -0.06]} castShadow />}
+            {goalie ? (
+              <group ref={rHand}>
+                <Catcher mats={mats} />
+              </group>
+            ) : (
+              <mesh ref={rHand} geometry={gloveGeo} material={mats.gloves} position={[-0.01, -0.28, 0.05]} rotation={[0.4, -0.08, -0.06]} castShadow />
+            )}
           </group>
         </group>
       </group>
 
-      <SeatedLeg side={-1} mats={mats} goalie={goalie} />
-      <SeatedLeg side={1} mats={mats} goalie={goalie} />
+      <SeatedLeg side={-1} mats={mats} goalie={goalie} thighRef={lLeg} shinRef={lShin} bootRef={lBoot} />
+      <SeatedLeg side={1} mats={mats} goalie={goalie} thighRef={rLeg} shinRef={rShin} bootRef={rBoot} />
 
       {goalie ? (
-        <group position={[goalieStickSide * 0.72, 0.04, 0.14]} rotation={[0.04, Math.PI, 0]}>
+        <group ref={stick} position={[goalieStickSide * 0.72, 0.04, 0.14]} rotation={[0.04, Math.PI, 0]}>
           <mesh geometry={stickShaftGeo} material={mats.stick} position={[0, 0.78, 0]} scale={[1, 0.48, 1]} />
           <mesh geometry={knobGeo} material={mats.tape} position={[0, 1.04, 0]} />
           <mesh geometry={goaliePaddleGeo} material={mats.tape} position={[0, 0.32, 0]} scale={[1, 0.58, 1]} />
           <mesh geometry={goalieIceGeo} material={mats.tape} position={[0, 0.016, 0.13]} />
         </group>
       ) : (
-        <group position={[holdStick ? -0.58 : 0.58, 0.05, 0.16]} rotation={[0.06, Math.PI, 0]}>
+        <group ref={stick} position={[holdStick ? -0.58 : 0.58, 0.05, 0.16]} rotation={[0.06, Math.PI, 0]}>
           <group position={[0, 0.59, 0]} scale={[1, 1.18, 1]}>
             <mesh geometry={stickShaftGeo} material={mats.stick} />
           </group>

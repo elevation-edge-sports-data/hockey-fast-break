@@ -1,0 +1,178 @@
+import type { Object3D } from "three";
+import { world, type Skater } from "./sim";
+import bundledOverrides from "./poseOverrides.example.json";
+
+/** Joints the pose editor exposes. Order is the order written into the file. */
+export const POSE_JOINTS = [
+  "body",
+  "head",
+  "lArm",
+  "lFore",
+  "lHand",
+  "rArm",
+  "rFore",
+  "rHand",
+  "lLeg",
+  "lShin",
+  "lBoot",
+  "rLeg",
+  "rShin",
+  "rBoot",
+  "stick",
+  "shaftHold",
+  "bladeGrp",
+] as const;
+
+export type PoseJointId = (typeof POSE_JOINTS)[number];
+/** Three Euler radians, or six numbers when the stick also stores local position. */
+export type PoseJointValue = number[];
+export type PoseJoints = Partial<Record<PoseJointId, PoseJointValue>>;
+export type PoseFile = Record<string, PoseJoints>;
+
+function asFile(value: unknown): PoseFile {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const file: PoseFile = {};
+  for (const [name, joints] of Object.entries(value as Record<string, unknown>)) {
+    if (!joints || typeof joints !== "object" || Array.isArray(joints)) continue;
+    const row: PoseJoints = {};
+    for (const id of POSE_JOINTS) {
+      const raw = (joints as Record<string, unknown>)[id];
+      if (!Array.isArray(raw) || raw.length < 3) continue;
+      const keepsPosition = (id === "stick" || id === "body") && raw.length >= 6;
+      const nums = raw.slice(0, keepsPosition ? 6 : 3).map(Number);
+      if (nums.some((n) => !Number.isFinite(n))) continue;
+      row[id] = nums;
+    }
+    if (Object.keys(row).length > 0) file[name] = row;
+  }
+  return file;
+}
+
+let live: PoseFile = asFile(bundledOverrides);
+let revision = 0;
+
+export function poseJoints(name: string): PoseJoints | null {
+  return live[name] ?? null;
+}
+
+export function hasAnyPoseOverride(): boolean {
+  return Object.keys(live).length > 0;
+}
+
+/** Editor save, or a fetch of the file, so this session matches disk before the next pack. */
+export function noteSavedPose(name: string, joints: PoseJoints): void {
+  revision += 1;
+  live = { ...live, [name]: joints };
+}
+
+export function notePoseFile(file: PoseFile): void {
+  revision += 1;
+  live = file;
+}
+
+export function poseOverrideRevision(): number {
+  return revision;
+}
+
+/**
+ * Copy saved local transforms onto the groups.
+ * Joints store Euler radians. The stick and the torso may also store local position.
+ * Euler order is left as the group already has it.
+ */
+export function applyPoseJoints(name: string, groups: Partial<Record<PoseJointId, Object3D | null>>): boolean {
+  const row = live[name];
+  if (!row) return false;
+  let hit = false;
+  for (const id of POSE_JOINTS) {
+    const v = row[id];
+    const group = groups[id];
+    if (!v || v.length < 3 || !group || id === "shaftHold" || id === "bladeGrp") continue;
+    group.rotation.set(v[0]!, v[1]!, v[2]!);
+    if ((id === "stick" || id === "body") && v.length >= 6) group.position.set(v[3]!, v[4]!, v[5]!);
+    hit = true;
+  }
+  return hit;
+}
+
+type PoseInfer = (s: Skater, index: number) => string | null;
+
+let poseInfer: PoseInfer | null = null;
+
+/** Game and the private gallery install this. The public gallery bundle does not. */
+export function setPoseInfer(fn: PoseInfer): void {
+  poseInfer = fn;
+}
+
+/** A gallery still uses the explicit name. Live play uses the installed inferrer. */
+export function namedPoseFor(s: Skater, index: number): string | null {
+  if (world.poseHold) {
+    if (world.namedPose && world.namedPoseIndex === index) return world.namedPose;
+    return null;
+  }
+  if (!hasAnyPoseOverride() || !poseInfer) return null;
+  return poseInfer(s, index);
+}
+
+export function stampPoseOverride(index: number, s: Skater, groups: Partial<Record<PoseJointId, Object3D | null>>): boolean {
+  const name = namedPoseFor(s, index);
+  if (!name || !live[name]) return false;
+  return applyPoseJoints(name, groups);
+}
+
+const SAVE_URLS = ["/api/pose-overrides", "http://127.0.0.1:8080/api/pose-overrides"];
+const REBUILD_URLS = ["http://127.0.0.1:8081/save", "http://localhost:8081/save"];
+
+async function readJson(url: string, init?: RequestInit): Promise<unknown | null> {
+  try {
+    const res = await fetch(url, init);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/** Latest file from the dev server, when it is running. Keeps a stale bundle from hiding a save. */
+export async function pullPoseOverrides(): Promise<boolean> {
+  const seen = revision;
+  for (const url of SAVE_URLS) {
+    const data = await readJson(url);
+    if (revision !== seen) return false;
+    const file = asFile(data);
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      notePoseFile(file);
+      return true;
+    }
+  }
+  return false;
+}
+
+export async function savePoseOverride(name: string, joints: PoseJoints, publicOnly = false): Promise<void> {
+  noteSavedPose(name, joints);
+  const body = JSON.stringify({ poseName: name, joints, publicOnly });
+  let detail = "Save server is not running. Start it with: node scripts/pose-save-server.mjs";
+  for (const url of REBUILD_URLS) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      const text = await res.text();
+      let payload: { ok?: boolean; error?: string } | null = null;
+      try {
+        payload = JSON.parse(text) as { ok?: boolean; error?: string };
+      } catch {
+        payload = null;
+      }
+      if (res.ok && payload?.ok) {
+        noteSavedPose(name, joints);
+        return;
+      }
+      throw new Error(payload?.error || text || `Save failed (${res.status})`);
+    } catch (err) {
+      if (err instanceof Error && !/failed to fetch|networkerror|load failed/i.test(err.message)) throw err;
+    }
+  }
+  throw new Error(detail);
+}

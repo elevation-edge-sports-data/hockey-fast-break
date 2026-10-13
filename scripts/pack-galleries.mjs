@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { poseOverrideSummary } from "./pose-overrides-plugin.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const viteBin = join(root, "node_modules/vite/bin/vite.js");
@@ -80,6 +81,7 @@ ${body}
 }
 
 const publicDir = join(root, "dist-gallery-public");
+console.log(`pose overrides: ${poseOverrideSummary(root)}`);
 await run({
   GALLERY_ENTRY: "src/game/poseGalleryPublicEntry.tsx",
   GALLERY_OUT: "dist-gallery-public",

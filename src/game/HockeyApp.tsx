@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { World } from "./World";
 import { useGame } from "./store";
 import { world } from "./sim";
+import "./poseOverrideInfer";
 
 export function GameCanvas() {
   const quality = useGame((s) => s.quality);

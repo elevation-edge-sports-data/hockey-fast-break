@@ -333,6 +333,16 @@ export type World = {
   homeAttack: 1 | -1;
   benchDump: BenchDump | null;
   lineBrawl: LineBrawl | null;
+  /** PlayerMesh skips pose writes while a pose editor drives the joints. */
+  poseEditorActive: boolean;
+  /** Save is in flight. Pose writes stay off even if a bake frame starts. */
+  poseEditorLock: boolean;
+  /** Gallery or the pose editor is holding a still. Live play leaves this false. */
+  poseHold: boolean;
+  /** Named still to stamp from poseOverrides.json. Null keeps the procedural pose. */
+  namedPose: string | null;
+  /** Skater index that namedPose applies to. */
+  namedPoseIndex: number | null;
 };
 
 const WINGER_SPEED = 12.2;
@@ -667,6 +677,11 @@ export const world: World = {
   homeAttack: 1,
   benchDump: null,
   lineBrawl: null,
+  poseEditorActive: false,
+  poseEditorLock: false,
+  poseHold: false,
+  namedPose: null,
+  namedPoseIndex: null,
 };
 
 function heading(yaw: number): { fx: number; fz: number } {
@@ -2034,6 +2049,9 @@ function tickDrill(
 }
 
 export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean }): void {
+  world.poseHold = false;
+  world.namedPose = null;
+  world.namedPoseIndex = null;
   const uiAtStart = useGame.getState();
   const pauseEdited = world.pauseDirty;
   const liveFree = uiAtStart.freeCamLive;

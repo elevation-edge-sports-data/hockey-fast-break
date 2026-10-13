@@ -17,7 +17,9 @@
     "test": "node --test 'scripts/**/*.test.mjs'",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "play:build": "node scripts/pack-play.mjs"
+    "play:build": "node scripts/pack-play.mjs",
+    "pose:save": "node scripts/pose-save-server.mjs",
+    "pose-editor:public": "node scripts/pack-pose-editor.mjs --public"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",

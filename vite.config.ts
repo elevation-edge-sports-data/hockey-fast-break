@@ -8,6 +8,8 @@ import tailwindcss from "@tailwindcss/vite";
 import { nitro } from "nitro/vite";
 // @ts-expect-error JS plugin alongside the TS vite config
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
+// @ts-expect-error JS plugin alongside the TS vite config
+import { poseOverridesDataPlugin, poseOverridesPlugin } from "./scripts/pose-overrides-plugin.mjs";
 
 const ARCHIVE_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -72,6 +74,8 @@ export default defineConfig(({ command, isPreview }) => ({
   resolve: { tsconfigPaths: true },
   plugins: [
     versionArchivePlugin(),
+    poseOverridesDataPlugin(),
+    poseOverridesPlugin(),
     appEnvPlugin(),
     tailwindcss(),
     tanstackStart(),

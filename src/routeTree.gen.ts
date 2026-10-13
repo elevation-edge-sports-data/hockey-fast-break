@@ -10,12 +10,18 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as PoseEditorRouteImport } from './routes/pose-editor'
 import { Route as PoseGalleryRouteImport } from './routes/pose-gallery'
 import { Route as PoseGalleryFullRouteImport } from './routes/pose-gallery-full'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PoseEditorRoute = PoseEditorRouteImport.update({
+  id: '/pose-editor',
+  path: '/pose-editor',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PoseGalleryRoute = PoseGalleryRouteImport.update({
@@ -31,30 +37,34 @@ const PoseGalleryFullRoute = PoseGalleryFullRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/pose-editor': typeof PoseEditorRoute
   '/pose-gallery': typeof PoseGalleryRoute
   '/pose-gallery-full': typeof PoseGalleryFullRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/pose-editor': typeof PoseEditorRoute
   '/pose-gallery': typeof PoseGalleryRoute
   '/pose-gallery-full': typeof PoseGalleryFullRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/pose-editor': typeof PoseEditorRoute
   '/pose-gallery': typeof PoseGalleryRoute
   '/pose-gallery-full': typeof PoseGalleryFullRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/pose-gallery' | '/pose-gallery-full'
+  fullPaths: '/' | '/pose-editor' | '/pose-gallery' | '/pose-gallery-full'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/pose-gallery' | '/pose-gallery-full'
-  id: '__root__' | '/' | '/pose-gallery' | '/pose-gallery-full'
+  to: '/' | '/pose-editor' | '/pose-gallery' | '/pose-gallery-full'
+  id: '__root__' | '/' | '/pose-editor' | '/pose-gallery' | '/pose-gallery-full'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  PoseEditorRoute: typeof PoseEditorRoute
   PoseGalleryRoute: typeof PoseGalleryRoute
   PoseGalleryFullRoute: typeof PoseGalleryFullRoute
 }
@@ -66,6 +76,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pose-editor': {
+      id: '/pose-editor'
+      path: '/pose-editor'
+      fullPath: '/pose-editor'
+      preLoaderRoute: typeof PoseEditorRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pose-gallery': {
@@ -87,6 +104,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  PoseEditorRoute: PoseEditorRoute,
   PoseGalleryRoute: PoseGalleryRoute,
   PoseGalleryFullRoute: PoseGalleryFullRoute,
 }

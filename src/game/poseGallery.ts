@@ -2,7 +2,7 @@ import { resetWorld, world, type Skater } from "./sim";
 import { useGame, type ControlProfile } from "./store";
 
 /** Curated stills for /pose-gallery. The full set lives in the private gallery module. */
-export const PUBLIC_POSES = ["wrist", "slap", "shot-follow-through", "cheer"] as const;
+export const PUBLIC_POSES = ["wrist", "slap", "shot-follow-through", "poke", "cheer"] as const;
 
 export type PublicPoseId = (typeof PUBLIC_POSES)[number];
 
@@ -195,7 +195,17 @@ export function prepareGalleryPose(goalie: boolean, stick: boolean): { s: Skater
   place(s);
   s.side = "home";
   if (!goalie) world.userId = s.id;
+  world.poseHold = true;
+  world.namedPose = null;
+  world.namedPoseIndex = null;
   return { s, index };
+}
+
+/** The still PlayerMesh should stamp from poseOverrides.json. */
+export function holdNamedPose(index: number, pose: string): void {
+  world.poseHold = true;
+  world.namedPose = pose;
+  world.namedPoseIndex = index;
 }
 
 export function releasePoseGallery(): void {
@@ -236,6 +246,11 @@ export function applyPose(pose: PublicPoseId): number {
     case "shot-follow-through":
       holdShotFollow(s);
       break;
+    case "poke":
+      s.poke = 1;
+      // Yaw 0 faces world −Z, so a positive z sits behind the skater.
+      loosePuck(0, -1.4);
+      break;
     case "cheer":
       s.celebrate = 2;
       world.time = 0.7;
@@ -245,5 +260,6 @@ export function applyPose(pose: PublicPoseId): number {
       return never;
     }
   }
+  holdNamedPose(index, pose);
   return index;
 }

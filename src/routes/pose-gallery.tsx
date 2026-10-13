@@ -8,6 +8,7 @@ const LABEL: Record<PublicPoseId, string> = {
   wrist: "Wrist shot",
   slap: "Slap shot",
   "shot-follow-through": "Shot follow-through",
+  poke: "Poke",
   cheer: "Cheer",
 };
 

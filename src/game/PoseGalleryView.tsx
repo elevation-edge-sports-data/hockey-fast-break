@@ -50,6 +50,7 @@ function PoseStage({ pose, index, kitId, seat }: { pose: string; index: number; 
           holdStick={seat === "skater"}
           goalie={seat === "goalie"}
           seatX={-1}
+          poseId={pose}
         />
       ) : (
         <PlayerMesh key={`${pose}-${index}-kit-${kitId}`} index={index} kitId={kitId} />

@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { poseOverrideSummary } from "./pose-overrides-plugin.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const dist = join(root, "dist-play");
@@ -131,6 +132,7 @@ ${escapeScript(js)}
 </html>
 `;
 
+console.log(`pose overrides: ${poseOverrideSummary(root)}`);
 await run(process.execPath, [
   join(root, "node_modules/vite/bin/vite.js"),
   "build",

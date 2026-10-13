@@ -893,7 +893,7 @@ function Benches() {
         const number = goalie ? homeGNum : HOME_BENCH_NUMS[i < homeGSlot ? i : i - 1]!;
         return (
           <group key={`h${number}-${home.id}`} position={[x, 0.75, zBench - 0.04]}>
-            <SeatedPlayer kit={home} number={number} holdStick={!goalie && x > 0} goalie={goalie} seatX={x} />
+            <SeatedPlayer kit={home} number={number} holdStick={!goalie && x > 0} goalie={goalie} seatX={x} poseId={goalie ? "goalieBench" : "bench"} />
           </group>
         );
       })}
@@ -902,7 +902,7 @@ function Benches() {
         const number = goalie ? awayGNum : AWAY_BENCH_NUMS[i < awayGSlot ? i : i - 1]!;
         return (
           <group key={`a${number}-${away.id}`} position={[x, 0.75, zBench - 0.04]}>
-            <SeatedPlayer kit={away} number={number} holdStick={!goalie && x > 0} goalie={goalie} seatX={x} />
+            <SeatedPlayer kit={away} number={number} holdStick={!goalie && x > 0} goalie={goalie} seatX={x} poseId={goalie ? "goalieBench" : "bench"} />
           </group>
         );
       })}
