@@ -75,8 +75,8 @@ const dist = join(root, distName);
 const { js, css } = bundleFrom(dist);
 if (isPublic) {
   const stripped = js.replaceAll("NeutralToneMapping", "").replaceAll("`Neutral`", "");
-  // idle, deke, check, dive, tumble, getUp, brawl, ready, and stride are public. These tokens stay private.
-  const leak = ["poseGalleryFull", "goalieBench", "Goalie bench", "neutralCarry", "wristBackhand", "Neutral"].find((token) =>
+  // faceoff, checked, backhandCarry, speedCarry, and the other public poses are public. These tokens stay private.
+  const leak = ["poseGalleryFull", "goalieBench", "Goalie bench", "goalieUpright", "Neutral"].find((token) =>
     stripped.includes(token),
   );
   if (leak) throw new Error(`pack-pose-editor: public bundle references the private gallery (${leak})`);

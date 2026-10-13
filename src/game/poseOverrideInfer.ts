@@ -61,26 +61,26 @@ function faceoffOpen(s: Skater): boolean {
 /** Live play only. Galleries pass the pose name in and do not use this. */
 export function inferNamedPose(s: Skater, index: number): string | null {
   const goalie = s.kind === "goalie";
-  if (brawlLive(s.id)) return "brawl";
+  if (brawlLive(s.id)) return "fight";
   if (!goalie && s.celebrate > 0.05 && s.hit <= 0 && !tumbling(s) && s.struck <= 0.2 && !brawlLive(s.id) && !rageDraw(s.id) && s.dive <= 0.04) {
-    return "cheer";
+    return "celebrate";
   }
   if (goalie && !tumbling(s) && s.celebrate > 0.05) return "goalieCheer";
   if (faceoffOpen(s)) {
     const taker = s.id === world.homeDot || s.id === world.awayDot;
-    return taker ? "puckDrop" : "idle";
+    return taker ? "faceoff" : "coast";
   }
   if (!goalie && rageDraw(s.id)) return "rage";
   if (goalie && tumbling(s)) return "goalieGetUp";
   if (!goalie && s.dive > 0.04) return "dive";
-  if (!goalie && rising(s)) return "getUp";
-  if (!goalie && tumbling(s)) return "tumble";
-  if (!goalie && s.struck > 0.2 && s.tumble === 0) return "checked";
+  if (!goalie && rising(s)) return "recover";
+  if (!goalie && tumbling(s)) return "knockout";
+  if (!goalie && s.struck > 0.2 && s.tumble === 0) return "absorb";
   if (!goalie && forehandFollowHold(s)) return "shot-follow-through";
   if (!goalie && s.follow <= 0.02 && s.windup > 0.5) return "slap";
-  if (!goalie && s.follow <= 0.02 && s.windup > 0.04 && s.windup <= 0.5 && world.lastShotBackhand) return "wristBackhand";
+  if (!goalie && s.follow <= 0.02 && s.windup > 0.04 && s.windup <= 0.5 && world.lastShotBackhand) return "backhandShot";
   if (!goalie && s.follow <= 0.02 && s.windup > 0.04 && s.windup <= 0.5 && world.puck.owner === index) return "wrist";
-  if (!goalie && s.hit > 0 && s.dive <= 0.04 && !tumbling(s) && s.struck <= 0.2 && s.windup <= 0.04 && s.follow <= 0.02) return "check";
+  if (!goalie && s.hit > 0 && s.dive <= 0.04 && !tumbling(s) && s.struck <= 0.2 && s.windup <= 0.04 && s.follow <= 0.02) return "shoulderCheck";
   if (!goalie && s.poke > 0.04) return "poke";
 
   const owns = world.puck.owner === index;
@@ -98,11 +98,11 @@ export function inferNamedPose(s: Skater, index: number): string | null {
     s.hit <= 0 &&
     s.poke <= 0.04 &&
     !(world.faceoff && world.faceoffPhase !== "live");
-  if (carrying && s.deke > 0.02) return "deke";
-  if (carrying && s.stickPull > 0.02) return "skillBackhand";
-  if (carrying && s.stickPull < -0.02) return "skillCarry";
-  if (carrying && s.burst > 0 && burstPoseWeight(s.id) >= 0.5 && s.deke <= 0.02 && Math.abs(s.stickPull) <= 0.02) return "burstCarry";
-  if (carrying && s.burst <= 0 && s.deke <= 0.02 && Math.abs(s.stickPull) <= 0.02) return "neutralCarry";
+  if (carrying && s.deke > 0.02) return "autoDeke";
+  if (carrying && s.stickPull > 0.02) return "backhandDeke";
+  if (carrying && s.stickPull < -0.02) return "forehandDeke";
+  if (carrying && s.burst > 0 && burstPoseWeight(s.id) >= 0.5 && s.deke <= 0.02 && Math.abs(s.stickPull) <= 0.02) return "speedPuckPossess";
+  if (carrying && s.burst <= 0 && s.deke <= 0.02 && Math.abs(s.stickPull) <= 0.02) return "puckPossess";
 
   if (goalie && !tumbling(s) && s.celebrate <= 0.05 && s.dive <= 0.04) {
     if (goaliePlaysPuck(s)) return "goaliePlay";

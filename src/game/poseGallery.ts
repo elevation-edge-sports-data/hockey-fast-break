@@ -1,4 +1,4 @@
-import { resetWorld, world, type Skater } from "./sim";
+import { holdBurstPose, resetWorld, world, type Skater } from "./sim";
 import { useGame, type ControlProfile } from "./store";
 
 /** Curated stills for /pose-gallery. The full set lives in the private gallery module. */
@@ -6,18 +6,22 @@ export const PUBLIC_POSES = [
   "default",
   "ready",
   "stride",
-  "idle",
-  "deke",
+  "faceoff",
+  "coast",
+  "autoDeke",
+  "backhandDeke",
+  "speedPuckPossess",
   "wrist",
   "slap",
   "shot-follow-through",
   "poke",
-  "check",
+  "shoulderCheck",
+  "absorb",
   "dive",
-  "tumble",
-  "getUp",
-  "cheer",
-  "brawl",
+  "knockout",
+  "recover",
+  "celebrate",
+  "fight",
 ] as const;
 
 export type PublicPoseId = (typeof PUBLIC_POSES)[number];
@@ -248,7 +252,7 @@ export function holdShotFollow(s: Skater): void {
 }
 
 export function applyPose(pose: PublicPoseId): number {
-  const { s, index } = prepareGalleryPose(false, false);
+  const { s, index } = prepareGalleryPose(false, pose === "backhandDeke");
   switch (pose) {
     case "default":
       break;
@@ -259,7 +263,13 @@ export function applyPose(pose: PublicPoseId): number {
       s.vx = 2.6;
       s.stride = Math.PI / 2;
       break;
-    case "idle":
+    case "faceoff":
+      world.faceoff = true;
+      world.faceoffPhase = "hold";
+      world.faceX = 0;
+      world.faceZ = 0;
+      break;
+    case "coast":
       // Not a dot taker, so poseFaceoffDraw stays off and posePuckDrop runs.
       world.faceoff = true;
       world.faceoffPhase = "hold";
@@ -268,10 +278,20 @@ export function applyPose(pose: PublicPoseId): number {
       world.homeDot = -1;
       world.awayDot = -1;
       break;
-    case "deke":
+    case "autoDeke":
       // Held deke sits at dekePull 1, the backhand, not the neutral middle.
       s.deke = 0.525;
       ownPuck(index, 0.4, -0.7);
+      break;
+    case "backhandDeke":
+      s.stickPull = 1;
+      ownPuck(index, 0.7, -0.85);
+      break;
+    case "speedPuckPossess":
+      s.burst = 1;
+      s.stride = Math.PI / 2;
+      ownPuck(index, 0, -1.1);
+      holdBurstPose(s.id);
       break;
     case "wrist":
       s.windup = 0.28;
@@ -290,27 +310,31 @@ export function applyPose(pose: PublicPoseId): number {
       // Yaw 0 faces world −Z, so a positive z sits behind the skater.
       loosePuck(0, -1.4);
       break;
-    case "check":
+    case "shoulderCheck":
       s.hit = 1;
+      break;
+    case "absorb":
+      // Full absorb. tumble stays 0 so this is the receiver, not the fall.
+      s.struck = 1;
       break;
     case "dive":
       s.dive = 0.95;
       break;
-    case "tumble":
+    case "knockout":
       s.tumble = 1;
       s.struck = 0.55;
       break;
-    case "getUp":
+    case "recover":
       // tumbleU is past TUMBLE_UP. Owning the puck blends the knees toward the carry stride.
       s.tumble = 1;
       s.struck = 0.2;
       ownPuck(index, 0, -1.1);
       break;
-    case "cheer":
+    case "celebrate":
       s.celebrate = 2;
       world.time = 0.7;
       break;
-    case "brawl": {
+    case "fight": {
       const foe = world.skaters.find((o) => o.id !== s.id);
       world.lineBrawl = {
         t: 0,

@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { PlayerMesh, SeatedPlayer } from "./PlayerMesh";
 import { applyPose, holdNamedPose, prepareGalleryPose, PUBLIC_POSES, releasePoseGallery, type PublicPoseId } from "./poseGallery";
 import { applyPoseJoints, noteSavedPose, POSE_JOINTS, pullPoseOverrides, savePoseOverride, type PoseJoints } from "./poseOverrides";
-import { mountStickKnobPivot, releaseStickKnobPivot } from "./stickKnobPivot";
+import { mountStickKnobPivot, mountStickOnHand, releaseStickFromHand, releaseStickKnobPivot } from "./stickKnobPivot";
 import { world } from "./sim";
 import { kitById, UNIFORMS } from "./uniforms";
 
@@ -32,11 +32,11 @@ type SceneBg = keyof typeof SCENE_BG;
 function loadSceneBg(): SceneBg {
   try {
     const saved = localStorage.getItem(BG_KEY);
-    if (saved === "gray" || saved === "light") return saved;
+    if (saved === "dark" || saved === "gray" || saved === "light") return saved;
   } catch {
-    return "dark";
+    return "gray";
   }
-  return "dark";
+  return "gray";
 }
 
 /** The shaft mesh is not its own joint. Clicks on it select the stick shaft. The knob is part of that shaft. */
@@ -143,6 +143,8 @@ function Scene({
   editable,
   showPlayer,
   posedEpoch,
+  stick,
+  hand,
 }: {
   selected: string | null;
   mode: "translate" | "rotate";
@@ -160,6 +162,10 @@ function Scene({
   editable: boolean;
   showPlayer: boolean;
   posedEpoch: number;
+  /** Stick group. Parented under `hand` while the editor is active. */
+  stick: THREE.Object3D | null;
+  /** Goalie right hand, or the skater left hand. */
+  hand: THREE.Object3D | null;
 }) {
   const orbitRef = useRef<ComponentRef<typeof OrbitControls>>(null);
   const pivotRef = useRef<THREE.Group>(new THREE.Group());
@@ -167,18 +173,31 @@ function Scene({
   const invalidate = useThree((s) => s.invalidate);
   const [gizmo, setGizmo] = useState<THREE.Object3D | null>(null);
 
-  const releasePivot = useCallback(() => {
+  const stickRef = useRef(stick);
+  const handRef = useRef(hand);
+  stickRef.current = stick;
+  handRef.current = hand;
+
+  const releaseKnob = useCallback(() => {
     releaseStickKnobPivot(pivotedStick.current, pivotRef.current);
     pivotedStick.current = null;
   }, []);
 
+  const releasePivot = useCallback(() => {
+    releaseKnob();
+    releaseStickFromHand(stickRef.current);
+  }, [releaseKnob]);
+
   const restorePivot = useCallback(() => {
+    const stickObj = stickRef.current;
+    const handObj = handRef.current;
+    if (stickObj && handObj && world.poseEditorActive) mountStickOnHand(stickObj, handObj);
     if (selected !== "stick" || !object) {
-      releasePivot();
+      releaseKnob();
       setGizmo(object);
       return;
     }
-    releasePivot();
+    releaseKnob();
     const home = mountStickKnobPivot(object, pivotRef.current);
     if (!home) {
       setGizmo(object);
@@ -186,7 +205,7 @@ function Scene({
     }
     pivotedStick.current = object;
     setGizmo(pivotRef.current);
-  }, [object, releasePivot, selected]);
+  }, [object, releaseKnob, selected]);
 
   useLayoutEffect(() => {
     stickPivotRef.current = { release: releasePivot, restore: restorePivot };
@@ -199,7 +218,7 @@ function Scene({
       releasePivot();
       if (stickPivotRef.current?.release === releasePivot) stickPivotRef.current = null;
     };
-  }, [editable, releasePivot, restorePivot, stickPivotRef]);
+  }, [editable, posedEpoch, releasePivot, restorePivot, stickPivotRef]);
 
   useEffect(() => {
     invalidate();
@@ -429,7 +448,7 @@ export function PoseEditor({
       () => {
         if (poseRef.current === name) applyPoseJoints(name, jointsRef.current);
         world.poseEditorActive = true;
-        setSaveNote("Saved and rebuilt. Refresh galleries/game/editor to see it.");
+        setSaveNote("Saved and rebuilt. Refresh galleries / game / editor to see it.");
       },
       (err: unknown) => {
         world.poseEditorActive = true;
@@ -448,7 +467,7 @@ export function PoseEditor({
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "220px minmax(0, 1fr) 220px",
+        gridTemplateColumns: "minmax(220px, 360px) minmax(0, 1fr) 220px",
         gridTemplateRows: "auto minmax(0, 1fr)",
         height: "100vh",
         minHeight: 0,
@@ -458,12 +477,16 @@ export function PoseEditor({
       }}
     >
       <div style={barCell}>
+        <div style={{ ...selectedLine, flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          Selected: {poseLabel(pose)}
+        </div>
         <button
           type="button"
           onClick={savePose}
           disabled={!canSave}
           style={{
-            ...btn(canSave),
+            ...btn(canSave, "green"),
+            flex: "0 0 auto",
             fontWeight: 700,
             opacity: canSave ? 1 : 0.45,
             cursor: canSave ? "pointer" : "default",
@@ -471,17 +494,17 @@ export function PoseEditor({
         >
           {saving ? "Saving…" : "Save pose"}
         </button>
-        <button type="button" onClick={() => loadPose(pose)} style={btn(false)}>
+        <button type="button" onClick={() => loadPose(pose)} style={{ ...btn(false), flex: "0 0 auto" }}>
           Reset
         </button>
       </div>
       <div style={{ ...barCell, flexDirection: "column", alignItems: "stretch", gap: 6 }}>
         <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 8 }}>
-            <button type="button" onClick={() => setMode("rotate")} style={btn(mode === "rotate")}>
+            <button type="button" onClick={() => setMode("rotate")} style={btn(mode === "rotate", "charcoal")}>
               Rotate
             </button>
-            <button type="button" onClick={() => setMode("translate")} style={btn(mode === "translate")}>
+            <button type="button" onClick={() => setMode("translate")} style={btn(mode === "translate", "charcoal")}>
               Translate
             </button>
           </div>
@@ -491,13 +514,13 @@ export function PoseEditor({
             ))}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button type="button" aria-pressed={sceneBg === "dark"} onClick={() => setSceneBg("dark")} style={btn(sceneBg === "dark")}>
+            <button type="button" aria-pressed={sceneBg === "dark"} onClick={() => setSceneBg("dark")} style={btn(sceneBg === "dark", "charcoal")}>
               Dark
             </button>
-            <button type="button" aria-pressed={sceneBg === "gray"} onClick={() => setSceneBg("gray")} style={btn(sceneBg === "gray")}>
+            <button type="button" aria-pressed={sceneBg === "gray"} onClick={() => setSceneBg("gray")} style={btn(sceneBg === "gray", "charcoal")}>
               Gray
             </button>
-            <button type="button" aria-pressed={sceneBg === "light"} onClick={() => setSceneBg("light")} style={btn(sceneBg === "light")}>
+            <button type="button" aria-pressed={sceneBg === "light"} onClick={() => setSceneBg("light")} style={btn(sceneBg === "light", "charcoal")}>
               Light
             </button>
           </div>
@@ -517,7 +540,7 @@ export function PoseEditor({
           </div>
         ) : null}
       </div>
-      <div style={{ ...barCell, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: "0.06em", textTransform: "uppercase", fontSize: 16 }}>
+      <div style={{ ...barCell, ...selectedLine }}>
         Selected: {info?.label ?? "none"}
       </div>
       <aside
@@ -532,17 +555,7 @@ export function PoseEditor({
           padding: "16px 12px",
         }}
       >
-        <div
-          style={{
-            fontFamily: '"Barlow Condensed", sans-serif',
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            fontSize: 18,
-            margin: "0 8px 12px",
-          }}
-        >
-          Poses
-        </div>
+        <div style={menuHead}>Poses</div>
         {(showRest && !poseChoices.includes("default") ? ["default", ...poseChoices] : poseChoices).map((id) => {
           const on = id === pose;
           return (
@@ -579,6 +592,12 @@ export function PoseEditor({
               editable={!saving}
               showPlayer={showPlayer}
               posedEpoch={posedEpoch}
+              stick={joints.stick ?? null}
+              hand={
+                (seated?.(pose) === "goalie" || (meshIndex != null && world.skaters[meshIndex]?.kind === "goalie")
+                  ? joints.lHand
+                  : joints.rHand) ?? null
+              }
             />
           </Canvas>
         ) : null}
@@ -597,6 +616,7 @@ export function PoseEditor({
           borderLeft: "1px solid #243040",
         }}
       >
+        <div style={menuHead}>Body</div>
         {JOINTS.map((joint) => {
           const on = selected === joint.id;
           return (
@@ -667,9 +687,24 @@ const barCell: CSSProperties = {
   borderBottom: "1px solid #243040",
 };
 
-function btn(active: boolean): CSSProperties {
+const menuHead: CSSProperties = {
+  fontFamily: '"Barlow Condensed", sans-serif',
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  fontSize: 18,
+  margin: "0 8px 12px",
+};
+
+const selectedLine: CSSProperties = {
+  fontFamily: '"Barlow Condensed", sans-serif',
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  fontSize: 16,
+};
+
+function btn(active: boolean, tone: "green" | "charcoal" = "charcoal"): CSSProperties {
   return {
-    background: active ? "#2d8a5a" : "#1c2836",
+    background: active ? (tone === "green" ? "#2d8a5a" : "#5c6370") : "#1c2836",
     color: active ? "#e8ece6" : "#8b97a4",
     border: "none",
     borderRadius: 6,

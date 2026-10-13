@@ -8,7 +8,8 @@ import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, SKATER_TAPE_Z0, SKA
 import { kitById, type UniformKit } from "./uniforms";
 import { useGame } from "./store";
 import { BLUE_X, GOAL_H, GOAL_LINE_X } from "./rink";
-import { applyPoseJoints, stampPoseOverride, type PoseJointId } from "./poseOverrides";
+import { applyPoseJoints, namedPoseFor, poseHasJoint, stampPoseOverride, type PoseJointId } from "./poseOverrides";
+import { releaseStickFromHand } from "./stickKnobPivot";
 
 export const USER_MARK_INNER = 0.44;
 export const USER_MARK_OUTER = 0.54;
@@ -1735,6 +1736,7 @@ function posePuckDrop(
   stick: THREE.Group,
   blade: THREE.Group,
   layout: { len: number },
+  keepStick = false,
 ): void {
   const pitch = PUCK_DROP_PITCH;
   const drop = PUCK_DROP_DROP;
@@ -1760,9 +1762,11 @@ function posePuckDrop(
     }
     if (low < Infinity) body.position.y -= low - 0.02;
   }
-  applyStickAim(stick, puckDropStickAim());
-  poseWristBlade(blade, stick, 0, 0);
-  seatBlade(stick, blade, false);
+  if (!keepStick) {
+    applyStickAim(stick, puckDropStickAim());
+    poseWristBlade(blade, stick, 0, 0);
+    seatBlade(stick, blade, false);
+  }
   stick.updateWorldMatrix(true, true);
   body.updateWorldMatrix(true, false);
   _handTop.set(0, layout.len * PUCK_DROP_GRIP_TOP, 0);
@@ -4056,6 +4060,7 @@ export function PlayerMesh({
     if (!onJointRefs || !posedEpoch || !world.poseEditorActive) return;
     const s = world.skaters[index];
     if (!s) return;
+    releaseStickFromHand(stick.current);
     stampPoseOverride(index, s, poseGroups());
   }, [index, onJointRefs, posedEpoch]);
 
@@ -4559,7 +4564,9 @@ export function PlayerMesh({
         else if (tumbleRise) applyStickAim(stick.current, readyStickAim());
         else if (carryPose) applyStickAim(stick.current, dekePose ? dekeStickAim(s.deke) : skillCarry ? skillCarryStickAim(Math.max(-1, Math.min(1, s.stickPull))) : sidePose ? dekeStickAim(0.525 * Math.min(1, s.stickPull)) : carryOwnStickAim());
         else if (hasPuck || reach) applyStickAim(stick.current, carryStickAim());
-        else applyStickAim(stick.current, readyStickAim());
+        else if (!(puckDrop && !faceoffTaker) && !poseHasJoint(namedPoseFor(s, index), "stick")) {
+          applyStickAim(stick.current, readyStickAim());
+        }
         if (!fallHand && !wrist && !slapping && !hasPuck && !reach) {
           stick.current.updateWorldMatrix(true, false);
           body.current.updateWorldMatrix(true, false);
@@ -4671,7 +4678,7 @@ export function PlayerMesh({
       shaftHold.current.scale.set(1, layout.len, 1);
       bladeGrp.current.visible = true;
       if (pokePosed) posePokeBlade(bladeGrp.current, stick.current, pokeToeX, pokeToeZ);
-      else if (tumbling || (!wrist && !slap)) {
+      else if (!poseHasJoint(namedPoseFor(s, index), "bladeGrp") && (tumbling || (!wrist && !slap))) {
         const bladeYaw = !tumbling && (dekePose || sidePose) ? -DEKE_BLADE_YAW * dekeAmt : 0;
         bladeGrp.current.rotation.set(0, bladeYaw, 0);
       }
@@ -4996,6 +5003,7 @@ export function PlayerMesh({
         stick.current,
         bladeGrp.current,
         layout,
+        poseHasJoint(namedPoseFor(s, index), "stick"),
       );
     }
     if (

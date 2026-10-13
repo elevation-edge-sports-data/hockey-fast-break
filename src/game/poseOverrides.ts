@@ -46,8 +46,40 @@ function asFile(value: unknown): PoseFile {
   }
   if (file.neutral && !file.default) file.default = file.neutral;
   delete file.neutral;
-  if (file.puckDropSet && !file.idle) file.idle = file.puckDropSet;
+  if (file.puckDropSet && !file.idle && !file.coast) file.idle = file.puckDropSet;
   delete file.puckDropSet;
+  if (file.idle && !file.coast) file.coast = file.idle;
+  delete file.idle;
+  if (file.puckDrop && !file.faceoff) file.faceoff = file.puckDrop;
+  delete file.puckDrop;
+  if (file.skillBackhand && !file.backhandCarry) file.backhandCarry = file.skillBackhand;
+  delete file.skillBackhand;
+  if (file.burstCarry && !file.speedCarry) file.speedCarry = file.burstCarry;
+  delete file.burstCarry;
+  if (file.backhandCarry && !file.backhandDeke) file.backhandDeke = file.backhandCarry;
+  delete file.backhandCarry;
+  if (file.speedCarry && !file.speedPuckPossess) file.speedPuckPossess = file.speedCarry;
+  delete file.speedCarry;
+  if (file.neutralCarry && !file.puckPossess) file.puckPossess = file.neutralCarry;
+  delete file.neutralCarry;
+  if (file.wristBackhand && !file.backhandShot) file.backhandShot = file.wristBackhand;
+  delete file.wristBackhand;
+  if (file.skillCarry && !file.forehandDeke) file.forehandDeke = file.skillCarry;
+  delete file.skillCarry;
+  if (file.deke && !file.autoDeke) file.autoDeke = file.deke;
+  delete file.deke;
+  if (file.getUp && !file.recover) file.recover = file.getUp;
+  delete file.getUp;
+  if (file.checked && !file.absorb) file.absorb = file.checked;
+  delete file.checked;
+  if (file.tumble && !file.knockout) file.knockout = file.tumble;
+  delete file.tumble;
+  if (file.brawl && !file.fight) file.fight = file.brawl;
+  delete file.brawl;
+  if (file.cheer && !file.celebrate) file.celebrate = file.cheer;
+  delete file.cheer;
+  if (file.check && !file.shoulderCheck) file.shoulderCheck = file.check;
+  delete file.check;
   return file;
 }
 
@@ -116,6 +148,12 @@ export function namedPoseFor(s: Skater, index: number): string | null {
   }
   if (!hasAnyPoseOverride() || !poseInfer) return null;
   return poseInfer(s, index);
+}
+
+export function poseHasJoint(name: string | null, id: PoseJointId): boolean {
+  if (!name) return false;
+  const v = live[name]?.[id];
+  return !!v && v.length >= 3;
 }
 
 export function stampPoseOverride(index: number, s: Skater, groups: Partial<Record<PoseJointId, Object3D | null>>): boolean {
