@@ -3974,12 +3974,15 @@ export function PlayerMesh({
   kitId,
   onJointRefs,
   onJointClick,
+  posedEpoch = 0,
 }: {
   index: number;
   kitId: number;
   onJointRefs?: (refs: Record<string, THREE.Object3D | null>) => void;
   /** Pose editor only. Clicks select the nearest tagged joint while world.poseEditorActive is set. */
   onJointClick?: (id: string) => void;
+  /** Bumps after a pose bake so the saved joints are stamped again once React commits. */
+  posedEpoch?: number;
 }) {
   const homeKit = useGame((s) => s.homeKit);
   const awayKit = useGame((s) => s.awayKit);
@@ -4028,6 +4031,33 @@ export function PlayerMesh({
   const checkElapsed = useRef(0);
   const checkWas = useRef(false);
   const checkSide = useRef<1 | -1>(-1);
+
+  const poseGroups = (): Partial<Record<PoseJointId, THREE.Object3D | null>> => ({
+    body: body.current,
+    head: head.current,
+    lArm: lArm.current,
+    lFore: lFore.current,
+    lHand: lGlove.current ?? blocker.current,
+    rArm: rArm.current,
+    rFore: rFore.current,
+    rHand: rGlove.current ?? catcherGrp.current,
+    lLeg: lLeg.current,
+    lShin: lShin.current,
+    lBoot: lBoot.current,
+    rLeg: rLeg.current,
+    rShin: rShin.current,
+    rBoot: rBoot.current,
+    stick: stick.current,
+    bladeGrp: bladeGrp.current,
+    shaftHold: shaftHold.current,
+  });
+
+  useLayoutEffect(() => {
+    if (!onJointRefs || !posedEpoch || !world.poseEditorActive) return;
+    const s = world.skaters[index];
+    if (!s) return;
+    stampPoseOverride(index, s, poseGroups());
+  }, [index, onJointRefs, posedEpoch]);
 
   useLayoutEffect(() => {
     const groups = {
@@ -5038,25 +5068,7 @@ export function PlayerMesh({
         layout,
       );
     }
-    const stamped = stampPoseOverride(index, s, {
-      body: body.current,
-      head: head.current,
-      lArm: lArm.current,
-      lFore: lFore.current,
-      lHand: lGlove.current ?? blocker.current,
-      rArm: rArm.current,
-      rFore: rFore.current,
-      rHand: rGlove.current ?? catcherGrp.current,
-      lLeg: lLeg.current,
-      lShin: lShin.current,
-      lBoot: lBoot.current,
-      rLeg: rLeg.current,
-      rShin: rShin.current,
-      rBoot: rBoot.current,
-      stick: stick.current,
-      bladeGrp: bladeGrp.current,
-      shaftHold: shaftHold.current,
-    } satisfies Partial<Record<PoseJointId, THREE.Object3D | null>>);
+    const stamped = stampPoseOverride(index, s, poseGroups());
     if (
       stamped &&
       pokePosed &&
@@ -5106,6 +5118,9 @@ export function PlayerMesh({
       const fit = goalie ? 1.14 : 1;
       plantFlatRinkMark(ring.current, _shadowCom.x, _shadowCom.z, ring.current.scale.x * fit, ring.current.scale.z * fit);
     }
+    // Slap aim, arm IK, the lead leg, and the torso plant all run above. Stamp again
+    // so every saved rotation and position is the last write of the frame.
+    stampPoseOverride(index, s, poseGroups());
   });
 
   const selectPoseJoint = (event: ThreeEvent<MouseEvent>) => {

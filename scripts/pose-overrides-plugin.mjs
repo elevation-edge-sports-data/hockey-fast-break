@@ -74,7 +74,7 @@ export function parsePoseSave(body) {
     if (!(id in raw)) continue;
     const triple = raw[id];
     if (!Array.isArray(triple) || triple.length < 3) throw new Error(`bad joint ${id}`);
-    const count = (id === "stick" || id === "body") && triple.length >= 6 ? 6 : 3;
+    const count = triple.length >= 6 ? 6 : 3;
     const nums = [];
     for (let i = 0; i < count; i++) {
       const n = Number(triple[i]);

@@ -73,7 +73,10 @@ const dist = join(root, distName);
 const { js, css } = bundleFrom(dist);
 if (isPublic) {
   const stripped = js.replaceAll("NeutralToneMapping", "").replaceAll("`Neutral`", "");
-  const leak = ["poseGalleryFull", "puckDropSet", "goalieBench", "Goalie bench", "Neutral"].find((token) => stripped.includes(token));
+  // idle, deke, ready, and stride are public. These tokens stay private.
+  const leak = ["poseGalleryFull", "goalieBench", "Goalie bench", "neutralCarry", "wristBackhand", "Neutral"].find((token) =>
+    stripped.includes(token),
+  );
   if (leak) throw new Error(`pack-pose-editor: public bundle references the private gallery (${leak})`);
 }
 const html = `<!DOCTYPE html>

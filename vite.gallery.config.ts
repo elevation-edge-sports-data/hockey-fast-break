@@ -4,7 +4,18 @@ import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { poseOverridesDataPlugin } from "./scripts/pose-overrides-plugin.mjs";
 
-const PUBLIC_POSE_IDS = new Set(["wrist", "slap", "shot-follow-through", "poke", "cheer"]);
+const PUBLIC_POSE_IDS = new Set([
+  "default",
+  "ready",
+  "stride",
+  "idle",
+  "deke",
+  "wrist",
+  "slap",
+  "shot-follow-through",
+  "poke",
+  "cheer",
+]);
 
 /** Public gallery bundle keeps only the public pose entries from poseOverrides.json. */
 function publicPoseOverridesPlugin() {
@@ -15,6 +26,10 @@ function publicPoseOverridesPlugin() {
       const file = id.split("?", 1)[0]?.replaceAll("\\", "/") ?? "";
       if (!file.endsWith("/src/game/poseOverrides.json")) return null;
       const data = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      if (data.neutral && !data.default) data.default = data.neutral;
+      delete data.neutral;
+      if (data.puckDropSet && !data.idle) data.idle = data.puckDropSet;
+      delete data.puckDropSet;
       const next: Record<string, unknown> = {};
       for (const key of Object.keys(data)) {
         if (PUBLIC_POSE_IDS.has(key)) next[key] = data[key];

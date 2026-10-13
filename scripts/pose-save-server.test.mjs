@@ -29,16 +29,48 @@ test("save writes the pose then rebuilds galleries, editor, and game in order", 
   assert.deepEqual(file.poke.lLeg, [0.41, 0, 0]);
 });
 
+test("the public editor can save default and cannot save a private pose", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hfb-pose-save-"));
+  mkdirSync(join(dir, "src", "game"), { recursive: true });
+  writeFileSync(join(dir, "src", "game", "poseOverrides.json"), '{ "neutral": { "body": [0.2, 0, 0] } }\n');
+  const result = await saveAndRebuild(
+    { poseName: "default", joints: { body: [0.3, 0, 0] }, publicOnly: true },
+    async () => {},
+    dir,
+  );
+  assert.equal(result.pose, "default");
+  const file = JSON.parse(readFileSync(join(dir, "src", "game", "poseOverrides.json"), "utf8"));
+  assert.deepEqual(file.default.body, [0.3, 0, 0]);
+  assert.deepEqual(file.neutral.body, [0.2, 0, 0]);
+});
+
+test("the public editor can save idle and deke", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hfb-pose-save-"));
+  mkdirSync(join(dir, "src", "game"), { recursive: true });
+  writeFileSync(join(dir, "src", "game", "poseOverrides.json"), "{}\n");
+  for (const poseName of ["idle", "deke"]) {
+    const result = await saveAndRebuild(
+      { poseName, joints: { body: [0.1, 0, 0] }, publicOnly: true },
+      async () => {},
+      dir,
+    );
+    assert.equal(result.pose, poseName);
+  }
+  const file = JSON.parse(readFileSync(join(dir, "src", "game", "poseOverrides.json"), "utf8"));
+  assert.deepEqual(file.idle.body, [0.1, 0, 0]);
+  assert.deepEqual(file.deke.body, [0.1, 0, 0]);
+});
+
 test("the public editor cannot save a private pose name", async () => {
   const dir = mkdtempSync(join(tmpdir(), "hfb-pose-save-"));
   mkdirSync(join(dir, "src", "game"), { recursive: true });
   writeFileSync(join(dir, "src", "game", "poseOverrides.json"), "{}\n");
   await assert.rejects(
-    saveAndRebuild({ poseName: "puckDropSet", joints: { body: [0.1, 0, 0] }, publicOnly: true }, async () => {}, dir),
+    saveAndRebuild({ poseName: "goalieBench", joints: { body: [0.1, 0, 0] }, publicOnly: true }, async () => {}, dir),
     /public editor/,
   );
   const file = JSON.parse(readFileSync(join(dir, "src", "game", "poseOverrides.json"), "utf8"));
-  assert.equal(file.puckDropSet, undefined);
+  assert.equal(file.goalieBench, undefined);
 });
 
 test("a failed pack still keeps the written pose and reports the error", async () => {

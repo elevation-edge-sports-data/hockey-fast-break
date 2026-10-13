@@ -14,7 +14,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parsePoseSave, writePoseOverride } from "./pose-overrides-plugin.mjs";
 
 export const PORT = 8081;
-export const PUBLIC_POSE_IDS = ["wrist", "slap", "shot-follow-through", "poke", "cheer"];
+export const PUBLIC_POSE_IDS = [
+  "default",
+  "ready",
+  "stride",
+  "idle",
+  "deke",
+  "wrist",
+  "slap",
+  "shot-follow-through",
+  "poke",
+  "cheer",
+];
 export const PACK_SCRIPTS = [
   "scripts/pack-galleries.mjs",
   "scripts/pack-pose-editor.mjs",

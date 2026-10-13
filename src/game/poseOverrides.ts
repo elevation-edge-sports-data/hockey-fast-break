@@ -38,13 +38,16 @@ function asFile(value: unknown): PoseFile {
     for (const id of POSE_JOINTS) {
       const raw = (joints as Record<string, unknown>)[id];
       if (!Array.isArray(raw) || raw.length < 3) continue;
-      const keepsPosition = (id === "stick" || id === "body") && raw.length >= 6;
-      const nums = raw.slice(0, keepsPosition ? 6 : 3).map(Number);
+      const nums = raw.slice(0, raw.length >= 6 ? 6 : 3).map(Number);
       if (nums.some((n) => !Number.isFinite(n))) continue;
       row[id] = nums;
     }
     if (Object.keys(row).length > 0) file[name] = row;
   }
+  if (file.neutral && !file.default) file.default = file.neutral;
+  delete file.neutral;
+  if (file.puckDropSet && !file.idle) file.idle = file.puckDropSet;
+  delete file.puckDropSet;
   return file;
 }
 
@@ -76,7 +79,7 @@ export function poseOverrideRevision(): number {
 
 /**
  * Copy saved local transforms onto the groups.
- * Joints store Euler radians. The stick and the torso may also store local position.
+ * Joints store Euler radians. A 6-number entry also stores local position.
  * Euler order is left as the group already has it.
  */
 export function applyPoseJoints(name: string, groups: Partial<Record<PoseJointId, Object3D | null>>): boolean {
@@ -86,9 +89,11 @@ export function applyPoseJoints(name: string, groups: Partial<Record<PoseJointId
   for (const id of POSE_JOINTS) {
     const v = row[id];
     const group = groups[id];
-    if (!v || v.length < 3 || !group || id === "shaftHold" || id === "bladeGrp") continue;
+    // Shaft scale is the stick length. Leave that group on the procedural shaft.
+    if (!v || v.length < 3 || !group || id === "shaftHold") continue;
     group.rotation.set(v[0]!, v[1]!, v[2]!);
-    if ((id === "stick" || id === "body") && v.length >= 6) group.position.set(v[3]!, v[4]!, v[5]!);
+    group.quaternion.setFromEuler(group.rotation);
+    if (v.length >= 6) group.position.set(v[3]!, v[4]!, v[5]!);
     hit = true;
   }
   return hit;

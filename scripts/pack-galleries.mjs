@@ -87,8 +87,11 @@ await run({
   GALLERY_OUT: "dist-gallery-public",
 });
 const pub = bundleFrom(publicDir);
-if (pub.js.includes("poseGalleryFull") || pub.js.includes("puckDropSet")) {
-  throw new Error("pack-galleries: public bundle references the private gallery");
+// idle, deke, ready, and stride are public. These tokens stay private.
+const PRIVATE_LEAKS = ["poseGalleryFull", "goalieBench", "Goalie bench", "neutralCarry", "wristBackhand"];
+const leak = PRIVATE_LEAKS.find((token) => pub.js.includes(token));
+if (leak) {
+  throw new Error(`pack-galleries: public bundle references the private gallery (${leak})`);
 }
 const publicHtml = page(
   "POSE GALLERY",
@@ -108,7 +111,7 @@ if (existsSync(fullSource)) {
     GALLERY_OUT: "dist-gallery-full",
   });
   const full = bundleFrom(fullDir);
-  if (!full.js.includes("puckDropSet")) {
+  if (!full.js.includes("goalieBench") || !full.js.includes("neutralCarry")) {
     throw new Error("pack-galleries: private bundle is missing the full pose set");
   }
   const cssBoot = `(function(){var s=document.createElement("style");s.textContent=${JSON.stringify(full.css)};document.head.appendChild(s);})();\n`;

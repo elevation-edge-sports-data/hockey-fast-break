@@ -37,9 +37,9 @@ test("parse accepts camelCase gallery ids", () => {
   assert.equal(saved.pose, "goalieUpright");
 });
 
-test("parse accepts the neutral pose and rejects an empty name", () => {
-  const saved = parsePoseSave({ pose: "neutral", joints: { body: [0.1, 0, 0] } });
-  assert.equal(saved.pose, "neutral");
+test("parse accepts the default pose and rejects an empty name", () => {
+  const saved = parsePoseSave({ pose: "default", joints: { body: [0.1, 0, 0] } });
+  assert.equal(saved.pose, "default");
   assert.throws(() => parsePoseSave({ pose: "", joints: { body: [0, 0, 0] } }), /named pose/);
 });
 
@@ -63,6 +63,25 @@ test("wrist torso translation wins over the procedural hip drop", () => {
   assert.ok(Math.abs(body.position.y + 0.15) < 1e-6);
   assert.ok(Math.abs(body.position.z - 0.35) < 1e-6);
   assert.ok(Math.abs(body.rotation.x - 0.4) < 1e-6);
+});
+
+test("an arm save keeps the shoulder position and that wins over slap IK", () => {
+  const saved = parsePoseSave({
+    pose: "slap",
+    joints: { lArm: [-0.4, 0.2, 1.1, -0.2, 1.2, 0.02] },
+  });
+  assert.deepEqual(saved.joints.lArm, [-0.4, 0.2, 1.1, -0.2, 1.2, 0.02]);
+  const arm = new THREE.Group();
+  arm.position.set(-0.26, 1.46, 0.06);
+  arm.quaternion.setFromEuler(new THREE.Euler(0.7, 0.1, -1.2));
+  const pose = saved.joints.lArm;
+  arm.rotation.set(pose[0], pose[1], pose[2]);
+  arm.quaternion.setFromEuler(arm.rotation);
+  if (pose.length >= 6) arm.position.set(pose[3], pose[4], pose[5]);
+  assert.ok(Math.abs(arm.rotation.x + 0.4) < 1e-6);
+  assert.ok(Math.abs(arm.position.x + 0.2) < 1e-6);
+  assert.ok(Math.abs(arm.position.y - 1.2) < 1e-6);
+  assert.ok(Math.abs(arm.position.z - 0.02) < 1e-6);
 });
 
 test("a rotation-only torso save leaves the procedural position alone", () => {

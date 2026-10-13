@@ -2,7 +2,18 @@ import { resetWorld, world, type Skater } from "./sim";
 import { useGame, type ControlProfile } from "./store";
 
 /** Curated stills for /pose-gallery. The full set lives in the private gallery module. */
-export const PUBLIC_POSES = ["wrist", "slap", "shot-follow-through", "poke", "cheer"] as const;
+export const PUBLIC_POSES = [
+  "default",
+  "ready",
+  "stride",
+  "idle",
+  "deke",
+  "wrist",
+  "slap",
+  "shot-follow-through",
+  "poke",
+  "cheer",
+] as const;
 
 export type PublicPoseId = (typeof PUBLIC_POSES)[number];
 
@@ -234,6 +245,29 @@ export function holdShotFollow(s: Skater): void {
 export function applyPose(pose: PublicPoseId): number {
   const { s, index } = prepareGalleryPose(false, false);
   switch (pose) {
+    case "default":
+      break;
+    case "ready":
+      break;
+    case "stride":
+      // READY_SKATE is 2.6. At that speed the ready-stand weight is 0.
+      s.vx = 2.6;
+      s.stride = Math.PI / 2;
+      break;
+    case "idle":
+      // Not a dot taker, so poseFaceoffDraw stays off and posePuckDrop runs.
+      world.faceoff = true;
+      world.faceoffPhase = "hold";
+      world.faceX = 0;
+      world.faceZ = -1.5;
+      world.homeDot = -1;
+      world.awayDot = -1;
+      break;
+    case "deke":
+      // Held deke sits at dekePull 1, the backhand, not the neutral middle.
+      s.deke = 0.525;
+      ownPuck(index, 0.4, -0.7);
+      break;
     case "wrist":
       s.windup = 0.28;
       ownPuck(index, 0, -1.05);

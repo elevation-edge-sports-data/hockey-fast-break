@@ -3,22 +3,20 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, TransformControls } from "@react-three/drei";
 import * as THREE from "three";
 import { PlayerMesh, SeatedPlayer } from "./PlayerMesh";
-import { applyPose, holdNamedPose, prepareGalleryPose, releasePoseGallery, type PublicPoseId } from "./poseGallery";
+import { applyPose, holdNamedPose, prepareGalleryPose, PUBLIC_POSES, releasePoseGallery, type PublicPoseId } from "./poseGallery";
 import { applyPoseJoints, noteSavedPose, POSE_JOINTS, pullPoseOverrides, savePoseOverride, type PoseJoints } from "./poseOverrides";
 import { mountStickKnobPivot, releaseStickKnobPivot } from "./stickKnobPivot";
 import { world } from "./sim";
 import { kitById, UNIFORMS } from "./uniforms";
 
-const PUBLIC_FALLBACK: readonly PublicPoseId[] = ["wrist", "slap", "shot-follow-through", "poke", "cheer"];
-
 function applyEditorPose(pose: string, applyFull: ((pose: string) => number) | null): number {
-  if (pose === "neutral") {
+  if (pose === "default") {
     const { index } = prepareGalleryPose(false, false);
-    holdNamedPose(index, "neutral");
+    holdNamedPose(index, "default");
     return index;
   }
   if (applyFull) return applyFull(pose);
-  if ((PUBLIC_FALLBACK as readonly string[]).includes(pose)) return applyPose(pose as PublicPoseId);
+  if ((PUBLIC_POSES as readonly string[]).includes(pose)) return applyPose(pose as PublicPoseId);
   return prepareGalleryPose(false, false).index;
 }
 
@@ -41,11 +39,11 @@ function loadSceneBg(): SceneBg {
   return "dark";
 }
 
-/** Shaft, knob, and blade stay on the stick. Clicks on those parts select the whole stick. */
-const STICK_PARTS = new Set(["shaftHold", "bladeGrp"]);
+/** The shaft mesh is not its own joint. Clicks on it select the stick shaft. The knob is part of that shaft. */
+const SHAFT_HIT = "shaftHold";
 
 const JOINTS: { id: string; label: string }[] = [
-  { id: "body", label: "Body / Torso" },
+  { id: "body", label: "Torso" },
   { id: "head", label: "Head" },
   { id: "lArm", label: "Left Upper Arm" },
   { id: "lFore", label: "Left Forearm" },
@@ -59,9 +57,8 @@ const JOINTS: { id: string; label: string }[] = [
   { id: "rLeg", label: "Right Thigh" },
   { id: "rShin", label: "Right Shin" },
   { id: "rBoot", label: "Right Skate" },
-  { id: "stick", label: "Stick" },
-  { id: "shaftHold", label: "Shaft" },
-  { id: "bladeGrp", label: "Blade" },
+  { id: "stick", label: "Stick shaft" },
+  { id: "bladeGrp", label: "Stick blade" },
 ];
 
 const EditorPlayer = memo(PlayerMesh);
@@ -71,29 +68,35 @@ type StickPivotApi = {
   restore: () => void;
 };
 
-const BODY_PARTS = JOINTS.filter((joint) => !STICK_PARTS.has(joint.id));
-
-/** Let PlayerMesh write the gallery pose, then freeze so the gizmo is not overwritten. */
-function PoseBake({ token, onBaked }: { token: number; onBaked: () => void }) {
+/**
+ * Write the gallery pose, then freeze so the gizmo is not overwritten.
+ * A save locks edits. Switching during that save still bakes: the lock is
+ * lifted only for these frames, then put back. A failed bake stays hidden.
+ */
+function PoseBake({ token, onBaked }: { token: number; onBaked: (ok: boolean) => void }) {
   const advance = useThree((s) => s.advance);
   const clock = useThree((s) => s.clock);
 
   useLayoutEffect(() => {
-    if (world.poseEditorLock) return;
+    const locked = world.poseEditorLock;
+    world.poseEditorLock = false;
     world.poseEditorActive = false;
     const prev = clock.getDelta.bind(clock);
     clock.getDelta = () => 0;
+    let posed = false;
     try {
       let t = 0;
       for (let i = 0; i < 5; i++) {
         t += 0.05;
         advance(t, true);
       }
+      posed = true;
     } finally {
       clock.getDelta = prev;
       world.poseEditorActive = true;
-      onBaked();
+      if (locked) world.poseEditorLock = true;
     }
+    onBaked(posed);
   }, [advance, clock, onBaked, token]);
 
   return null;
@@ -113,6 +116,9 @@ function Scene({
   pose,
   seat,
   stickPivotRef,
+  editable,
+  showPlayer,
+  posedEpoch,
 }: {
   selected: string | null;
   mode: "translate" | "rotate";
@@ -121,12 +127,15 @@ function Scene({
   setSelected: (id: string) => void;
   meshIndex: number;
   bake: number;
-  onBaked: () => void;
+  onBaked: (ok: boolean) => void;
   sceneBg: SceneBg;
   kitId: number;
   pose: string;
   seat: "skater" | "goalie" | null;
   stickPivotRef: { current: StickPivotApi | null };
+  editable: boolean;
+  showPlayer: boolean;
+  posedEpoch: number;
 }) {
   const orbitRef = useRef<ComponentRef<typeof OrbitControls>>(null);
   const pivotRef = useRef<THREE.Group>(new THREE.Group());
@@ -157,12 +166,16 @@ function Scene({
 
   useLayoutEffect(() => {
     stickPivotRef.current = { release: releasePivot, restore: restorePivot };
-    restorePivot();
+    if (editable) restorePivot();
+    else {
+      releasePivot();
+      setGizmo(null);
+    }
     return () => {
       releasePivot();
       if (stickPivotRef.current?.release === releasePivot) stickPivotRef.current = null;
     };
-  }, [releasePivot, restorePivot, stickPivotRef]);
+  }, [editable, releasePivot, restorePivot, stickPivotRef]);
 
   useEffect(() => {
     invalidate();
@@ -175,30 +188,33 @@ function Scene({
       <directionalLight position={[4, 7, 4]} intensity={1.1} castShadow />
       <gridHelper args={[8, 16, GRID_BG[sceneBg][0], GRID_BG[sceneBg][1]]} />
 
-      {seat ? (
-        <SeatedPlayer
-          key={`${pose}-${bake}`}
-          kit={kitById(kitId)}
-          number={1}
-          holdStick={seat === "skater"}
-          goalie={seat === "goalie"}
-          seatX={-1}
-          poseId={pose}
-          onJointRefs={setJoints}
-          onJointClick={setSelected}
-        />
-      ) : (
-        <EditorPlayer
-          key={`${meshIndex}-${bake}`}
-          index={meshIndex}
-          kitId={kitId}
-          onJointRefs={setJoints}
-          onJointClick={setSelected}
-        />
-      )}
+      <group visible={showPlayer}>
+        {seat ? (
+          <SeatedPlayer
+            key={`${pose}-${bake}`}
+            kit={kitById(kitId)}
+            number={1}
+            holdStick={seat === "skater"}
+            goalie={seat === "goalie"}
+            seatX={-1}
+            poseId={pose}
+            onJointRefs={setJoints}
+            onJointClick={editable ? setSelected : undefined}
+          />
+        ) : (
+          <EditorPlayer
+            key={`${meshIndex}-${bake}`}
+            index={meshIndex}
+            kitId={kitId}
+            onJointRefs={setJoints}
+            onJointClick={editable ? setSelected : undefined}
+            posedEpoch={posedEpoch}
+          />
+        )}
+      </group>
       <PoseBake token={bake} onBaked={onBaked} />
 
-      {gizmo && (
+      {editable && gizmo && (
         <TransformControls
           object={gizmo}
           mode={mode}
@@ -226,7 +242,7 @@ function typingTarget(target: EventTarget | null): boolean {
 }
 
 export function PoseEditor({
-  poses = PUBLIC_FALLBACK,
+  poses = PUBLIC_POSES,
   labels,
   applyNamedPose,
   showRest = true,
@@ -241,15 +257,15 @@ export function PoseEditor({
   publicOnly?: boolean;
   seated?: (pose: string) => "skater" | "goalie" | null;
 }) {
-  const [pose, setPose] = useState(showRest ? "neutral" : "wrist");
+  const [pose, setPose] = useState(showRest ? "default" : "wrist");
   const posesRef = useRef(poses);
   const labelsRef = useRef(labels);
   const applyRef = useRef(applyNamedPose);
-  const neutralRef = useRef(showRest);
+  const restRef = useRef(showRest);
   posesRef.current = poses;
   labelsRef.current = labels;
   applyRef.current = applyNamedPose;
-  neutralRef.current = showRest;
+  restRef.current = showRest;
   const [meshIndex, setMeshIndex] = useState<number | null>(null);
   const [bake, setBake] = useState(0);
   const [selected, setSelected] = useState<string | null>("lShin");
@@ -258,7 +274,12 @@ export function PoseEditor({
   const [kitId, setKitId] = useState(0);
   const [joints, setJointsState] = useState<Record<string, THREE.Object3D | null>>({});
   const [saving, setSaving] = useState(false);
+  const [showPlayer, setShowPlayer] = useState(true);
+  const [posedEpoch, setPosedEpoch] = useState(0);
   const [saveNote, setSaveNote] = useState("");
+  const savingRef = useRef(false);
+  const poseShownRef = useRef(true);
+  savingRef.current = saving;
   const jointsRef = useRef(joints);
   const stickPivotRef = useRef<StickPivotApi | null>(null);
   jointsRef.current = joints;
@@ -271,11 +292,15 @@ export function PoseEditor({
     });
   }, []);
 
-  const onBaked = useCallback(() => {}, []);
+  const onBaked = useCallback((ok: boolean) => {
+    poseShownRef.current = ok;
+    setShowPlayer(ok);
+    if (ok) setPosedEpoch((n) => n + 1);
+  }, []);
 
   useLayoutEffect(() => {
     world.poseEditorActive = true;
-    const start = neutralRef.current ? "neutral" : "wrist";
+    const start = restRef.current ? "default" : (posesRef.current[0] ?? "wrist");
     setPose(start);
     setMeshIndex(applyEditorPose(start, applyRef.current ?? null));
     return () => {
@@ -288,6 +313,7 @@ export function PoseEditor({
     stickPivotRef.current?.release();
     world.poseEditorActive = true;
     const index = applyEditorPose(next, applyRef.current ?? null);
+    if (savingRef.current) setShowPlayer(false);
     setPose(next);
     setMeshIndex(index);
     commitJoints({});
@@ -313,7 +339,7 @@ export function PoseEditor({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || typingTarget(event.target)) return;
+      if (savingRef.current || event.metaKey || event.ctrlKey || event.altKey || typingTarget(event.target)) return;
       if (event.key === "r" || event.key === "R") {
         event.preventDefault();
         setMode("rotate");
@@ -327,18 +353,19 @@ export function PoseEditor({
   }, []);
 
   const pickJoint = useCallback((id: string) => {
-    setSelected(STICK_PARTS.has(id) ? "stick" : id);
+    if (savingRef.current) return;
+    setSelected(id === SHAFT_HIT ? "stick" : id);
   }, []);
 
   const info = JOINTS.find((joint) => joint.id === selected);
   const controlObject = selected ? joints[selected] ?? null : null;
-  const canSave = !saving && (poses.includes(pose) || (showRest && pose === "neutral"));
+  const canSave = !saving && (poses.includes(pose) || (showRest && pose === "default"));
 
   const savePose = () => {
     const name = poseRef.current;
-    const listed = posesRef.current.includes(name) || (neutralRef.current && name === "neutral");
+    const listed = posesRef.current.includes(name) || (restRef.current && name === "default");
     if (saving || !listed) return;
-    if (publicOnly && !(PUBLIC_FALLBACK as readonly string[]).includes(name)) {
+    if (publicOnly && !(PUBLIC_POSES as readonly string[]).includes(name)) {
       setSaveNote("That pose cannot be saved from the public editor.");
       return;
     }
@@ -351,13 +378,17 @@ export function PoseEditor({
       const rx = Math.round(r.x * 10000) / 10000;
       const ry = Math.round(r.y * 10000) / 10000;
       const rz = Math.round(r.z * 10000) / 10000;
-      if (id === "shaftHold" || id === "bladeGrp") continue;
-      if (id === "stick" || id === "body") {
-        const p = group.position;
-        saved[id] = [rx, ry, rz, Math.round(p.x * 10000) / 10000, Math.round(p.y * 10000) / 10000, Math.round(p.z * 10000) / 10000];
-      } else {
-        saved[id] = [rx, ry, rz];
-      }
+      // Shaft scale is the stick length, so that group is not a saved joint.
+      if (id === "shaftHold") continue;
+      const p = group.position;
+      saved[id] = [
+        rx,
+        ry,
+        rz,
+        Math.round(p.x * 10000) / 10000,
+        Math.round(p.y * 10000) / 10000,
+        Math.round(p.z * 10000) / 10000,
+      ];
     }
     if (!saved.body) {
       setSaveNote("The pose is still settling.");
@@ -370,7 +401,7 @@ export function PoseEditor({
     setSaveNote("Saving and rebuilding…");
     savePoseOverride(name, saved, publicOnly).then(
       () => {
-        applyPoseJoints(name, jointsRef.current);
+        if (poseRef.current === name) applyPoseJoints(name, jointsRef.current);
         world.poseEditorActive = true;
         setSaveNote("Saved and rebuilt. Refresh galleries/game/editor to see it.");
       },
@@ -381,8 +412,9 @@ export function PoseEditor({
     ).finally(() => {
       world.poseEditorLock = false;
       world.poseEditorActive = true;
-      stickPivotRef.current?.restore();
       setSaving(false);
+      if (poseShownRef.current) stickPivotRef.current?.restore();
+      else setBake((n) => n + 1);
     });
   };
 
@@ -485,7 +517,7 @@ export function PoseEditor({
         >
           Poses
         </div>
-        {(showRest ? ["neutral", ...poseChoices] : poseChoices).map((id) => {
+        {(showRest && !poseChoices.includes("default") ? ["default", ...poseChoices] : poseChoices).map((id) => {
           const on = id === pose;
           return (
             <button
@@ -518,6 +550,9 @@ export function PoseEditor({
               pose={pose}
               seat={seated?.(pose) ?? null}
               stickPivotRef={stickPivotRef}
+              editable={!saving}
+              showPlayer={showPlayer}
+              posedEpoch={posedEpoch}
             />
           </Canvas>
         ) : null}
@@ -536,7 +571,7 @@ export function PoseEditor({
           borderLeft: "1px solid #243040",
         }}
       >
-        {BODY_PARTS.map((joint) => {
+        {JOINTS.map((joint) => {
           const on = selected === joint.id;
           return (
             <button
@@ -544,8 +579,8 @@ export function PoseEditor({
               type="button"
               aria-pressed={on}
               onClick={() => pickJoint(joint.id)}
-              disabled={!joints[joint.id]}
-              style={{ ...menuRow(on), opacity: joints[joint.id] ? 1 : 0.4 }}
+              disabled={saving || !joints[joint.id]}
+              style={{ ...menuRow(on), opacity: saving || !joints[joint.id] ? 0.4 : 1 }}
             >
               {joint.label}
             </button>

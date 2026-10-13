@@ -68,7 +68,7 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   if (goalie && !tumbling(s) && s.celebrate > 0.05) return "goalieCheer";
   if (faceoffOpen(s)) {
     const taker = s.id === world.homeDot || s.id === world.awayDot;
-    return taker ? "puckDrop" : "puckDropSet";
+    return taker ? "puckDrop" : "idle";
   }
   if (!goalie && rageDraw(s.id)) return "rage";
   if (goalie && tumbling(s)) return "goalieGetUp";

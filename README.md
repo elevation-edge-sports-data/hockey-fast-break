@@ -74,4 +74,9 @@ HUD: YOU–CPU (or drill score), clock in Drill and Game, shot speed, puck statu
 
 Archive links to playable v0, v1, v2, and this build.
 
+## Pose tools
+
+- [Pose gallery](https://elevation-edge-sports-data.github.io/hockey-fast-break/pose-gallery.html)
+- [Pose editor](https://elevation-edge-sports-data.github.io/hockey-fast-break/pose-editor-public.html)
+
 Not affiliated with, endorsed by, or licensed by any league or team.

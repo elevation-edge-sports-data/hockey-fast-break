@@ -5,6 +5,11 @@ import { applyPose, PUBLIC_POSES, releasePoseGallery, type PublicPoseId } from "
 export const Route = createFileRoute("/pose-gallery")({ component: PoseGalleryPage });
 
 const LABEL: Record<PublicPoseId, string> = {
+  default: "Default",
+  ready: "Ready",
+  stride: "Skating stride",
+  idle: "Idle",
+  deke: "Deke",
   wrist: "Wrist shot",
   slap: "Slap shot",
   "shot-follow-through": "Shot follow-through",
@@ -17,7 +22,7 @@ function PoseGalleryPage() {
     <PoseGalleryView
       poses={PUBLIC_POSES}
       labels={LABEL}
-      initial="wrist"
+      initial="default"
       applyPose={applyPose}
       releasePoseGallery={releasePoseGallery}
     />
