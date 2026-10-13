@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Pack the public pose editor. Same checks as the public gallery. */
+/** Pack the public pose editor to docs/pose-editor-public.html. Same checks as the public gallery. */
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

@@ -43,8 +43,8 @@ dist-gallery-full/
 artifacts/
 
 # --- Public pose editor and gallery (commit these) ---
-# public/pose-editor-public.html
-# public/pose-gallery.html
+# docs/pose-editor-public.html
+# docs/pose-gallery.html
 # public/pose-gallery.js
 # src/game/poseEditorPublicEntry.tsx
 # src/game/PoseEditor.tsx
@@ -54,7 +54,7 @@ artifacts/
 # scripts/pack-pose-editor-public.mjs
 
 # --- Private full pose editor and gallery (local only) ---
-# The public page is public/pose-editor-public.html. Do not commit the full editor.
+# The public page is docs/pose-editor-public.html. Do not commit the full editor.
 public/pose-editor.html
 src/game/poseEditorEntry.tsx
 src/game/FullPoseEditor.tsx

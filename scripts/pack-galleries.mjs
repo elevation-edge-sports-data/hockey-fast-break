@@ -3,7 +3,7 @@
  * Write clickable pose-gallery HTML into public/.
  * Does not run the play pack and does not write docs/index.html.
  *
- * public/pose-gallery.html inlines only the two public stills.
+ * docs/pose-gallery.html inlines the public stills for GitHub Pages.
  * public/pose-gallery-full.html loads public/pose-gallery-full.js when that
  * built file exists, and otherwise shows the missing-copy message.
  * The js file is the built form of src/game/poseGalleryFull.tsx.
@@ -87,7 +87,7 @@ await run({
   GALLERY_OUT: "dist-gallery-public",
 });
 const pub = bundleFrom(publicDir);
-// idle, deke, ready, and stride are public. These tokens stay private.
+// idle, deke, check, ready, and stride are public. These tokens stay private.
 const PRIVATE_LEAKS = ["poseGalleryFull", "goalieBench", "Goalie bench", "neutralCarry", "wristBackhand"];
 const leak = PRIVATE_LEAKS.find((token) => pub.js.includes(token));
 if (leak) {
@@ -100,7 +100,7 @@ const publicHtml = page(
 ${escapeScript(pub.js)}
   </script>`,
 );
-writeFileSync(join(root, "public/pose-gallery.html"), publicHtml);
+writeFileSync(join(root, "docs/pose-gallery.html"), publicHtml);
 
 const fullJsPath = join(root, "public/pose-gallery-full.js");
 const fullSource = join(root, "src/game/poseGalleryFull.tsx");
@@ -139,7 +139,7 @@ const fullHtml = page(
 );
 writeFileSync(join(root, "public/pose-gallery-full.html"), fullHtml);
 
-console.log(`wrote public/pose-gallery.html (${Buffer.byteLength(publicHtml)} bytes)`);
+console.log(`wrote docs/pose-gallery.html (${Buffer.byteLength(publicHtml)} bytes)`);
 console.log(
   existsSync(fullJsPath)
     ? `wrote public/pose-gallery-full.js (${readFileSync(fullJsPath).length} bytes)`

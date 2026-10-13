@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * Write a self-contained pose editor page to public/pose-editor.html.
+ * Write a self-contained pose editor page.
+ * The public page is docs/pose-editor-public.html (GitHub Pages).
+ * The local full editor stays at public/pose-editor.html.
  * Does not run the play pack and does not write docs/index.html.
  *
  * Build the bundle:
@@ -21,7 +23,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const viteBin = join(root, "node_modules/vite/bin/vite.js");
 const isPublic = process.argv.includes("--public");
 const distName = isPublic ? "dist-pose-editor-public" : "dist-pose-editor";
-const outName = isPublic ? "public/pose-editor-public.html" : "public/pose-editor.html";
+const outName = isPublic ? "docs/pose-editor-public.html" : "public/pose-editor.html";
 
 function run() {
   const env = { ...process.env };
@@ -73,7 +75,7 @@ const dist = join(root, distName);
 const { js, css } = bundleFrom(dist);
 if (isPublic) {
   const stripped = js.replaceAll("NeutralToneMapping", "").replaceAll("`Neutral`", "");
-  // idle, deke, ready, and stride are public. These tokens stay private.
+  // idle, deke, check, ready, and stride are public. These tokens stay private.
   const leak = ["poseGalleryFull", "goalieBench", "Goalie bench", "neutralCarry", "wristBackhand", "Neutral"].find((token) =>
     stripped.includes(token),
   );

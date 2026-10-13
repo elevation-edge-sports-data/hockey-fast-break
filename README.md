@@ -4,6 +4,10 @@ Free online hockey game (3D). Compatible with keyboard and gamepad.
 
 [Play now](https://elevation-edge-sports-data.github.io/hockey-fast-break/)
 
+Pose Gallery: https://elevation-edge-sports-data.github.io/hockey-fast-break/pose-gallery.html
+
+Pose Editor: https://elevation-edge-sports-data.github.io/hockey-fast-break/pose-editor-public.html
+
 ![Hockey Fast Break](screenshot.png)
 
 ## Modes
