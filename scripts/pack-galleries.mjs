@@ -87,7 +87,7 @@ await run({
   GALLERY_OUT: "dist-gallery-public",
 });
 const pub = bundleFrom(publicDir);
-// idle, deke, check, ready, and stride are public. These tokens stay private.
+// idle, deke, check, dive, tumble, getUp, brawl, ready, and stride are public. These tokens stay private.
 const PRIVATE_LEAKS = ["poseGalleryFull", "goalieBench", "Goalie bench", "neutralCarry", "wristBackhand"];
 const leak = PRIVATE_LEAKS.find((token) => pub.js.includes(token));
 if (leak) {

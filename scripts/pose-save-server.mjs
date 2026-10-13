@@ -24,7 +24,12 @@ export const PUBLIC_POSE_IDS = [
   "slap",
   "shot-follow-through",
   "poke",
+  "check",
+  "dive",
+  "tumble",
+  "getUp",
   "cheer",
+  "brawl",
 ];
 export const PACK_SCRIPTS = [
   "scripts/pack-galleries.mjs",

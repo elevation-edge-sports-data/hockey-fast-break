@@ -14,7 +14,12 @@ const LABEL: Record<PublicPoseId, string> = {
   slap: "Slap shot",
   "shot-follow-through": "Shot follow-through",
   poke: "Poke",
+  check: "Body check",
+  dive: "Dive",
+  tumble: "Tumble",
+  getUp: "Get up",
   cheer: "Cheer",
+  brawl: "Brawl",
 };
 
 function PoseGalleryPage() {

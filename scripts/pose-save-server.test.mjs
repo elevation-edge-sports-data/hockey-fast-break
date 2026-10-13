@@ -48,7 +48,7 @@ test("the public editor can save idle and deke", async () => {
   const dir = mkdtempSync(join(tmpdir(), "hfb-pose-save-"));
   mkdirSync(join(dir, "src", "game"), { recursive: true });
   writeFileSync(join(dir, "src", "game", "poseOverrides.json"), "{}\n");
-  for (const poseName of ["idle", "deke"]) {
+  for (const poseName of ["idle", "deke", "check", "dive", "getUp", "brawl", "tumble"]) {
     const result = await saveAndRebuild(
       { poseName, joints: { body: [0.1, 0, 0] }, publicOnly: true },
       async () => {},
@@ -59,6 +59,11 @@ test("the public editor can save idle and deke", async () => {
   const file = JSON.parse(readFileSync(join(dir, "src", "game", "poseOverrides.json"), "utf8"));
   assert.deepEqual(file.idle.body, [0.1, 0, 0]);
   assert.deepEqual(file.deke.body, [0.1, 0, 0]);
+  assert.deepEqual(file.check.body, [0.1, 0, 0]);
+  assert.deepEqual(file.dive.body, [0.1, 0, 0]);
+  assert.deepEqual(file.getUp.body, [0.1, 0, 0]);
+  assert.deepEqual(file.brawl.body, [0.1, 0, 0]);
+  assert.deepEqual(file.tumble.body, [0.1, 0, 0]);
 });
 
 test("the public editor cannot save a private pose name", async () => {

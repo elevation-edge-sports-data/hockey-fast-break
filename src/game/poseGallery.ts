@@ -12,7 +12,12 @@ export const PUBLIC_POSES = [
   "slap",
   "shot-follow-through",
   "poke",
+  "check",
+  "dive",
+  "tumble",
+  "getUp",
   "cheer",
+  "brawl",
 ] as const;
 
 export type PublicPoseId = (typeof PUBLIC_POSES)[number];
@@ -285,10 +290,52 @@ export function applyPose(pose: PublicPoseId): number {
       // Yaw 0 faces world −Z, so a positive z sits behind the skater.
       loosePuck(0, -1.4);
       break;
+    case "check":
+      s.hit = 1;
+      break;
+    case "dive":
+      s.dive = 0.95;
+      break;
+    case "tumble":
+      s.tumble = 1;
+      s.struck = 0.55;
+      break;
+    case "getUp":
+      // tumbleU is past TUMBLE_UP. Owning the puck blends the knees toward the carry stride.
+      s.tumble = 1;
+      s.struck = 0.2;
+      ownPuck(index, 0, -1.1);
+      break;
     case "cheer":
       s.celebrate = 2;
       world.time = 0.7;
       break;
+    case "brawl": {
+      const foe = world.skaters.find((o) => o.id !== s.id);
+      world.lineBrawl = {
+        t: 0,
+        focus: s.id,
+        last: 0,
+        lastAt: -10,
+        pairs: [
+          {
+            home: s.id,
+            away: foe?.id ?? -1,
+            ko: false,
+            celeb: 0,
+            hx: 0,
+            hz: 0,
+            ax: 0,
+            az: 0,
+            homeSwing: 0.5,
+            awaySwing: 0,
+            homeKind: 0,
+            awayKind: 0,
+          },
+        ],
+      };
+      break;
+    }
     default: {
       const never: never = pose;
       return never;

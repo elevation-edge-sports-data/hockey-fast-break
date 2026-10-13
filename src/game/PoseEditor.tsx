@@ -42,6 +42,30 @@ function loadSceneBg(): SceneBg {
 /** The shaft mesh is not its own joint. Clicks on it select the stick shaft. The knob is part of that shaft. */
 const SHAFT_HIT = "shaftHold";
 
+/**
+ * Mesh l* groups sit on the player's right, for skaters and goalies.
+ * Menu labels and mesh clicks swap through this map. Stick shaft and blade are not sided.
+ */
+const SIDE_SWAP: Record<string, string> = {
+  lArm: "rArm",
+  rArm: "lArm",
+  lFore: "rFore",
+  rFore: "lFore",
+  lHand: "rHand",
+  rHand: "lHand",
+  lLeg: "rLeg",
+  rLeg: "lLeg",
+  lShin: "rShin",
+  rShin: "lShin",
+  lBoot: "rBoot",
+  rBoot: "lBoot",
+};
+
+/** Label id ↔ mesh id. The map is symmetric, so it works in both directions. */
+function sidedMeshId(id: string): string {
+  return SIDE_SWAP[id] ?? id;
+}
+
 const JOINTS: { id: string; label: string }[] = [
   { id: "body", label: "Torso" },
   { id: "head", label: "Head" },
@@ -354,11 +378,13 @@ export function PoseEditor({
 
   const pickJoint = useCallback((id: string) => {
     if (savingRef.current) return;
-    setSelected(id === SHAFT_HIT ? "stick" : id);
+    const hit = id === SHAFT_HIT ? "stick" : id;
+    setSelected(sidedMeshId(hit));
   }, []);
 
   const info = JOINTS.find((joint) => joint.id === selected);
-  const controlObject = selected ? joints[selected] ?? null : null;
+  const controlId = selected ? sidedMeshId(selected) : null;
+  const controlObject = controlId ? joints[controlId] ?? null : null;
   const canSave = !saving && (poses.includes(pose) || (showRest && pose === "default"));
 
   const savePose = () => {
@@ -578,9 +604,12 @@ export function PoseEditor({
               key={joint.id}
               type="button"
               aria-pressed={on}
-              onClick={() => pickJoint(joint.id)}
-              disabled={saving || !joints[joint.id]}
-              style={{ ...menuRow(on), opacity: saving || !joints[joint.id] ? 0.4 : 1 }}
+              onClick={() => {
+                if (saving) return;
+                setSelected(joint.id);
+              }}
+              disabled={saving || !joints[sidedMeshId(joint.id)]}
+              style={{ ...menuRow(on), opacity: saving || !joints[sidedMeshId(joint.id)] ? 0.4 : 1 }}
             >
               {joint.label}
             </button>

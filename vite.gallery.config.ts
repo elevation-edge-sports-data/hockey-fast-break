@@ -14,7 +14,12 @@ const PUBLIC_POSE_IDS = new Set([
   "slap",
   "shot-follow-through",
   "poke",
+  "check",
+  "dive",
+  "tumble",
+  "getUp",
   "cheer",
+  "brawl",
 ]);
 
 /** Public gallery bundle keeps only the public pose entries from poseOverrides.json. */

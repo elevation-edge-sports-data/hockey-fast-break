@@ -75,7 +75,7 @@ const dist = join(root, distName);
 const { js, css } = bundleFrom(dist);
 if (isPublic) {
   const stripped = js.replaceAll("NeutralToneMapping", "").replaceAll("`Neutral`", "");
-  // idle, deke, check, ready, and stride are public. These tokens stay private.
+  // idle, deke, check, dive, tumble, getUp, brawl, ready, and stride are public. These tokens stay private.
   const leak = ["poseGalleryFull", "goalieBench", "Goalie bench", "neutralCarry", "wristBackhand", "Neutral"].find((token) =>
     stripped.includes(token),
   );
