@@ -9,10 +9,13 @@ const LABEL: Record<PublicPoseId, string> = {
   stride: "Stride",
   faceoff: "Faceoff",
   coast: "Coast",
+  puckPossess: "Puck possess",
   autoDeke: "Auto deke",
+  forehandDeke: "Forehand deke",
   backhandDeke: "Backhand deke",
   speedPuckPossess: "Speed puck possess",
   wrist: "Wrist shot",
+  backhandShot: "Backhand shot",
   slap: "Slap shot",
   "shot-follow-through": "Shot follow-through",
   poke: "Poke",
@@ -23,6 +26,7 @@ const LABEL: Record<PublicPoseId, string> = {
   recover: "Recover",
   celebrate: "Celebrate",
   fight: "Fight",
+  goalieButterfly: "Goalie butterfly",
 };
 
 const el = document.getElementById("app");

@@ -1,10 +1,18 @@
-import type { Object3D } from "three";
+import { Vector3, type Object3D } from "three";
+import { goalieHandPivotShift, torsoPivotY } from "./goalieStance";
+import { goalieBladeKnobShift, goalieStickKnobShift } from "./stickKnobPivot";
 import { world, type Skater } from "./sim";
 import bundledOverrides from "./poseOverrides.example.json";
+
+const _poseShift = new Vector3();
+const _poseStore = new Vector3();
 
 /** Joints the pose editor exposes. Order is the order written into the file. */
 export const POSE_JOINTS = [
   "body",
+  "torso",
+  "hips",
+  "shoulders",
   "head",
   "lArm",
   "lFore",
@@ -86,6 +94,24 @@ function asFile(value: unknown): PoseFile {
 let live: PoseFile = asFile(bundledOverrides);
 let revision = 0;
 
+/** Position written into a pose file. Body and the goalie left hand stay in the pre-pivot frame. */
+export function poseStoredPosition(id: PoseJointId, group: Object3D): [number, number, number] {
+  _poseStore.copy(group.position);
+  if (id === "body") {
+    _poseShift.set(0, torsoPivotY(group), 0).applyQuaternion(group.quaternion);
+    _poseStore.sub(_poseShift);
+  } else if (id === "lHand" && goalieHandPivotShift(group, _poseShift)) {
+    _poseStore.sub(_poseShift);
+  } else if (id === "stick" && goalieStickKnobShift(group, _poseShift)) {
+    // File still stores the grip. The mesh origin is the knob.
+    _poseShift.applyQuaternion(group.quaternion);
+    _poseStore.sub(_poseShift);
+  } else if (id === "bladeGrp" && goalieBladeKnobShift(group, _poseShift)) {
+    _poseStore.add(_poseShift);
+  }
+  return [_poseStore.x, _poseStore.y, _poseStore.z];
+}
+
 export function poseJoints(name: string): PoseJoints | null {
   return live[name] ?? null;
 }
@@ -125,7 +151,24 @@ export function applyPoseJoints(name: string, groups: Partial<Record<PoseJointId
     if (!v || v.length < 3 || !group || id === "shaftHold") continue;
     group.rotation.set(v[0]!, v[1]!, v[2]!);
     group.quaternion.setFromEuler(group.rotation);
-    if (v.length >= 6) group.position.set(v[3]!, v[4]!, v[5]!);
+    if (id === "lHand" && goalieHandPivotShift(group, _poseShift)) {
+      // Saved positions are the old arm-side origin. The joint now sits on the glove.
+      if (v.length >= 6) group.position.set(v[3]!, v[4]!, v[5]!);
+      else if (group.name === "goalieBlocker") group.position.set(0, -0.28, 0.03);
+      else group.position.set(0, 0, 0);
+      group.position.add(_poseShift);
+    } else if (v.length >= 6) {
+      group.position.set(v[3]!, v[4]!, v[5]!);
+      if (id === "body") {
+        _poseShift.set(0, torsoPivotY(group), 0).applyQuaternion(group.quaternion);
+        group.position.add(_poseShift);
+      } else if (id === "stick" && goalieStickKnobShift(group, _poseShift)) {
+        _poseShift.applyQuaternion(group.quaternion);
+        group.position.add(_poseShift);
+      } else if (id === "bladeGrp" && goalieBladeKnobShift(group, _poseShift)) {
+        group.position.sub(_poseShift);
+      }
+    }
     hit = true;
   }
   return hit;

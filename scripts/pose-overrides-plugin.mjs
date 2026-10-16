@@ -7,6 +7,9 @@ import { join } from "node:path";
 
 export const POSE_JOINTS = [
   "body",
+  "torso",
+  "hips",
+  "shoulders",
   "head",
   "lArm",
   "lFore",

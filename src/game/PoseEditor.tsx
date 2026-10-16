@@ -4,7 +4,7 @@ import { OrbitControls, TransformControls } from "@react-three/drei";
 import * as THREE from "three";
 import { PlayerMesh, SeatedPlayer } from "./PlayerMesh";
 import { applyPose, holdNamedPose, prepareGalleryPose, PUBLIC_POSES, releasePoseGallery, type PublicPoseId } from "./poseGallery";
-import { applyPoseJoints, noteSavedPose, POSE_JOINTS, pullPoseOverrides, savePoseOverride, type PoseJoints } from "./poseOverrides";
+import { applyPoseJoints, noteSavedPose, POSE_JOINTS, poseStoredPosition, pullPoseOverrides, savePoseOverride, type PoseJoints } from "./poseOverrides";
 import { mountStickKnobPivot, mountStickOnHand, releaseStickFromHand, releaseStickKnobPivot } from "./stickKnobPivot";
 import { world } from "./sim";
 import { kitById, UNIFORMS } from "./uniforms";
@@ -39,12 +39,12 @@ function loadSceneBg(): SceneBg {
   return "gray";
 }
 
-/** The shaft mesh is not its own joint. Clicks on it select the stick shaft. The knob is part of that shaft. */
+/** The shaft mesh is not its own joint. Clicks on it select the stick. The knob is part of that shaft. */
 const SHAFT_HIT = "shaftHold";
 
 /**
  * Mesh l* groups sit on the player's right, for skaters and goalies.
- * Menu labels and mesh clicks swap through this map. Stick shaft and blade are not sided.
+ * Menu labels and mesh clicks swap through this map. Stick and blade are not sided.
  */
 const SIDE_SWAP: Record<string, string> = {
   lArm: "rArm",
@@ -67,7 +67,10 @@ function sidedMeshId(id: string): string {
 }
 
 const JOINTS: { id: string; label: string }[] = [
-  { id: "body", label: "Torso" },
+  { id: "body", label: "Body" },
+  { id: "torso", label: "Torso" },
+  { id: "hips", label: "Hips" },
+  { id: "shoulders", label: "Shoulders" },
   { id: "head", label: "Head" },
   { id: "lArm", label: "Left Upper Arm" },
   { id: "lFore", label: "Left Forearm" },
@@ -81,8 +84,8 @@ const JOINTS: { id: string; label: string }[] = [
   { id: "rLeg", label: "Right Thigh" },
   { id: "rShin", label: "Right Shin" },
   { id: "rBoot", label: "Right Skate" },
-  { id: "stick", label: "Stick shaft" },
-  { id: "bladeGrp", label: "Stick blade" },
+  { id: "stick", label: "Stick" },
+  { id: "bladeGrp", label: "Blade" },
 ];
 
 const EditorPlayer = memo(PlayerMesh);
@@ -91,6 +94,258 @@ type StickPivotApi = {
   release: () => void;
   restore: () => void;
 };
+
+type EditApi = {
+  undo: () => void;
+  redo: () => void;
+  /** Record the joint, run `mutate`, then keep the previous pose if it changed. */
+  commit: (object: THREE.Object3D, mutate: () => void) => void;
+};
+
+/** World pose of one joint. Restores a drag, a typed value, or a nudge. */
+type JointSnap = {
+  object: THREE.Object3D;
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+};
+
+const POS_STEP = 0.01;
+const ROT_STEP = 0.05;
+/** Keep a nudged joint origin inside the frame, not on the exact pixel edge. */
+const VIEW_MARGIN = 0.96;
+
+const UNDO_MAX = 20;
+const _jointPos = new THREE.Vector3();
+const _jointQuat = new THREE.Quaternion();
+const _jointInv = new THREE.Quaternion();
+const _viewWorld = new THREE.Vector3();
+const _viewCam = new THREE.Vector3();
+const _viewFwd = new THREE.Vector3();
+const _viewNdc = new THREE.Vector3();
+const _gizmoLocal = new THREE.Vector3();
+const _gizmoPos = new THREE.Vector3();
+const _gizmoQuat = new THREE.Quaternion();
+const _gizmoDelta = new THREE.Quaternion();
+const _gizmoJointPos = new THREE.Vector3();
+const _gizmoJointQuat = new THREE.Quaternion();
+const _gizmoScratchQuat = new THREE.Quaternion();
+const _gizmoOrbit = new THREE.Vector3();
+const _gizmoBox = new THREE.Box3();
+const _gizmoBoxTmp = new THREE.Box3();
+const _eulerStart = new THREE.Euler();
+const _pivotWorld = new THREE.Vector3();
+const _localOff = new THREE.Vector3();
+/** Stick pieces. They would pull the body center off the player. */
+const BODY_GIZMO_SKIP = new Set(["goalieKnob", "goalieShaft", "goalieBlade", "goalieIce"]);
+
+/** Pivot height stored on the body. Walk up from torso or body. */
+function torsoPivotOf(joint: THREE.Object3D): number {
+  let node: THREE.Object3D | null = joint;
+  while (node) {
+    const y = node.userData.torsoPivotY;
+    if (typeof y === "number" && y !== 0) return y;
+    node = node.parent;
+  }
+  return 0;
+}
+
+/**
+ * The body origin sits on the torso center, and the torso origin sits on the body center.
+ * The gizmo for each joint is drawn at the other one's rest point.
+ */
+function swappedGizmoOffset(id: string, joint: THREE.Object3D, out: THREE.Vector3): boolean {
+  if (id !== "body" && id !== "torso") return false;
+  const pivot = torsoPivotOf(joint);
+  if (!pivot) return false;
+  // Goalie torso origin is already the jersey center. Skaters still need the offset.
+  if (id === "torso" && joint.userData.torsoCentered) {
+    out.set(0, 0, 0);
+    return true;
+  }
+  out.set(0, id === "torso" ? pivot : -pivot, 0);
+  return true;
+}
+
+/** World center of the posed body, without the stick. */
+function bodyVisualCenter(body: THREE.Object3D, out: THREE.Vector3): boolean {
+  let hit = false;
+  body.updateWorldMatrix(true, true);
+  body.traverse((obj) => {
+    let node: THREE.Object3D | null = obj;
+    while (node) {
+      if (BODY_GIZMO_SKIP.has(node.name)) return;
+      node = node.parent;
+    }
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.geometry) return;
+    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+    const bounds = mesh.geometry.boundingBox;
+    if (!bounds) return;
+    _gizmoBoxTmp.copy(bounds).applyMatrix4(mesh.matrixWorld);
+    if (!hit) {
+      _gizmoBox.copy(_gizmoBoxTmp);
+      hit = true;
+    } else _gizmoBox.union(_gizmoBoxTmp);
+  });
+  if (!hit) return false;
+  _gizmoBox.getCenter(out);
+  return true;
+}
+
+/** Put the anchor on the swapped center, oriented with the joint. */
+function placeGizmoAnchor(anchor: THREE.Object3D, joint: THREE.Object3D, id: string, lastPos: THREE.Vector3, lastQuat: THREE.Quaternion, pose: string): boolean {
+  joint.updateWorldMatrix(true, false);
+  if (id === "body" && (pose === "goalieButterfly" || pose === "goalieGloveSave" || pose === "goalieBlockerSave")) {
+    if (!bodyVisualCenter(joint, _gizmoLocal)) return false;
+  } else {
+    if (!swappedGizmoOffset(id, joint, _gizmoLocal)) return false;
+    joint.localToWorld(_gizmoLocal);
+  }
+  joint.getWorldQuaternion(_gizmoQuat);
+  anchor.position.copy(_gizmoLocal);
+  anchor.quaternion.copy(_gizmoQuat);
+  anchor.scale.set(1, 1, 1);
+  anchor.updateMatrixWorld(true);
+  lastPos.copy(_gizmoLocal);
+  lastQuat.copy(_gizmoQuat);
+  return true;
+}
+
+/** Remember the Euler angles before a wheel drag so one axis can be added back on. */
+function beginAxisDrag(joint: THREE.Object3D, anchor: THREE.Object3D | null) {
+  _eulerStart.copy(joint.rotation);
+  _localOff.set(0, 0, 0);
+  joint.updateWorldMatrix(true, false);
+  if (!anchor || anchor === joint) {
+    joint.getWorldPosition(_pivotWorld);
+    return;
+  }
+  anchor.updateWorldMatrix(true, false);
+  anchor.getWorldPosition(_pivotWorld);
+  joint.getWorldPosition(_gizmoJointPos);
+  joint.getWorldQuaternion(_gizmoJointQuat);
+  _localOff.copy(_pivotWorld).sub(_gizmoJointPos).applyQuaternion(_gizmoScratchQuat.copy(_gizmoJointQuat).invert());
+}
+
+/**
+ * One wheel changes one Euler component. The quaternion stays in sync, and the
+ * other two angles are left as they were at the start of the drag.
+ */
+function applySingleAxisRotation(joint: THREE.Object3D, anchor: THREE.Object3D | null, axis: "X" | "Y" | "Z", angle: number) {
+  const parent = joint.parent;
+  if (!parent) return;
+  const key = axis.toLowerCase() as "x" | "y" | "z";
+  joint.rotation.order = "XYZ";
+  joint.rotation.set(
+    key === "x" ? _eulerStart.x + angle : _eulerStart.x,
+    key === "y" ? _eulerStart.y + angle : _eulerStart.y,
+    key === "z" ? _eulerStart.z + angle : _eulerStart.z,
+  );
+  if (_localOff.lengthSq() > 1e-12) {
+    parent.updateWorldMatrix(true, false);
+    _gizmoQuat.copy(parent.getWorldQuaternion(_gizmoScratchQuat)).multiply(joint.quaternion);
+    _gizmoOrbit.copy(_localOff).applyQuaternion(_gizmoQuat);
+    _gizmoJointPos.copy(_pivotWorld).sub(_gizmoOrbit);
+    parent.worldToLocal(joint.position.copy(_gizmoJointPos));
+  }
+  joint.updateMatrixWorld(true);
+  if (anchor && anchor !== joint) {
+    joint.getWorldQuaternion(anchor.quaternion);
+    anchor.position.copy(_pivotWorld);
+    anchor.updateMatrixWorld(true);
+  }
+}
+
+/**
+ * Drag of the anchor moves the joint around that swapped center.
+ * Translation changes position only. The goalie root scale shears a world
+ * quaternion, so copying it back onto the joint turns a move into a spin.
+ */
+function applyGizmoAnchor(anchor: THREE.Object3D, joint: THREE.Object3D, lastPos: THREE.Vector3, lastQuat: THREE.Quaternion, translating: boolean) {
+  const parent = joint.parent;
+  if (!parent) return;
+  anchor.updateWorldMatrix(true, false);
+  joint.updateWorldMatrix(true, false);
+  anchor.getWorldPosition(_gizmoPos);
+  if (translating) {
+    joint.getWorldPosition(_gizmoJointPos).add(_gizmoPos).sub(lastPos);
+    parent.updateWorldMatrix(true, false);
+    parent.worldToLocal(joint.position.copy(_gizmoJointPos));
+    joint.updateMatrixWorld(true);
+    lastPos.copy(_gizmoPos);
+    return;
+  }
+  anchor.getWorldQuaternion(_gizmoQuat);
+  _gizmoDelta.copy(_gizmoQuat).multiply(_gizmoScratchQuat.copy(lastQuat).invert());
+  joint.getWorldPosition(_gizmoJointPos);
+  joint.getWorldQuaternion(_gizmoJointQuat);
+  _gizmoOrbit.copy(_gizmoJointPos).sub(lastPos);
+  _gizmoOrbit.applyQuaternion(_gizmoDelta);
+  _gizmoJointPos.copy(lastPos).add(_gizmoOrbit).add(_gizmoPos).sub(lastPos);
+  _gizmoJointQuat.premultiply(_gizmoDelta);
+  parent.updateWorldMatrix(true, false);
+  parent.worldToLocal(joint.position.copy(_gizmoJointPos));
+  parent.getWorldQuaternion(_gizmoScratchQuat).invert();
+  joint.quaternion.copy(_gizmoScratchQuat).multiply(_gizmoJointQuat);
+  joint.updateMatrixWorld(true);
+  lastPos.copy(_gizmoPos);
+  lastQuat.copy(_gizmoQuat);
+}
+
+/** Pull a joint origin back into the camera's current view. Local position is what the panel edits. */
+function clampJointToView(object: THREE.Object3D, camera: THREE.Camera) {
+  const parent = object.parent;
+  if (!parent) return;
+  object.updateWorldMatrix(true, false);
+  camera.updateMatrixWorld();
+  object.getWorldPosition(_viewWorld);
+  camera.getWorldPosition(_viewCam);
+  camera.getWorldDirection(_viewFwd);
+  const ahead = _viewWorld.x * _viewFwd.x + _viewWorld.y * _viewFwd.y + _viewWorld.z * _viewFwd.z
+    - (_viewCam.x * _viewFwd.x + _viewCam.y * _viewFwd.y + _viewCam.z * _viewFwd.z);
+  const near = camera instanceof THREE.PerspectiveCamera ? camera.near : 0.1;
+  if (ahead < near * 4) _viewWorld.addScaledVector(_viewFwd, near * 4 - ahead);
+  _viewNdc.copy(_viewWorld).project(camera);
+  const nx = _viewNdc.x;
+  const ny = _viewNdc.y;
+  const nz = _viewNdc.z;
+  const x = THREE.MathUtils.clamp(nx, -VIEW_MARGIN, VIEW_MARGIN);
+  const y = THREE.MathUtils.clamp(ny, -VIEW_MARGIN, VIEW_MARGIN);
+  const zOk = Number.isFinite(nz) && nz >= -1 && nz <= 1;
+  const z = zOk ? nz : THREE.MathUtils.clamp(Number.isFinite(nz) ? nz : 0, -0.98, 0.98);
+  const onScreen = ahead >= near * 4 && Math.abs(nx) <= VIEW_MARGIN + 1e-4 && Math.abs(ny) <= VIEW_MARGIN + 1e-4 && zOk;
+  if (onScreen) return;
+  _viewNdc.set(x, y, z).unproject(camera);
+  parent.worldToLocal(_viewNdc);
+  object.position.copy(_viewNdc);
+}
+
+function captureJoint(object: THREE.Object3D): JointSnap {
+  object.updateWorldMatrix(true, false);
+  return {
+    object,
+    position: object.getWorldPosition(new THREE.Vector3()),
+    quaternion: object.getWorldQuaternion(new THREE.Quaternion()),
+  };
+}
+
+function jointMoved(snap: JointSnap): boolean {
+  snap.object.updateWorldMatrix(true, false);
+  snap.object.getWorldPosition(_jointPos);
+  snap.object.getWorldQuaternion(_jointQuat);
+  if (_jointPos.distanceToSquared(snap.position) > 1e-10) return true;
+  return Math.abs(1 - Math.abs(_jointQuat.dot(snap.quaternion))) > 1e-8;
+}
+
+function applyJoint(snap: JointSnap) {
+  const parent = snap.object.parent;
+  if (!parent) return;
+  parent.updateWorldMatrix(true, false);
+  parent.worldToLocal(snap.object.position.copy(snap.position));
+  parent.getWorldQuaternion(_jointInv).invert();
+  snap.object.quaternion.copy(_jointInv).multiply(snap.quaternion);
+  snap.object.updateMatrixWorld();
+}
 
 /**
  * Write the gallery pose, then freeze so the gizmo is not overwritten.
@@ -140,6 +395,8 @@ function Scene({
   pose,
   seat,
   stickPivotRef,
+  editApi,
+  onHistory,
   editable,
   showPlayer,
   posedEpoch,
@@ -159,6 +416,8 @@ function Scene({
   pose: string;
   seat: "skater" | "goalie" | null;
   stickPivotRef: { current: StickPivotApi | null };
+  editApi: { current: EditApi };
+  onHistory: (undo: number, redo: number) => void;
   editable: boolean;
   showPlayer: boolean;
   posedEpoch: number;
@@ -170,7 +429,16 @@ function Scene({
   const orbitRef = useRef<ComponentRef<typeof OrbitControls>>(null);
   const pivotRef = useRef<THREE.Group>(new THREE.Group());
   const pivotedStick = useRef<THREE.Object3D | null>(null);
+  const anchorRef = useRef<THREE.Group>(new THREE.Group());
+  const anchorPos = useRef(new THREE.Vector3());
+  const anchorQuat = useRef(new THREE.Quaternion());
+  const draggingGizmo = useRef(false);
+  const controlsRef = useRef<{ axis: string | null; mode: string; rotationAngle: number; dragging: boolean } | null>(null);
+  const objectRef = useRef(object);
+  objectRef.current = object;
   const invalidate = useThree((s) => s.invalidate);
+  const camera = useThree((s) => s.camera);
+  const scene = useThree((s) => s.scene);
   const [gizmo, setGizmo] = useState<THREE.Object3D | null>(null);
 
   const stickRef = useRef(stick);
@@ -192,8 +460,14 @@ function Scene({
     const stickObj = stickRef.current;
     const handObj = handRef.current;
     if (stickObj && handObj && world.poseEditorActive) mountStickOnHand(stickObj, handObj);
+    const anchor = anchorRef.current;
     if (selected !== "stick" || !object) {
       releaseKnob();
+      if (object && (selected === "body" || selected === "torso") && placeGizmoAnchor(anchor, object, selected, anchorPos.current, anchorQuat.current, pose)) {
+        if (anchor.parent !== scene) scene.add(anchor);
+        setGizmo(anchor);
+        return;
+      }
       setGizmo(object);
       return;
     }
@@ -205,17 +479,101 @@ function Scene({
     }
     pivotedStick.current = object;
     setGizmo(pivotRef.current);
-  }, [object, releaseKnob, selected]);
+  }, [object, pose, releaseKnob, scene, selected]);
+
+  const pastRef = useRef<JointSnap[]>([]);
+  const futureRef = useRef<JointSnap[]>([]);
+  const pendingRef = useRef<JointSnap | null>(null);
+
+  const publishHistory = () => onHistory(pastRef.current.length, futureRef.current.length);
+
+  const pushPast = (before: JointSnap) => {
+    futureRef.current = [];
+    pastRef.current.push(before);
+    if (pastRef.current.length > UNDO_MAX) pastRef.current.shift();
+    publishHistory();
+  };
+
+  const rememberDrag = () => {
+    if (!object) return;
+    pendingRef.current = captureJoint(object);
+  };
+
+  const commitDrag = () => {
+    const before = pendingRef.current;
+    pendingRef.current = null;
+    if (!before || before.object !== object) return;
+    clampJointToView(object, camera);
+    if (!jointMoved(before)) return;
+    pushPast(before);
+    invalidate();
+  };
+
+  editApi.current.commit = (target, mutate) => {
+    if (!target.parent) return;
+    const before = captureJoint(target);
+    mutate();
+    target.updateWorldMatrix(true, false);
+    if (target.getWorldPosition(_viewWorld).distanceToSquared(before.position) > 1e-10) clampJointToView(target, camera);
+    target.updateMatrixWorld();
+    if (!jointMoved(before)) return;
+    pushPast(before);
+    restorePivot();
+    invalidate();
+  };
+
+  editApi.current.undo = () => {
+    const before = pastRef.current[pastRef.current.length - 1];
+    if (!before?.object.parent) return;
+    const current = captureJoint(before.object);
+    pastRef.current.pop();
+    futureRef.current.push(current);
+    applyJoint(before);
+    publishHistory();
+    restorePivot();
+    invalidate();
+  };
+
+  editApi.current.redo = () => {
+    const next = futureRef.current[futureRef.current.length - 1];
+    if (!next?.object.parent) return;
+    const current = captureJoint(next.object);
+    futureRef.current.pop();
+    pastRef.current.push(current);
+    if (pastRef.current.length > UNDO_MAX) pastRef.current.shift();
+    applyJoint(next);
+    publishHistory();
+    restorePivot();
+    invalidate();
+  };
+
+  useEffect(() => {
+    pastRef.current = [];
+    futureRef.current = [];
+    pendingRef.current = null;
+    onHistory(0, 0);
+  }, [bake, meshIndex, onHistory, pose]);
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    anchor.name = "poseGizmoAnchor";
+    scene.add(anchor);
+    return () => {
+      scene.remove(anchor);
+    };
+  }, [scene]);
 
   useLayoutEffect(() => {
     stickPivotRef.current = { release: releasePivot, restore: restorePivot };
     if (editable) restorePivot();
     else {
       releasePivot();
+      draggingGizmo.current = false;
       setGizmo(null);
     }
     return () => {
       releasePivot();
+      draggingGizmo.current = false;
       if (stickPivotRef.current?.release === releasePivot) stickPivotRef.current = null;
     };
   }, [editable, posedEpoch, releasePivot, restorePivot, stickPivotRef]);
@@ -259,14 +617,38 @@ function Scene({
 
       {editable && gizmo && (
         <TransformControls
+          ref={controlsRef}
           object={gizmo}
           mode={mode}
+          space={mode === "rotate" ? "local" : "world"}
           size={0.55}
           onMouseDown={() => {
             if (orbitRef.current) orbitRef.current.enabled = false;
+            draggingGizmo.current = gizmo === anchorRef.current;
+            rememberDrag();
+            const joint = objectRef.current;
+            if (joint) beginAxisDrag(joint, gizmo === anchorRef.current ? anchorRef.current : null);
           }}
           onMouseUp={() => {
             if (orbitRef.current) orbitRef.current.enabled = true;
+            commitDrag();
+            draggingGizmo.current = false;
+            const joint = objectRef.current;
+            if (joint && gizmo === anchorRef.current && (selected === "body" || selected === "torso")) {
+              placeGizmoAnchor(anchorRef.current, joint, selected, anchorPos.current, anchorQuat.current, pose);
+            }
+          }}
+          onObjectChange={() => {
+            const joint = objectRef.current;
+            const controls = controlsRef.current;
+            if (!joint || !controls?.dragging) return;
+            const axis = controls.axis;
+            if (controls.mode === "rotate" && (axis === "X" || axis === "Y" || axis === "Z")) {
+              applySingleAxisRotation(joint, gizmo === anchorRef.current ? anchorRef.current : null, axis, controls.rotationAngle);
+              return;
+            }
+            if (gizmo !== anchorRef.current) return;
+            applyGizmoAnchor(anchorRef.current, joint, anchorPos.current, anchorQuat.current, controls.mode === "translate");
           }}
         />
       )}
@@ -320,12 +702,24 @@ export function PoseEditor({
   const [showPlayer, setShowPlayer] = useState(true);
   const [posedEpoch, setPosedEpoch] = useState(0);
   const [saveNote, setSaveNote] = useState("");
+  const [hist, setHist] = useState({ undo: 0, redo: 0 });
+  const [jointRev, setJointRev] = useState(0);
   const savingRef = useRef(false);
+  const editApi = useRef<EditApi>({
+    undo: () => {},
+    redo: () => {},
+    commit: () => {},
+  });
   const poseShownRef = useRef(true);
   savingRef.current = saving;
   const jointsRef = useRef(joints);
   const stickPivotRef = useRef<StickPivotApi | null>(null);
   jointsRef.current = joints;
+
+  const onHistory = useCallback((undo: number, redo: number) => {
+    setHist({ undo, redo });
+    setJointRev((n) => n + 1);
+  }, []);
 
   const commitJoints = useCallback((next: Record<string, THREE.Object3D | null>) => {
     setJointsState((prev) => {
@@ -382,6 +776,19 @@ export function PoseEditor({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !typingTarget(event.target) && !savingRef.current) {
+        const key = event.key.toLowerCase();
+        if (key === "z" && !event.shiftKey) {
+          event.preventDefault();
+          editApi.current.undo();
+          return;
+        }
+        if ((key === "z" && event.shiftKey) || key === "y") {
+          event.preventDefault();
+          editApi.current.redo();
+          return;
+        }
+      }
       if (savingRef.current || event.metaKey || event.ctrlKey || event.altKey || typingTarget(event.target)) return;
       if (event.key === "r" || event.key === "R") {
         event.preventDefault();
@@ -425,14 +832,14 @@ export function PoseEditor({
       const rz = Math.round(r.z * 10000) / 10000;
       // Shaft scale is the stick length, so that group is not a saved joint.
       if (id === "shaftHold") continue;
-      const p = group.position;
+      const p = poseStoredPosition(id, group);
       saved[id] = [
         rx,
         ry,
         rz,
-        Math.round(p.x * 10000) / 10000,
-        Math.round(p.y * 10000) / 10000,
-        Math.round(p.z * 10000) / 10000,
+        Math.round(p[0] * 10000) / 10000,
+        Math.round(p[1] * 10000) / 10000,
+        Math.round(p[2] * 10000) / 10000,
       ];
     }
     if (!saved.body) {
@@ -467,7 +874,7 @@ export function PoseEditor({
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "minmax(220px, 360px) minmax(0, 1fr) 220px",
+        gridTemplateColumns: "minmax(220px, 360px) minmax(0, 1fr) auto 220px",
         gridTemplateRows: "auto minmax(0, 1fr)",
         height: "100vh",
         minHeight: 0,
@@ -476,7 +883,7 @@ export function PoseEditor({
         color: "#e8ece6",
       }}
     >
-      <div style={barCell}>
+      <div style={{ ...barCell, gridColumn: 1, gridRow: 1 }}>
         <div style={{ ...selectedLine, flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           Selected: {poseLabel(pose)}
         </div>
@@ -498,9 +905,25 @@ export function PoseEditor({
           Reset
         </button>
       </div>
-      <div style={{ ...barCell, flexDirection: "column", alignItems: "stretch", gap: 6 }}>
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+      <div style={{ ...barCell, flexDirection: "column", alignItems: "stretch", gap: 6, gridColumn: "2 / 4", gridRow: 1 }}>
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 16, flexWrap: "wrap", minWidth: 0 }}>
           <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => editApi.current.undo()}
+              disabled={hist.undo === 0 || saving}
+              style={histBtn(hist.undo > 0 && !saving)}
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              onClick={() => editApi.current.redo()}
+              disabled={hist.redo === 0 || saving}
+              style={histBtn(hist.redo > 0 && !saving)}
+            >
+              Redo
+            </button>
             <button type="button" onClick={() => setMode("rotate")} style={btn(mode === "rotate", "charcoal")}>
               Rotate
             </button>
@@ -540,11 +963,13 @@ export function PoseEditor({
           </div>
         ) : null}
       </div>
-      <div style={{ ...barCell, ...selectedLine }}>
+      <div style={{ ...barCell, ...selectedLine, gridColumn: 4, gridRow: 1 }}>
         Selected: {info?.label ?? "none"}
       </div>
       <aside
         style={{
+          gridColumn: 1,
+          gridRow: 2,
           width: 220,
           flex: "0 0 220px",
           height: "100%",
@@ -572,7 +997,7 @@ export function PoseEditor({
         })}
       </aside>
 
-      <div style={{ flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: SCENE_BG[sceneBg] }}>
+      <div style={{ gridColumn: 2, gridRow: 2, flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: SCENE_BG[sceneBg] }}>
         {meshIndex !== null ? (
           <Canvas shadows frameloop="demand" camera={{ position: [2.8, 1.6, 3.6], fov: 38 }}>
             <EditorScene
@@ -589,6 +1014,8 @@ export function PoseEditor({
               pose={pose}
               seat={seated?.(pose) ?? null}
               stickPivotRef={stickPivotRef}
+              editApi={editApi}
+              onHistory={onHistory}
               editable={!saving}
               showPlayer={showPlayer}
               posedEpoch={posedEpoch}
@@ -603,8 +1030,36 @@ export function PoseEditor({
         ) : null}
       </div>
 
+      {controlObject ? (
+        <aside
+          style={{
+            gridColumn: 3,
+            gridRow: 2,
+            alignSelf: "start",
+            justifySelf: "stretch",
+            height: "auto",
+            background: "#10161f",
+            color: "#e8ece6",
+            padding: "16px 12px",
+            borderLeft: "1px solid #243040",
+          }}
+        >
+          <JointNumbers
+            object={controlObject}
+            revision={jointRev}
+            disabled={saving}
+            onCommit={(apply) => {
+              if (!controlObject || saving) return;
+              editApi.current.commit(controlObject, () => apply(controlObject));
+            }}
+          />
+        </aside>
+      ) : null}
+
       <aside
         style={{
+          gridColumn: 4,
+          gridRow: 2,
           width: 220,
           flex: "0 0 220px",
           height: "100%",
@@ -616,7 +1071,6 @@ export function PoseEditor({
           borderLeft: "1px solid #243040",
         }}
       >
-        <div style={menuHead}>Body</div>
         {JOINTS.map((joint) => {
           const on = selected === joint.id;
           return (
@@ -701,6 +1155,130 @@ const selectedLine: CSSProperties = {
   textTransform: "uppercase",
   fontSize: 16,
 };
+
+function JointNumbers({
+  object,
+  revision,
+  disabled,
+  onCommit,
+}: {
+  object: THREE.Object3D | null;
+  revision: number;
+  disabled: boolean;
+  onCommit: (apply: (object: THREE.Object3D) => void) => void;
+}) {
+  if (!object) return null;
+  const axes = ["x", "y", "z"] as const;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 16 }}>
+      <div>
+        <div style={menuHead}>Position</div>
+        {axes.map((axis) => (
+          <AxisRow
+            key={`p-${axis}-${revision}`}
+            label={axis.toUpperCase()}
+            value={object.position[axis]}
+            disabled={disabled}
+            onCommit={(next) => onCommit((obj) => (obj.position[axis] = next))}
+            onNudge={(dir) => onCommit((obj) => (obj.position[axis] += dir * POS_STEP))}
+          />
+        ))}
+      </div>
+      <div>
+        <div style={menuHead}>Rotation</div>
+        {axes.map((axis) => (
+          <AxisRow
+            key={`r-${axis}-${revision}`}
+            label={axis.toUpperCase()}
+            value={object.rotation[axis]}
+            disabled={disabled}
+            onCommit={(next) => onCommit((obj) => (obj.rotation[axis] = next))}
+            onNudge={(dir) => onCommit((obj) => (obj.rotation[axis] += dir * ROT_STEP))}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AxisRow({
+  label,
+  value,
+  disabled,
+  onCommit,
+  onNudge,
+}: {
+  label: string;
+  value: number;
+  disabled: boolean;
+  onCommit: (next: number) => void;
+  onNudge: (dir: -1 | 1) => void;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
+      <span style={{ width: 14, color: "#8b97a4", fontFamily: '"Barlow Condensed", sans-serif' }}>{label}</span>
+      <button type="button" aria-label={`Decrease ${label}`} disabled={disabled} onClick={() => onNudge(-1)} style={nudgeBtn}>
+        −
+      </button>
+      <input
+        defaultValue={value.toFixed(4)}
+        disabled={disabled}
+        aria-label={label}
+        inputMode="decimal"
+        onBlur={(event) => {
+          const next = Number(event.target.value);
+          if (!Number.isFinite(next) || Math.abs(next) > 1e6) {
+            event.target.value = value.toFixed(4);
+            return;
+          }
+          if (Math.abs(next - value) < 1e-6) return;
+          onCommit(next);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+        }}
+        style={numInput}
+      />
+      <button type="button" aria-label={`Increase ${label}`} disabled={disabled} onClick={() => onNudge(1)} style={nudgeBtn}>
+        +
+      </button>
+    </div>
+  );
+}
+
+const nudgeBtn: CSSProperties = {
+  width: 26,
+  height: 26,
+  padding: 0,
+  border: "none",
+  borderRadius: 4,
+  background: "#1c2836",
+  color: "#e8ece6",
+  cursor: "pointer",
+  fontSize: 16,
+  lineHeight: 1,
+};
+
+const numInput: CSSProperties = {
+  width: 72,
+  flex: "1 1 auto",
+  minWidth: 0,
+  background: "#0c1218",
+  color: "#e8ece6",
+  border: "1px solid #243040",
+  borderRadius: 4,
+  padding: "4px 6px",
+  fontFamily: "ui-monospace, monospace",
+  fontSize: 12,
+};
+
+function histBtn(enabled: boolean): CSSProperties {
+  return {
+    ...btn(enabled, "charcoal"),
+    opacity: enabled ? 1 : 0.45,
+    cursor: enabled ? "pointer" : "default",
+  };
+}
 
 function btn(active: boolean, tone: "green" | "charcoal" = "charcoal"): CSSProperties {
   return {

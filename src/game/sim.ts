@@ -10108,7 +10108,8 @@ function layDownRef(
     r.struck = 1.68;
     r.tumble = (Math.random() < 0.5 ? 1 : -1) * (0.85 + Math.random() * 0.45);
   } else {
-    r.struck = 1.4;
+    // Same non-tumble receive timer as a checked skater (layDownSkater).
+    r.struck = 1.25;
     r.tumble = 0;
   }
 }
@@ -10837,7 +10838,7 @@ function applyHit(user: Skater): boolean {
           r.struck = 1.68;
           r.tumble = (Math.random() < 0.5 ? 1 : -1) * (0.85 + Math.random() * 0.45);
         } else {
-          r.struck = 1.4;
+          r.struck = 1.25;
           r.tumble = 0;
         }
       }

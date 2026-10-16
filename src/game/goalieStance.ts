@@ -1,6 +1,58 @@
 import * as THREE from "three";
 import { GOAL_H, GOAL_W } from "./rink";
 
+/** Body origin sits at the torso center. Old body-space Y is that plus this offset. */
+export function torsoPivotY(body: THREE.Object3D): number {
+  const y = body.userData.torsoPivotY;
+  return typeof y === "number" ? y : 0;
+}
+
+export function torsoPlacedY(body: THREE.Object3D, y: number): number {
+  return y + torsoPivotY(body);
+}
+
+export function bodyToLocal(body: THREE.Object3D, v: THREE.Vector3): THREE.Vector3 {
+  body.worldToLocal(v);
+  v.y += torsoPivotY(body);
+  return v;
+}
+
+export function bodyToWorld(body: THREE.Object3D, v: THREE.Vector3): THREE.Vector3 {
+  v.y -= torsoPivotY(body);
+  return body.localToWorld(v);
+}
+
+/** Skip the visual frame and the shoulders joint so arm.parent and leg.parent still resolve to the posed body. */
+export function posedBody(node: THREE.Object3D | null | undefined): THREE.Object3D | null {
+  let n = node ?? null;
+  while (n && (n.name === "torsoFrame" || n.name === "torso" || n.name === "hips" || n.name === "hipsFrame" || n.name === "shoulders" || n.name === "shoulderFrame")) n = n.parent;
+  return n;
+}
+
+const _handShift = new THREE.Vector3();
+const _handGlove = new THREE.Vector3(-0.058, 0, -0.01);
+const _handRest = new THREE.Vector3(0, -0.28, 0.03);
+const _handRestQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.12, 0, 0));
+
+/**
+ * Offset from a saved goalie left-hand position to the glove center.
+ * Live joint is the blocker group. Seated joint is the wrapper around it.
+ * Skater gloves are already centered and return false.
+ */
+export function goalieHandPivotShift(group: THREE.Object3D, out: THREE.Vector3 = _handShift): boolean {
+  if (group.name === "goalieBlocker") {
+    out.copy(_handGlove).applyQuaternion(group.quaternion);
+    return true;
+  }
+  const board = group.getObjectByName("goalieBlocker");
+  if (board?.parent === group) {
+    out.copy(_handGlove).applyQuaternion(_handRestQ).add(_handRest);
+    out.applyQuaternion(group.quaternion);
+    return true;
+  }
+  return false;
+}
+
 /**
  * Stand-up goalie Z, in the goalie's root frame (+Z toward the shooter, +Y up).
  * Thighs stay on the hip sockets. The crouch is the joint angles:
@@ -127,6 +179,23 @@ function setBoneQuat(out: THREE.Quaternion, dirDown: THREE.Vector3, face: THREE.
   out.setFromRotationMatrix(_m);
 }
 
+/** Shin in the thigh frame. Mid and the butterfly share this, so the pad stays on the shin. */
+function poseZShin(side: -1 | 1, leg: THREE.Object3D, shin: THREE.Object3D, angles: GoalieZAngles) {
+  const shinFlat = Math.cos(angles.shinOut);
+  // Ankle behind the knee, so the shin leans toward the shooter as it rises.
+  _dir.set(
+    Math.sin(angles.shinOut) * side,
+    -Math.cos(angles.shin) * shinFlat,
+    -Math.sin(angles.shin) * shinFlat,
+  );
+  _ankle.copy(_knee).addScaledVector(_dir, GOALIE_SHIN_LEN);
+  _dir.applyQuaternion(_bodyInv);
+  _legInv.copy(leg.quaternion).invert();
+  _dir.applyQuaternion(_legInv);
+  _face.set(0, 0, 1).applyQuaternion(_bodyInv).applyQuaternion(_legInv);
+  setBoneQuat(shin.quaternion, _dir, _face);
+}
+
 function poseZLeg(
   root: THREE.Object3D,
   side: -1 | 1,
@@ -156,19 +225,7 @@ function poseZLeg(
   _face.set(0, 0, 1).applyQuaternion(_bodyInv);
   setBoneQuat(leg.quaternion, _dir, _face);
 
-  const shinFlat = Math.cos(angles.shinOut);
-  // Ankle behind the knee, so the shin leans toward the shooter as it rises.
-  _dir.set(
-    Math.sin(angles.shinOut) * side,
-    -Math.cos(angles.shin) * shinFlat,
-    -Math.sin(angles.shin) * shinFlat,
-  );
-  _ankle.copy(_knee).addScaledVector(_dir, GOALIE_SHIN_LEN);
-  _dir.applyQuaternion(_bodyInv);
-  _legInv.copy(leg.quaternion).invert();
-  _dir.applyQuaternion(_legInv);
-  _face.set(0, 0, 1).applyQuaternion(_bodyInv).applyQuaternion(_legInv);
-  setBoneQuat(shin.quaternion, _dir, _face);
+  poseZShin(side, leg, shin, angles);
 
   if (!boot) return;
   root.updateWorldMatrix(true, true);
@@ -203,7 +260,7 @@ export function poseGoalieZLimbs(
   angles: GoalieZAngles,
   bank: number,
 ) {
-  body.position.set(0, 0, 0);
+  body.position.set(0, torsoPlacedY(body, 0), 0);
   body.rotation.order = "XYZ";
   body.rotation.set(angles.torso, 0, bank);
   _bodyInv.copy(body.quaternion).invert();
@@ -333,7 +390,7 @@ export function poseGoalieButterflyLimbs(
   lBoot: THREE.Object3D | null,
   rBoot: THREE.Object3D | null,
 ) {
-  body.position.set(0, 0, 0);
+  body.position.set(0, torsoPlacedY(body, 0), 0);
   body.rotation.order = "XYZ";
   body.rotation.set(BUTTERFLY_TORSO, 0, 0);
   _bodyInv.copy(body.quaternion).invert();
@@ -353,16 +410,12 @@ export function poseGoalieButterflyLimbs(
 const BUTTERFLY_STANCE_DROP = -0.2;
 /** Knee offset from the hip before it is normalized onto the thigh. x is inward. */
 const BUTTERFLY_STANCE_KNEE = { x: -0.11, y: 0.14, z: 0.46 };
-/** Shin direction. x flares out, y drops toward the ice, z is toward the shooter. */
-const BUTTERFLY_STANCE_SHIN = { x: 1.15, y: 0.12, z: 0.04 };
 /** Boot toe, root frame. y > 0 lifts the toe so the blade is not flat. */
 const BUTTERFLY_STANCE_TOE = { x: 0.42, y: 0.75, z: 0.38 };
 /** Boot sole, root frame. Not world up. */
 const BUTTERFLY_STANCE_UP = { x: -0.22, y: 0.38, z: 0.12 };
 /** World-up shift so the tilted blade clears the pad. The pad stays the contact. */
 const BUTTERFLY_STANCE_BOOT_LIFT = 0.22;
-/** World-down shift so the flat pad, not the knee block, meets the ice. */
-const BUTTERFLY_STANCE_PAD_DROP = 0.1;
 
 function poseButterflyStanceLeg(
   root: THREE.Object3D,
@@ -389,16 +442,8 @@ function poseButterflyStanceLeg(
   _face.set(0, 0, 1).applyQuaternion(_bodyInv);
   setBoneQuat(leg.quaternion, _dir, _face);
 
-  _dir.set(side * BUTTERFLY_STANCE_SHIN.x, -BUTTERFLY_STANCE_SHIN.y, BUTTERFLY_STANCE_SHIN.z);
-  if (_dir.lengthSq() < 1e-8) _dir.set(side, 0, 0);
-  else _dir.normalize();
-  _dir.applyQuaternion(_bodyInv);
-  _legInv.copy(leg.quaternion).invert();
-  _dir.applyQuaternion(_legInv);
-  // Wide face up and toward the shooter, so the pad lies flat. Root +Y is up.
-  // Root +Z is the shooter. The save butterfly keeps the other sign.
-  _face.set(0, 0.92, 0.28).applyQuaternion(_bodyInv).applyQuaternion(_legInv);
-  setBoneQuat(shin.quaternion, _dir, _face);
+  // Same shin fold and pad face as mid. The thigh above stays the butterfly knee.
+  poseZShin(side, leg, shin, GOALIE_Z.mid);
 
   if (boot) {
     root.updateWorldMatrix(true, true);
@@ -435,15 +480,6 @@ function poseButterflyStanceLeg(
     shin.worldToLocal(_dir);
     boot.position.add(_dir.sub(_hip));
   }
-  const pad = shin.getObjectByName("goalieShinPad");
-  if (!pad) return;
-  shin.updateWorldMatrix(true, true);
-  shin.getWorldPosition(_hip);
-  _dir.copy(_hip);
-  _dir.y -= BUTTERFLY_STANCE_PAD_DROP;
-  shin.worldToLocal(_hip);
-  shin.worldToLocal(_dir);
-  pad.position.add(_dir.sub(_hip));
 }
 
 /** Knees in, pads flat and flared, skates tilted up, hips on the sockets. */
@@ -458,7 +494,7 @@ export function poseGoalieButterflyStanceLimbs(
   rBoot: THREE.Object3D | null,
   bank: number,
 ) {
-  body.position.set(0, BUTTERFLY_STANCE_DROP, 0);
+  body.position.set(0, torsoPlacedY(body, BUTTERFLY_STANCE_DROP), 0);
   body.rotation.order = "XYZ";
   body.rotation.set(GOALIE_Z.butterfly.torso, 0, bank);
   _bodyInv.copy(body.quaternion).invert();
@@ -481,7 +517,7 @@ export function poseGoalieButterflyArms(
   palmAxis: THREE.Vector3,
   boardAxis: THREE.Vector3,
 ) {
-  const body = l.parent;
+  const body = posedBody(l.parent);
   const root = body?.parent;
   if (!body || !root) return;
   l.position.set(GOALIE_BLOCKER_SHOULDER.x, GOALIE_BLOCKER_SHOULDER.y, GOALIE_BLOCKER_SHOULDER.z);
@@ -501,7 +537,7 @@ export function poseGoalieButterflyArms(
   const faceZ = _dir.z;
   _hand.copy(_hip).addScaledVector(_x, -BUTTERFLY_AIM_LAT).addScaledVector(_dir, BUTTERFLY_AIM_FWD);
   _hand.y = BUTTERFLY_AIM_Y;
-  body.worldToLocal(_hand);
+  bodyToLocal(body, _hand);
   const gripX = _hand.x;
   const gripY = _hand.y;
   const gripZ = _hand.z;
@@ -510,7 +546,7 @@ export function poseGoalieButterflyArms(
     .addScaledVector(_x, BUTTERFLY_GLOVE_AIM_LAT)
     .addScaledVector(_dir, BUTTERFLY_AIM_FWD);
   _best.y = BUTTERFLY_AIM_Y;
-  body.worldToLocal(_best);
+  bodyToLocal(body, _best);
   const gloveX = _best.x;
   const gloveY = _best.y;
   const gloveZ = _best.z;
@@ -757,7 +793,7 @@ export function poseGoalieHand(
     body.updateWorldMatrix(true, true);
     _ikCorner.set(markX, markY, markZ);
     fore.localToWorld(_ikCorner);
-    body.worldToLocal(_ikCorner);
+    bodyToLocal(body, _ikCorner);
     const ex = gx - _ikCorner.x;
     const ey = gy - _ikCorner.y;
     const ez = gz - _ikCorner.z;
@@ -785,7 +821,7 @@ export function poseGoalieZArms(
   palmAxis: THREE.Vector3,
   boardAxis: THREE.Vector3,
 ) {
-  const body = l.parent;
+  const body = posedBody(l.parent);
   const root = body?.parent;
   if (!body || !root) return;
   l.position.set(GOALIE_BLOCKER_SHOULDER.x, GOALIE_BLOCKER_SHOULDER.y, GOALIE_BLOCKER_SHOULDER.z);
@@ -905,7 +941,7 @@ function gloveOnPlayShaft(body: THREE.Object3D, stick: THREE.Object3D, out: THRE
   stick.updateWorldMatrix(true, true);
   _best.set(0, 0, 0);
   stick.localToWorld(_best);
-  body.worldToLocal(_best);
+  bodyToLocal(body, _best);
   const topX = _best.x;
   const topY = _best.y;
   const topZ = _best.z;
@@ -917,7 +953,7 @@ function gloveOnPlayShaft(body: THREE.Object3D, stick: THREE.Object3D, out: THRE
     const y = (limit * i) / 28;
     _hand.set(0, y, 0);
     stick.localToWorld(_hand);
-    body.worldToLocal(_hand);
+    bodyToLocal(body, _hand);
     const dist = Math.hypot(_hand.x - sx, _hand.y - sy, _hand.z - sz);
     if (dist > PLAY_GLOVE_REACH) continue;
     const along = Math.hypot(_hand.x - topX, _hand.y - topY, _hand.z - topZ);
@@ -943,7 +979,7 @@ function closestPlayShaft(body: THREE.Object3D, stick: THREE.Object3D, out: THRE
     const y = (end * i) / 28;
     _hand.set(0, y, 0);
     stick.localToWorld(_hand);
-    body.worldToLocal(_hand);
+    bodyToLocal(body, _hand);
     const dist = Math.hypot(_hand.x - sx, _hand.y - sy, _hand.z - sz);
     if (dist < best) {
       best = dist;
@@ -1129,7 +1165,7 @@ export function poseGoaliePlay(
   palmAxis: THREE.Vector3,
   boardAxis: THREE.Vector3,
 ) {
-  const body = l.parent;
+  const body = posedBody(l.parent);
   const root = body?.parent;
   if (!body || !root || stick.parent !== lf) return;
   root.updateWorldMatrix(true, true);

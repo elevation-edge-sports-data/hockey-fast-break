@@ -10,10 +10,13 @@ const PUBLIC_POSE_IDS = new Set([
   "stride",
   "faceoff",
   "coast",
+  "puckPossess",
   "autoDeke",
+  "forehandDeke",
   "backhandDeke",
   "speedPuckPossess",
   "wrist",
+  "backhandShot",
   "slap",
   "shot-follow-through",
   "poke",
@@ -24,6 +27,7 @@ const PUBLIC_POSE_IDS = new Set([
   "recover",
   "celebrate",
   "fight",
+  "goalieButterfly",
 ]);
 
 /** Public gallery bundle keeps only the public pose entries from poseOverrides.json. */

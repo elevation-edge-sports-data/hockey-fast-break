@@ -10,6 +10,8 @@ Pose Editor: https://elevation-edge-sports-data.github.io/hockey-fast-break/pose
 
 ![Hockey Fast Break](screenshot.png)
 
+![Pose Editor](screenshot-pose-editor.png)
+
 ## Modes
 
 - **Drill**: 4, 8, 12, or 16 targets. One minute.
@@ -76,7 +78,7 @@ The home crowd and the ribbons use the home kit. The away crowd sits in an upper
 
 HUD: YOU–CPU (or drill score), clock in Drill and Game, shot speed, puck status.
 
-Archive links to playable v0, v1, v2, and this build.
+Archive links to playable v0-v3, and this build (v4).
 
 ## Pose tools
 

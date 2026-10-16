@@ -20,10 +20,13 @@ export const PUBLIC_POSE_IDS = [
   "stride",
   "faceoff",
   "coast",
+  "puckPossess",
   "autoDeke",
+  "forehandDeke",
   "backhandDeke",
   "speedPuckPossess",
   "wrist",
+  "backhandShot",
   "slap",
   "shot-follow-through",
   "poke",
@@ -34,6 +37,7 @@ export const PUBLIC_POSE_IDS = [
   "recover",
   "celebrate",
   "fight",
+  "goalieButterfly",
 ];
 export const PACK_SCRIPTS = [
   "scripts/pack-galleries.mjs",

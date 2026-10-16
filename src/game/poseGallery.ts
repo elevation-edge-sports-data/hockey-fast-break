@@ -1,4 +1,5 @@
-import { holdBurstPose, resetWorld, world, type Skater } from "./sim";
+import { GOAL_LINE_X } from "./rink";
+import { attackDir, defendDir, holdBurstPose, resetWorld, world, type Skater } from "./sim";
 import { useGame, type ControlProfile } from "./store";
 
 /** Curated stills for /pose-gallery. The full set lives in the private gallery module. */
@@ -8,10 +9,13 @@ export const PUBLIC_POSES = [
   "stride",
   "faceoff",
   "coast",
+  "puckPossess",
   "autoDeke",
+  "forehandDeke",
   "backhandDeke",
   "speedPuckPossess",
   "wrist",
+  "backhandShot",
   "slap",
   "shot-follow-through",
   "poke",
@@ -22,6 +26,7 @@ export const PUBLIC_POSES = [
   "recover",
   "celebrate",
   "fight",
+  "goalieButterfly",
 ] as const;
 
 export type PublicPoseId = (typeof PUBLIC_POSES)[number];
@@ -252,7 +257,10 @@ export function holdShotFollow(s: Skater): void {
 }
 
 export function applyPose(pose: PublicPoseId): number {
-  const { s, index } = prepareGalleryPose(false, pose === "backhandDeke");
+  const { s, index } = prepareGalleryPose(
+    pose === "goalieButterfly",
+    pose === "forehandDeke" || pose === "backhandDeke",
+  );
   switch (pose) {
     case "default":
       break;
@@ -278,10 +286,17 @@ export function applyPose(pose: PublicPoseId): number {
       world.homeDot = -1;
       world.awayDot = -1;
       break;
+    case "puckPossess":
+      ownPuck(index, 0, -1.1);
+      break;
     case "autoDeke":
       // Held deke sits at dekePull 1, the backhand, not the neutral middle.
       s.deke = 0.525;
       ownPuck(index, 0.4, -0.7);
+      break;
+    case "forehandDeke":
+      s.stickPull = -1;
+      ownPuck(index, -0.7, -0.85);
       break;
     case "backhandDeke":
       s.stickPull = 1;
@@ -295,6 +310,11 @@ export function applyPose(pose: PublicPoseId): number {
       break;
     case "wrist":
       s.windup = 0.28;
+      ownPuck(index, 0, -1.05);
+      break;
+    case "backhandShot":
+      s.windup = 0.28;
+      world.lastShotBackhand = true;
       ownPuck(index, 0, -1.05);
       break;
     case "slap":
@@ -334,6 +354,12 @@ export function applyPose(pose: PublicPoseId): number {
       s.celebrate = 2;
       world.time = 0.7;
       break;
+    case "goalieButterfly": {
+      // 2.4 m off the goal line is inside the 4.9 m high-danger slot, the compact butterfly.
+      const mouth = defendDir(s.side) * GOAL_LINE_X;
+      loosePuck(mouth + attackDir(s.side) * 2.4, 0);
+      break;
+    }
     case "fight": {
       const foe = world.skaters.find((o) => o.id !== s.id);
       world.lineBrawl = {

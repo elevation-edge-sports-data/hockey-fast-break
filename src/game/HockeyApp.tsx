@@ -3,7 +3,12 @@ import * as THREE from "three";
 import { World } from "./World";
 import { useGame } from "./store";
 import { world } from "./sim";
-import "./poseOverrideInfer";
+import { setPoseInfer } from "./poseOverrides";
+import { inferNamedPose } from "./poseOverrideInfer";
+
+// package.json sideEffects is false, so a bare import of the inferrer is dropped
+// from the play pack and live poses never read poseOverrides.json.
+setPoseInfer(inferNamedPose);
 
 export function GameCanvas() {
   const quality = useGame((s) => s.quality);
