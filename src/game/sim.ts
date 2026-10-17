@@ -449,6 +449,7 @@ function placeRefsForFaceoff(): void {
   drop.struck = 0;
   drop.tumble = 0;
   refStayPut.delete(drop);
+  refOnAbsorb.delete(drop);
   other.x = world.faceX;
   other.z = -dLane * REF_BOARD_Z;
   other.yaw = 0;
@@ -460,6 +461,7 @@ function placeRefsForFaceoff(): void {
   other.struck = 0;
   other.tumble = 0;
   refStayPut.delete(other);
+  refOnAbsorb.delete(other);
   if (useGame.getState().clockMode === "practice") {
     world.ref2.x = 0;
     world.ref2.z = -80;
@@ -468,6 +470,7 @@ function placeRefsForFaceoff(): void {
     world.ref2.struck = 0;
     world.ref2.tumble = 0;
     refStayPut.delete(world.ref2);
+    refOnAbsorb.delete(world.ref2);
   }
 }
 
@@ -2072,7 +2075,7 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
   passSpeedCutFor = -1;
   refStayPut.delete(world.ref);
   refStayPut.delete(world.ref2);
-  stickRage = null;
+  clearGoalReactions();
   world.benchDump = null;
   world.lineBrawl = null;
   world.drillGhosts = [];
@@ -7026,8 +7029,33 @@ const PASS_ARRIVE = 8;
 const PASS_CHECK_BEFORE = 0.32;
 const PASS_CHECK_START = 0.2;
 const PASS_CHECK_CUT = 0.5;
+const PASS_TAP_MPH = 60;
+const PASS_FULL_MPH = 90;
+const PASS_FULL_HOLD = 1.5;
 const passerCheckedAt = new Map<number, number>();
 let passSpeedCutFor = -1;
+let chargedPassPower: number | null = null;
+
+function passChargeMps(holdS: number): number {
+  const t = Math.min(1, Math.max(0, holdS / PASS_FULL_HOLD));
+  return (PASS_TAP_MPH + (PASS_FULL_MPH - PASS_TAP_MPH) * t) / 2.23694;
+}
+
+function withChargedPass(holdS: number, fire: () => void): void {
+  chargedPassPower = passChargeMps(holdS);
+  try {
+    fire();
+  } finally {
+    chargedPassPower = null;
+  }
+}
+
+function chargedHoriz(vx: number, vz: number): { vx: number; vz: number } {
+  if (chargedPassPower === null) return { vx, vz };
+  const sp = Math.hypot(vx, vz) || 1;
+  const m = chargedPassPower / sp;
+  return { vx: vx * m, vz: vz * m };
+}
 
 function tapePower(travel: number, saucer: boolean, cpuGoalie: boolean): number {
   const floor = cpuGoalie ? 12.5 : 15.5;
@@ -7179,8 +7207,9 @@ function passOrigin(s: Skater): { x: number; z: number } {
 function tapePass(s: Skater, mate: Skater, saucer: boolean): void {
   const blade = passOrigin(s);
   const cpuGoalie = s.kind === "goalie" && s.side !== "home";
+  const forced = chargedPassPower;
   const seed = Math.hypot(mate.x - blade.x, mate.z - blade.z) || 1;
-  let power = tapePower(seed, saucer, cpuGoalie);
+  let power = forced ?? tapePower(seed, saucer, cpuGoalie);
   let eta = flightSeconds(seed, power);
   let tx = mate.x;
   let tz = mate.z;
@@ -7188,7 +7217,7 @@ function tapePass(s: Skater, mate: Skater, saucer: boolean): void {
     tx = mate.x + mate.vx * eta;
     tz = mate.z + mate.vz * eta;
     const travel = Math.hypot(tx - blade.x, tz - blade.z) || 1;
-    power = tapePower(travel, saucer, cpuGoalie);
+    power = forced ?? tapePower(travel, saucer, cpuGoalie);
     const shot = reachPoint(blade.x, blade.z, tx, tz, power);
     eta = shot.eta;
     tx = shot.x;
@@ -7202,6 +7231,7 @@ function tapePass(s: Skater, mate: Skater, saucer: boolean): void {
     (dx / travel) * power,
     (dz / travel) * power,
     saucer ? 2.2 : cpuGoalie ? 0.42 : 0.03,
+    saucer,
   );
   passMeet = { x: tx, z: tz };
   world.lastPassTo = mate.id;
@@ -7215,14 +7245,14 @@ function tapePass(s: Skater, mate: Skater, saucer: boolean): void {
 function freeAimToLane(s: Skater, ax: number, az: number, saucer: boolean): void {
   const from = passOrigin(s);
   const lane = nearestLaneMate(s, ax, az);
-  const power = saucer ? 17.6 : 16.4;
+  const power = chargedPassPower ?? (saucer ? 17.6 : 16.4);
   if (!lane) {
-    launchPass(s, ax * power, az * power, saucer ? 3.4 : 0.06);
+    launchPass(s, ax * power, az * power, saucer ? 3.4 : 0.06, saucer);
     world.lastPassTo = null;
     return;
   }
   const spot = laneLanding(from.x, from.z, ax, az, power, lane);
-  launchPass(s, ax * power, az * power, saucer ? 3.4 : 0.06);
+  launchPass(s, ax * power, az * power, saucer ? 3.4 : 0.06, saucer);
   passMeet = spot;
   world.lastPassTo = lane.id;
   world.oneTimerUntil = world.time + 2.2;
@@ -7268,12 +7298,14 @@ function checkedPassScale(s: Skater): number {
 }
 
 /** Pass launch. A check in the moment before release cuts this puck only. */
-function launchPass(s: Skater, vx: number, vz: number, vy = 0): void {
+function launchPass(s: Skater, vx: number, vz: number, vy = 0, saucer = false): void {
   world.oneTimerPass = false;
   world.oneTimerSaucer = false;
+  const scaled = chargedHoriz(vx, vz);
   const m = checkedPassScale(s);
   if (m < 1) passSpeedCutFor = world.time;
-  launchPuck(s, vx * m, vz * m, vy * m);
+  launchPuck(s, scaled.vx * m, scaled.vz * m, vy * m);
+  beginPassSpeedTrack(saucer);
 }
 
 function passJustStarting(s: Skater): boolean {
@@ -7678,6 +7710,17 @@ function goalieLengthPlay(s: Skater, play: FarPlay): void {
     }
   }
   vy = capLengthClearVy(from.x, from.z, vx, vz, vy, netX, attack);
+  if (chargedPassPower !== null) {
+    const scaled = chargedHoriz(vx, vz);
+    vx = scaled.vx;
+    vz = scaled.vz;
+    if (lob && !banked) {
+      const held = holdLobInFront(from.x, from.z, vx, vz, vy, netX, attack);
+      vx = held.vx;
+      vz = held.vz;
+    }
+    vy = capLengthClearVy(from.x, from.z, vx, vz, vy, netX, attack);
+  }
 
   launchPuck(s, vx, vz, vy);
   world.goalieShot = luck === "in" ? "score" : "out";
@@ -7912,7 +7955,7 @@ function launchBank(
   const from = passOrigin(s);
   let vy = saucer ? 2.2 : 0.03;
   if (saucer) vy = bankContactVy(from.x, from.z, ax * inSpeed, az * inSpeed, vy);
-  launchPass(s, ax * inSpeed, az * inSpeed, vy);
+  launchPass(s, ax * inSpeed, az * inSpeed, vy, saucer);
   boardBank = { hx: hit.x, hz: hit.z, vx: ovx, vz: ovz, until: world.time + 1.8, loft: saucer };
   dampCheckedPassRide();
   world.lastPassTo = mate.id;
@@ -7979,7 +8022,7 @@ function launchSaucerBoard(s: Skater, ax: number, az: number, hit: BoardHit): vo
   const power = Math.min(28, Math.max(15.5, travel / eta));
   const vx = ax * power;
   const vz = az * power;
-  launchPass(s, vx, vz, bankContactVy(from.x, from.z, vx, vz, 2.2));
+  launchPass(s, vx, vz, bankContactVy(from.x, from.z, vx, vz, 2.2), true);
   dampCheckedPassRide();
   world.lastPassTo = null;
   world.oneTimerUntil = world.time + 2.2;
@@ -8121,8 +8164,8 @@ function doPass(s: Skater, mx: number, my: number, saucer: boolean): void {
   } else if (aimed) {
     freeAimToLane(s, ax, az, saucer);
   } else {
-    const power = saucer ? 17.6 : 16.4;
-    launchPass(s, ax * power, az * power, saucer ? 3.4 : 0.06);
+    const power = chargedPassPower ?? (saucer ? 17.6 : 16.4);
+    launchPass(s, ax * power, az * power, saucer ? 3.4 : 0.06, saucer);
     world.lastPassTo = null;
   }
   world.lastPass = world.time;
@@ -8525,6 +8568,16 @@ function beginShotSpeedTrack(): void {
   ui.setShotKind(world.lastShotKind);
 }
 
+function beginPassSpeedTrack(saucer: boolean): void {
+  const puck = world.puck;
+  const mph = Math.hypot(puck.vx, puck.vz) * 2.23694;
+  world.shotSpeedLive = true;
+  world.shotSpeedMax = mph;
+  const ui = useGame.getState();
+  ui.setSpeed(mph);
+  ui.setShotKind(saucer ? "saucer" : "pass");
+}
+
 function tickShotSpeed(): void {
   if (!world.shotSpeedLive) return;
   const puck = world.puck;
@@ -8746,6 +8799,18 @@ function fireOneTimer(t: Skater): void {
   beginShotSpeedTrack();
 }
 
+/**
+ * Real seconds of an X hold to a full slap.
+ * shotFromHold still treats 1 as full power; real time is divided by this.
+ * A backhand does not become a slap. It releases when the hold reaches this.
+ */
+const SHOT_FULL_HOLD = 1.5;
+
+function chargeHold(holdT: number | undefined, slap: boolean): number {
+  if (holdT !== undefined) return holdT / SHOT_FULL_HOLD;
+  return slap ? 1.05 : 0.1;
+}
+
 function shotFromHold(holdT: number, spd: number): { power: number; slap: boolean } {
   const t = Math.max(0, holdT);
   let mph: number;
@@ -8831,16 +8896,13 @@ function resolveShot(
       backhandBand: release.kind === "backhand",
     };
   }
-  const held = holdT ?? (slap ? 1.05 : 0.1);
+  const held = chargeHold(holdT, slap);
   const built = shotFromHold(held, spd);
-  const onBack = puckOnBackhand(s);
-  const skill =
-    useGame.getState().controlProfile === "stick" && s.id === world.userId && s.kind !== "goalie";
-  if (skill && onBack) {
+  const onBack = puckOnBackhand(s) && s.kind !== "goalie";
+  if (onBack) {
     return { kind: "backhand", power: backhandMph(spd) / MPH, backhandBand: true };
   }
   if (built.slap) return { kind: "slap", power: built.power, backhandBand: false };
-  if (onBack) return { kind: "backhand", power: built.power, backhandBand: false };
   return { kind: "wrist", power: built.power, backhandBand: false };
 }
 
@@ -8871,7 +8933,7 @@ function doShot(
   drillFlightStashed = false;
   if (useGame.getState().clockMode === "drill" && world.drillWon) {
     if (!drillUserEncore(s)) return;
-    const held = holdT ?? (slap ? 1.05 : 0.1);
+    const held = chargeHold(holdT, slap);
     const { power } = shotFromHold(held, Math.hypot(s.vx, s.vz));
     const backhand = puckOnBackhand(s);
     const shelf = drillTopShelfPin();
@@ -9318,7 +9380,7 @@ function refreshUserStickCommit(act: Actions): void {
   userStickCommit = aLive || xLive;
 }
 
-/** Owned slap windup. Hard-caps at 3s for this hold and does not fire the shot. */
+/** Owned shot windup. Hard-caps at 3s and does not fire a slap. A backhand releases at SHOT_FULL_HOLD. */
 function accumulateOwnedShotWindup(user: Skater, dt: number): void {
   if (user.kind !== "goalie") {
     if (world.shotWindupT < USER_A_PROTECT_S) {
@@ -9327,7 +9389,25 @@ function accumulateOwnedShotWindup(user: Skater, dt: number): void {
   } else {
     world.shotWindupT += dt;
   }
-  user.windup = Math.min(1, world.shotWindupT / 1);
+  user.windup = Math.min(1, world.shotWindupT / SHOT_FULL_HOLD);
+}
+
+function capBackhandWindup(user: Skater): void {
+  if (user.kind === "goalie" || world.puck.owner !== user.id) return;
+  if (!puckOnBackhand(user)) return;
+  user.windup = Math.min(0.48, user.windup);
+}
+
+/** Fires the backhand once the hold crosses SHOT_FULL_HOLD. Returns true when it shot. */
+function releaseHeldBackhand(user: Skater, act: Actions): boolean {
+  if (user.kind === "goalie" || world.puck.owner !== user.id) return false;
+  if (world.shotWindupT < SHOT_FULL_HOLD) return false;
+  if (!puckOnBackhand(user)) return false;
+  const wait = useGame.getState().clockMode === "drill" ? 0.02 : 0.25;
+  if (world.time - world.lastShoot <= wait) return false;
+  const aim = shotAim(act);
+  doShot(user, aim.mx, aim.my, false, world.shotWindupT);
+  return true;
 }
 
 function userStickCommitHolds(id: number): boolean {
@@ -9919,6 +9999,8 @@ const checkCloseLeft = new Map<number, number>();
 const checkAbsorbed = new Set<number>();
 // Checked refs stay where they get up through a goal or a finished drill.
 const refStayPut = new WeakSet<Referee>();
+/** Absorb is on. The next decay through 0.2 starts the skater tumble clock. */
+const refOnAbsorb = new WeakSet<Referee>();
 
 function armCheckSwing(s: Skater): void {
   checkAbsorbed.delete(s.id);
@@ -10092,25 +10174,50 @@ function layDownSkater(
   }
 }
 
-function layDownRef(
-  r: Referee,
-  fx: number,
-  fz: number,
-  ivx: number,
-  ivz: number,
-  tumbleP = 0.45,
-): void {
+/** Same strike clock as tumbleRoot. Pitch caps once u reaches TUMBLE_UP. */
+export const TUMBLE_STRIKE = 1.68;
+export const TUMBLE_PITCH_MAX = 1.12;
+export const TUMBLE_PITCH_RATE = 1.55;
+export const TUMBLE_UP = TUMBLE_PITCH_MAX / TUMBLE_PITCH_RATE;
+/** Non-tumble receive on a checked skater. Absorb holds while this decays to 0.2. */
+const ABSORB_STRIKE = 1.25;
+
+/**
+ * Live names for a checked body. Same windows as a skater:
+ * absorb (tumble 0, struck above 0.2), knockout, then recover.
+ */
+export function checkedCyclePose(struck: number, tumble: number): "absorb" | "knockout" | "recover" | null {
+  if (tumble !== 0 && struck > 0.1) {
+    const u = Math.min(1, Math.max(0, 1 - struck / TUMBLE_STRIKE));
+    return u >= TUMBLE_UP ? "recover" : "knockout";
+  }
+  if (tumble === 0 && struck > 0.2) return "absorb";
+  return null;
+}
+
+function layDownRef(r: Referee, fx: number, fz: number, ivx: number, ivz: number): void {
   refStayPut.add(r);
   r.vx = fx * 11 + ivx * 0.45;
   r.vz = fz * 11 + ivz * 0.45;
   r.pose = "idle";
-  if (Math.random() < tumbleP) {
-    r.struck = 1.68;
+  r.struck = ABSORB_STRIKE;
+  r.tumble = 0;
+  refOnAbsorb.add(r);
+}
+
+/** Absorb, then the same tumble a knocked-down skater starts, then recover until struck falls through 0.1. */
+function advanceCheckedRef(r: Referee, dt: number): void {
+  const absorbing = refOnAbsorb.has(r);
+  if (r.struck > 0) r.struck = Math.max(0, r.struck - dt);
+  if (absorbing && r.tumble === 0 && r.struck <= 0.2) {
+    refOnAbsorb.delete(r);
+    r.struck = TUMBLE_STRIKE;
     r.tumble = (Math.random() < 0.5 ? 1 : -1) * (0.85 + Math.random() * 0.45);
-  } else {
-    // Same non-tumble receive timer as a checked skater (layDownSkater).
-    r.struck = 1.25;
+    return;
+  }
+  if (r.tumble !== 0 && r.struck <= 0.1) {
     r.tumble = 0;
+    r.struck = 0;
   }
 }
 
@@ -10566,6 +10673,7 @@ function stepLineBrawl(dt: number, act: Actions): void {
     r.vz = 0;
     r.struck = 0;
     r.tumble = 0;
+    refOnAbsorb.delete(r);
     r.x += (spot.x - r.x) * Math.min(1, 4 * dt);
     r.z += (watchZ - r.z) * Math.min(1, 4 * dt);
     r.yaw = turnToward(r.yaw, -r.x, -RINK_W / 2 + 1.7 - r.z, 6, dt);
@@ -10665,7 +10773,7 @@ function applyUserHit(user: Skater): boolean {
     }
     notePasserChecked(best.s);
   } else if (best.r) {
-    layDownRef(best.r, fx, fz, user.vx, user.vz, tumbleP);
+    layDownRef(best.r, fx, fz, user.vx, user.vz);
     absorbHitterMomentum(user);
     userCheckRefs.add(best.r);
   }
@@ -10831,16 +10939,7 @@ function applyHit(user: Skater): boolean {
       const lane = checkLane(dx, dz, fx, fz, spot.reach, spot.lateral);
       if (lane.ok) {
         landed = true;
-        r.vx = fx * 11 + user.vx * 0.45;
-        r.vz = fz * 11 + user.vz * 0.45;
-        r.pose = "idle";
-        if (Math.random() < 0.45) {
-          r.struck = 1.68;
-          r.tumble = (Math.random() < 0.5 ? 1 : -1) * (0.85 + Math.random() * 0.45);
-        } else {
-          r.struck = 1.25;
-          r.tumble = 0;
-        }
+        layDownRef(r, fx, fz, user.vx, user.vz);
       }
     }
   }
@@ -12160,7 +12259,7 @@ function startStoppage(kind: "goal" | "cover" | "offside" | "crowd", net?: 1 | -
         scorer.dive = 0;
       }
     }
-    maybeStickRage(homeScored);
+    beginGoalReactions(homeScored ? "away" : "home");
     if (scorer) {
       const anchor = scorer.kind === "goalie" ? skaterCheerLead(scorer.side) : scorer;
       assignGoalCheer(scorer.side, anchor?.id ?? scorer.id);
@@ -12687,6 +12786,7 @@ function placeDrillBoxRef(r: Referee): void {
   r.poseT = 0;
   r.struck = 0;
   r.tumble = 0;
+  refOnAbsorb.delete(r);
 }
 
 function placeDrillIceRef(r: Referee): void {
@@ -12699,6 +12799,7 @@ function placeDrillIceRef(r: Referee): void {
   r.poseT = 0;
   r.struck = 0;
   r.tumble = 0;
+  refOnAbsorb.delete(r);
 }
 
 function drillDropLive(): boolean {
@@ -12727,6 +12828,7 @@ function beginDrillDrop(): void {
   r.struck = 0;
   r.tumble = 0;
   refStayPut.delete(r);
+  refOnAbsorb.delete(r);
   placeDrillBoxRef(world.ref);
   world.puck.x = world.faceX;
   world.puck.z = world.faceZ;
@@ -12791,8 +12893,8 @@ function stepDrillRefs(dt: number): void {
   placeDrillBoxRef(world.ref);
   const r = world.ref2;
   r.poseT += dt;
-  if (r.struck > 0) {
-    r.struck = Math.max(0, r.struck - dt);
+  if (r.struck > 0 || r.tumble !== 0) {
+    advanceCheckedRef(r, dt);
     r.vx *= Math.exp(-3.2 * dt);
     r.vz *= Math.exp(-3.2 * dt);
     r.x += r.vx * dt;
@@ -12804,6 +12906,7 @@ function stepDrillRefs(dt: number): void {
     collideRefIce(r);
     return;
   }
+  refOnAbsorb.delete(r);
   if (refBackInPlay()) refStayPut.delete(r);
   r.vx = 0;
   r.vz = 0;
@@ -12848,8 +12951,8 @@ function stepDrillRefs(dt: number): void {
 
 function stepOneRef(r: Referee, lane: 1 | -1, dt: number): void {
   r.poseT += dt;
-  if (r.struck > 0) {
-    r.struck = Math.max(0, r.struck - dt);
+  if (r.struck > 0 || r.tumble !== 0) {
+    advanceCheckedRef(r, dt);
     r.vx *= Math.exp(-3.2 * dt);
     r.vz *= Math.exp(-3.2 * dt);
     r.x += r.vx * dt;
@@ -12857,6 +12960,7 @@ function stepOneRef(r: Referee, lane: 1 | -1, dt: number): void {
     collideRefIce(r);
     return;
   }
+  refOnAbsorb.delete(r);
   if (refBackInPlay()) refStayPut.delete(r);
   if (world.drillWon && world.goalTicker > 0) {
     const netX = world.homeAttack * GOAL_LINE_X;
@@ -13064,7 +13168,7 @@ function cpuOneTimerShot(s: Skater): void {
 function maybeLoadedSlap(s: Skater): boolean {
   if (s.id !== world.userId || s.kind === "goalie") return false;
   if (world.oneTimerArmed || world.windupCancel) return false;
-  if (!(world.shotWindupT > 0.5)) return false;
+  if (!(world.shotWindupT > SHOT_FULL_HOLD * 0.5)) return false;
   doShot(s, slapMx, slapMy, true, world.shotWindupT);
   return true;
 }
@@ -14374,7 +14478,7 @@ type ReplaySnap = {
   bodies: ReplayBody[];
   ref: ReplayRef;
   ref2: ReplayRef;
-  rage: StickRage | null;
+  rage: StickRage[];
   /** Post-hold faceoff frame. Trim keeps the earliest one still in the buffer. */
   ceremony?: boolean;
 };
@@ -14872,7 +14976,7 @@ function scoredOnGoalie(): Skater | undefined {
 
 function stepGoalieClear(dt: number): void {
   const g = scoredOnGoalie();
-  if (!g) return;
+  if (!g || g.smashKind > 0) return;
   const t = world.stoppageT;
   const puck = world.puck;
   const out = attackDir(g.side);
@@ -15133,7 +15237,6 @@ function spreadCheerPairs(mates: Skater[], base: { x: number; z: number }[]): vo
   }
 }
 
-const RAGE_NEAR = 6.5;
 const RAGE_STICK = 1.66;
 const RAGE_HAND_X = 0.14;
 const RAGE_HAND_Y = 1.2;
@@ -15165,7 +15268,51 @@ type StickRage = {
   shaft: RagePiece;
 };
 
-let stickRage: StickRage | null = null;
+let stickRages: StickRage[] = [];
+type GoalRefCheck = { id: number; ref: Referee; done: boolean };
+let goalRefChecks: GoalRefCheck[] = [];
+let goalieRageId: number | null = null;
+let goalieRageArmed = false;
+
+function clearGoalReactions(): void {
+  stickRages = [];
+  goalRefChecks = [];
+  goalieRageId = null;
+  goalieRageArmed = false;
+}
+
+function goalReactionLive(): boolean {
+  return stickRages.length > 0 || goalRefChecks.length > 0 || goalieRageId !== null;
+}
+
+function goalReactionSettled(): boolean {
+  for (const rec of stickRages) {
+    const s = world.skaters[rec.id];
+    if (s && s.smashHit <= 0) return false;
+  }
+  for (const job of goalRefChecks) {
+    if (!job.done) return false;
+  }
+  if (goalieRageId !== null) {
+    const g = world.skaters[goalieRageId];
+    if (!goalieRageArmed || !g || g.smashHit <= 0) return false;
+  }
+  return true;
+}
+
+function goalStoppageLimit(): number {
+  if (world.whistle !== "goal" || !goalReactionLive()) return 3.2;
+  const floor = goalieRageId !== null || goalRefChecks.length > 0 ? 4.4 : 3.8;
+  if (!goalReactionSettled()) return 5.2;
+  return floor;
+}
+
+function goalRageBusy(id: number): boolean {
+  if (goalieRageArmed && goalieRageId === id) return true;
+  for (const rec of stickRages) if (rec.id === id) return true;
+  for (const job of goalRefChecks) if (job.id === id) return true;
+  return false;
+}
 
 function blankPiece(): RagePiece {
   return {
@@ -15216,37 +15363,37 @@ function rageHand(s: Skater): { x: number; y: number; z: number } {
   };
 }
 
-function snapRage(): StickRage | null {
-  if (!stickRage) return null;
-  return {
-    id: stickRage.id,
-    kind: stickRage.kind,
-    blade: { ...stickRage.blade },
-    shaft: { ...stickRage.shaft },
-  };
+function snapRage(): StickRage[] {
+  return stickRages.map((rec) => ({
+    id: rec.id,
+    kind: rec.kind,
+    blade: { ...rec.blade },
+    shaft: { ...rec.shaft },
+  }));
 }
 
-function applyRage(r: StickRage | null | undefined): void {
+function applyRage(r: StickRage[] | StickRage | null | undefined): void {
   if (!r) {
-    stickRage = null;
+    stickRages = [];
     return;
   }
-  stickRage = {
-    id: r.id,
-    kind: r.kind,
-    blade: { ...r.blade },
-    shaft: { ...r.shaft },
-  };
+  const list = Array.isArray(r) ? r : [r];
+  stickRages = list.map((rec) => ({
+    id: rec.id,
+    kind: rec.kind,
+    blade: { ...rec.blade },
+    shaft: { ...rec.shaft },
+  }));
 }
 
 /** Still stick-smash for the pose gallery. The skater's smash fields are already set. */
 export function armStickRage(id: number): void {
   const s = world.skaters[id];
   if (!s || s.kind === "goalie" || s.smashKind <= 0) {
-    stickRage = null;
+    stickRages = [];
     return;
   }
-  stickRage = { id, kind: s.smashKind, blade: blankPiece(), shaft: blankPiece() };
+  stickRages = [{ id, kind: s.smashKind, blade: blankPiece(), shaft: blankPiece() }];
 }
 
 export function rageDraw(id: number): {
@@ -15260,9 +15407,10 @@ export function rageDraw(id: number): {
   blade: RagePiece;
   shaft: RagePiece;
 } | null {
-  if (!stickRage || stickRage.id !== id) return null;
+  const rec = stickRages.find((one) => one.id === id);
+  if (!rec) return null;
   const s = world.skaters[id];
-  if (!s || s.smashKind <= 0) return null;
+  if (!s || s.kind === "goalie" || s.smashKind <= 0) return null;
   const iron = rageSpot(s.smashKind, defendDir(s.side));
   const hit = s.smashHit > 0 ? s.smashHit : 0;
   return {
@@ -15273,47 +15421,146 @@ export function rageDraw(id: number): {
     ironX: iron.x,
     ironY: iron.y,
     ironZ: iron.z,
-    blade: stickRage.blade,
-    shaft: stickRage.shaft,
+    blade: rec.blade,
+    shaft: rec.shaft,
   };
 }
 
-function maybeStickRage(homeScored: boolean): void {
-  stickRage = null;
-  if (!homeScored) return;
-  const mode = useGame.getState().clockMode;
-  if (mode !== "roller" && mode !== "game") return;
-  if (Math.random() >= 0.34) return;
-  const side = defendDir("away");
-  const mouth = side * GOAL_LINE_X;
-  let best: Skater | undefined;
-  let bestD = RAGE_NEAR;
-  for (const s of world.skaters) {
-    if (s.side !== "away" || s.kind === "goalie") continue;
-    if (s.struck > 0.45 || s.tumble !== 0) continue;
-    const d = Math.hypot(s.x - mouth, s.z);
+function silenceForRage(s: Skater): void {
+  s.celebrate = 0;
+  s.windup = 0;
+  s.follow = 0;
+  s.poke = 0;
+  s.deke = 0;
+  s.hit = 0;
+  s.stun = 0;
+  s.struck = 0;
+  s.dive = 0;
+  s.tumble = 0;
+  s.coverPose = 0;
+}
+
+function armSkaterRage(s: Skater, kind: number): void {
+  silenceForRage(s);
+  s.smashKind = kind;
+  s.smash = 0;
+  s.smashHit = 0;
+  stickRages.push({ id: s.id, kind, blade: blankPiece(), shaft: blankPiece() });
+}
+
+function rageKindFor(s: Skater, n: number): number {
+  const post = s.z >= 0 ? 2 : 3;
+  const other = post === 2 ? 3 : 2;
+  if (n % 3 === 2) return 1;
+  return n % 2 === 0 ? post : other;
+}
+
+function rageWant(n: number): number {
+  if (n <= 1) return n;
+  const cap = Math.min(4, n);
+  if (cap === 2) return 2;
+  const roll = Math.random();
+  if (roll < 0.2) return 2;
+  if (roll < 0.7 || cap === 3) return 3;
+  return 4;
+}
+
+function nearestOpenRef(s: Skater, taken: Set<Referee>): Referee | null {
+  let best: Referee | null = null;
+  let bestD = Infinity;
+  for (const r of refsOnIce()) {
+    if (taken.has(r) || r.struck > 0.45) continue;
+    const d = Math.hypot(r.x - s.x, r.z - s.z);
     if (d < bestD) {
       bestD = d;
-      best = s;
+      best = r;
     }
   }
-  if (!best) return;
-  const post = Math.abs(best.z) < 0.35 ? (Math.random() < 0.5 ? 1 : -1) : best.z >= 0 ? 1 : -1;
-  const bar = Math.random() < 0.5;
-  best.smashKind = bar ? 1 : post > 0 ? 2 : 3;
-  best.smash = 0;
-  best.smashHit = 0;
-  best.celebrate = 0;
-  best.windup = 0;
-  best.follow = 0;
-  best.poke = 0;
-  best.deke = 0;
-  best.hit = 0;
-  best.stun = 0;
-  best.struck = 0;
-  best.dive = 0;
-  best.tumble = 0;
-  stickRage = { id: best.id, kind: best.smashKind, blade: blankPiece(), shaft: blankPiece() };
+  return best;
+}
+
+function beginGoalReactions(scoredOn: "home" | "away"): void {
+  clearGoalReactions();
+  const userId = world.userId;
+  const eligible = (s: Skater) =>
+    s.side === scoredOn && s.id !== userId && s.tumble === 0 && s.struck <= 0.45 && !heldBody(s.id);
+  const goalie = world.skaters.find((s) => s.kind === "goalie" && eligible(s));
+  const mouth = defendDir(scoredOn) * GOAL_LINE_X;
+  const skaters = world.skaters
+    .filter((s) => s.kind !== "goalie" && eligible(s))
+    .sort((a, b) => Math.hypot(a.x - mouth, a.z) - Math.hypot(b.x - mouth, b.z));
+  let slots = rageWant(skaters.length + (goalie ? 1 : 0));
+  if (slots <= 0) return;
+  const used = new Set<number>();
+  const takenRefs = new Set<Referee>();
+  let kindN = 0;
+  const takeNet = (): Skater | undefined => {
+    for (const s of skaters) {
+      if (used.has(s.id)) continue;
+      used.add(s.id);
+      return s;
+    }
+    return undefined;
+  };
+  const takeRefSkater = (): { s: Skater; ref: Referee } | undefined => {
+    let best: Skater | undefined;
+    let bestRef: Referee | null = null;
+    let bestD = Infinity;
+    for (const s of skaters) {
+      if (used.has(s.id)) continue;
+      const r = nearestOpenRef(s, takenRefs);
+      if (!r) continue;
+      const d = Math.hypot(r.x - s.x, r.z - s.z);
+      if (d < bestD) {
+        bestD = d;
+        best = s;
+        bestRef = r;
+      }
+    }
+    if (!best || !bestRef) return undefined;
+    used.add(best.id);
+    takenRefs.add(bestRef);
+    return { s: best, ref: bestRef };
+  };
+  const canCheck = useGame.getState().checkRefs && refsOnIce().some((r) => r.struck <= 0.45);
+  if (skaters.length > 0 && slots > 0) {
+    const s = takeNet();
+    if (s) {
+      armSkaterRage(s, rageKindFor(s, kindN));
+      kindN += 1;
+      slots -= 1;
+    }
+  }
+  if (goalie && slots > 0) {
+    goalieRageId = goalie.id;
+    slots -= 1;
+  }
+  if (canCheck && slots > 0) {
+    const hit = takeRefSkater();
+    if (hit) {
+      silenceForRage(hit.s);
+      goalRefChecks.push({ id: hit.s.id, ref: hit.ref, done: false });
+      slots -= 1;
+    }
+  }
+  while (slots > 0) {
+    const preferRef = canCheck && takenRefs.size < refsOnIce().length && Math.random() < 0.5;
+    if (preferRef) {
+      const hit = takeRefSkater();
+      if (hit) {
+        silenceForRage(hit.s);
+        goalRefChecks.push({ id: hit.s.id, ref: hit.ref, done: false });
+        slots -= 1;
+        continue;
+      }
+    }
+    const s = takeNet();
+    if (!s) break;
+    armSkaterRage(s, rageKindFor(s, kindN));
+    kindN += 1;
+    slots -= 1;
+  }
+  if (!goalReactionLive() && goalie) goalieRageId = goalie.id;
 }
 
 function kickPiece(
@@ -15375,10 +15622,7 @@ function stepRagePiece(p: RagePiece, dt: number): void {
   }
 }
 
-function stepStickRage(dt: number): void {
-  if (!stickRage) return;
-  const s = world.skaters[stickRage.id];
-  if (!s || s.smashKind <= 0) return;
+function stepRageApproach(s: Skater, dt: number): void {
   s.smash += dt;
   s.poke = 0;
   s.windup = 0;
@@ -15387,10 +15631,15 @@ function stepStickRage(dt: number): void {
   const dx = iron.sx - s.x;
   const dz = iron.sz - s.z;
   const d = Math.hypot(dx, dz) || 1;
-  if (s.smashHit <= 0 && (d < 0.42 || (s.smash > 1.7 && d < 0.95))) {
+  const goalie = s.kind === "goalie";
+  const near = goalie ? 0.75 : 0.42;
+  const late = goalie ? 0.85 : 1.7;
+  const lateD = goalie ? 1.2 : 0.95;
+  if (s.smashHit <= 0 && (d < near || (s.smash > late && d < lateD))) {
     s.smashHit = Math.max(0.8, s.smash + 0.52);
   }
-  if (d > 0.32 && (s.smashHit <= 0 || s.smash < s.smashHit)) {
+  const hold = goalie ? 0.55 : 0.32;
+  if (d > hold && (s.smashHit <= 0 || s.smash < s.smashHit)) {
     integrateSkater(s, dx / d, dz / d, 1, false, dt);
   } else {
     s.vx *= Math.exp(-8 * dt);
@@ -15401,55 +15650,120 @@ function stepStickRage(dt: number): void {
     s.stride += Math.hypot(s.vx, s.vz) * 2.35 * dt;
   }
   s.yaw = turnToward(s.yaw, iron.x - s.x, iron.z - s.z, 12, dt);
-  stepRagePiece(stickRage.blade, dt);
-  stepRagePiece(stickRage.shaft, dt);
-  const hand = rageHand(s);
-  let bdx = hand.x - iron.x;
-  let bdy = hand.y - iron.y;
-  let bdz = hand.z - iron.z;
-  const reach = Math.hypot(bdx, bdy, bdz) || 1;
-  const maxReach = RAGE_STICK * 0.9;
-  let bx = iron.x;
-  let by = iron.y;
-  let bz = iron.z;
-  if (reach > maxReach) {
-    const sc = maxReach / reach;
-    bx = hand.x - bdx * sc;
-    by = hand.y - bdy * sc;
-    bz = hand.z - bdz * sc;
+}
+
+function stepStickRage(dt: number): void {
+  for (const rec of stickRages) {
+    const s = world.skaters[rec.id];
+    if (!s || s.kind === "goalie" || s.smashKind <= 0) continue;
+    stepRageApproach(s, dt);
+    stepRagePiece(rec.blade, dt);
+    stepRagePiece(rec.shaft, dt);
+    const iron = rageSpot(s.smashKind, defendDir(s.side));
+    const hand = rageHand(s);
+    const bdx = hand.x - iron.x;
+    const bdy = hand.y - iron.y;
+    const bdz = hand.z - iron.z;
+    const reach = Math.hypot(bdx, bdy, bdz) || 1;
+    const maxReach = RAGE_STICK * 0.9;
+    let bx = iron.x;
+    let by = iron.y;
+    let bz = iron.z;
+    if (reach > maxReach) {
+      const sc = maxReach / reach;
+      bx = hand.x - bdx * sc;
+      by = hand.y - bdy * sc;
+      bz = hand.z - bdz * sc;
+    }
+    const dlen = Math.hypot(hand.x - bx, hand.y - by, hand.z - bz) || 1;
+    const dir = { x: (hand.x - bx) / dlen, y: (hand.y - by) / dlen, z: (hand.z - bz) / dlen };
+    const h = heading(s.yaw);
+    const post = s.smashKind === 3 ? -1 : 1;
+    if (!rec.blade.on && s.smashHit > 0 && s.smash >= s.smashHit) {
+      kickPiece(
+        rec.blade,
+        bx,
+        by,
+        bz,
+        dir.x,
+        dir.y,
+        dir.z,
+        -h.fx * (3.4 + Math.random() * 1.8) + post * h.fz * 1.4,
+        3.6 + Math.random() * 1.6,
+        -h.fz * (3.4 + Math.random() * 1.8) - post * h.fx * 1.4,
+      );
+    }
+    if (!rec.shaft.on && s.smashHit > 0 && s.smash >= s.smashHit + 0.4) {
+      kickPiece(
+        rec.shaft,
+        bx + dir.x * RAGE_STICK * 0.75,
+        by + dir.y * RAGE_STICK * 0.75,
+        bz + dir.z * RAGE_STICK * 0.75,
+        dir.x,
+        dir.y,
+        dir.z,
+        -h.fx * (5.2 + Math.random() * 1.6) - post * h.fz * 1.8,
+        4.4 + Math.random() * 1.4,
+        -h.fz * (5.2 + Math.random() * 1.6) + post * h.fx * 1.8,
+      );
+    }
   }
-  const dlen = Math.hypot(hand.x - bx, hand.y - by, hand.z - bz) || 1;
-  const dir = { x: (hand.x - bx) / dlen, y: (hand.y - by) / dlen, z: (hand.z - bz) / dlen };
-  const h = heading(s.yaw);
-  const post = s.smashKind === 3 ? -1 : 1;
-  if (!stickRage.blade.on && s.smashHit > 0 && s.smash >= s.smashHit) {
-    kickPiece(
-      stickRage.blade,
-      bx,
-      by,
-      bz,
-      dir.x,
-      dir.y,
-      dir.z,
-      -h.fx * (3.4 + Math.random() * 1.8) + post * h.fz * 1.4,
-      3.6 + Math.random() * 1.6,
-      -h.fz * (3.4 + Math.random() * 1.8) - post * h.fx * 1.4,
-    );
+}
+
+function stepGoalieRage(dt: number): void {
+  if (goalieRageId === null) return;
+  const g = world.skaters[goalieRageId];
+  if (!g) return;
+  if (!goalieRageArmed) {
+    // Scoop and sling finish first. Rage starts on the next whistle beat.
+    if (world.stoppageT < 1.22) return;
+    silenceForRage(g);
+    g.smashKind = 1;
+    g.smash = 0;
+    g.smashHit = 0;
+    goalieRageArmed = true;
   }
-  if (!stickRage.shaft.on && s.smashHit > 0 && s.smash >= s.smashHit + 0.4) {
-    kickPiece(
-      stickRage.shaft,
-      bx + dir.x * RAGE_STICK * 0.75,
-      by + dir.y * RAGE_STICK * 0.75,
-      bz + dir.z * RAGE_STICK * 0.75,
-      dir.x,
-      dir.y,
-      dir.z,
-      -h.fx * (5.2 + Math.random() * 1.6) - post * h.fz * 1.8,
-      4.4 + Math.random() * 1.4,
-      -h.fz * (5.2 + Math.random() * 1.6) + post * h.fx * 1.8,
-    );
+  stepRageApproach(g, dt);
+}
+
+function stepGoalRefChecks(dt: number): void {
+  for (const job of goalRefChecks) {
+    const s = world.skaters[job.id];
+    if (!s) continue;
+    if (job.done) {
+      s.vx *= Math.exp(-6 * dt);
+      s.vz *= Math.exp(-6 * dt);
+      s.x += s.vx * dt;
+      s.z += s.vz * dt;
+      collideSkater(s);
+      continue;
+    }
+    const r = job.ref;
+    if (r.struck > 0.45) {
+      job.done = true;
+      continue;
+    }
+    const dx = r.x - s.x;
+    const dz = r.z - s.z;
+    const d = Math.hypot(dx, dz) || 1;
+    s.yaw = turnToward(s.yaw, dx, dz, 14, dt);
+    if (d < 1.35) {
+      const { fx, fz } = heading(s.yaw);
+      s.hit = Math.max(s.hit, 0.48);
+      layDownRef(r, fx, fz, s.vx, s.vz);
+      job.done = true;
+      s.vx *= 0.25;
+      s.vz *= 0.25;
+    } else {
+      if (d < 2.6) s.hit = Math.max(s.hit, 0.42);
+      integrateSkater(s, dx / d, dz / d, 1, d > 6, dt);
+    }
   }
+}
+
+function stepGoalReactions(dt: number): void {
+  stepGoalieRage(dt);
+  stepGoalRefChecks(dt);
 }
 
 function stepGoalCelebrate(dt: number): void {
@@ -15853,6 +16167,7 @@ function stepPlay(dt: number, act: Actions): void {
     if (world.whistle === "goal") {
       stepGoalCelebrate(dt);
       stepStickRage(dt);
+      stepGoalReactions(dt);
       stepGoalieClear(dt);
       stepGoalPuck(dt);
     }
@@ -15896,14 +16211,12 @@ function stepPlay(dt: number, act: Actions): void {
         }
         if (act.xDown && !world.windupCancel) {
           accumulateOwnedShotWindup(user, dt);
-          if (useGame.getState().controlProfile === "stick" && puckOnBackhand(user)) {
-            user.windup = Math.min(0.48, user.windup);
-          }
+          capBackhandWindup(user);
           if (act.bEdge) {
             world.windupCancel = true;
             user.windup = 0;
             world.shotWindupT = 0;
-          } else {
+          } else if (!releaseHeldBackhand(user, act)) {
             userWinding = true;
           }
         } else if (skill.loading) {
@@ -15957,7 +16270,7 @@ function stepPlay(dt: number, act: Actions): void {
       }
       for (const s of world.skaters) {
         if (s.id === world.userId || s.kind === "goalie") continue;
-        if (s.smashKind > 0) continue;
+        if (s.smashKind > 0 || goalRageBusy(s.id)) continue;
         if (world.whistle === "goal" && s.side === (world.goalSide ?? s.side)) continue;
         if (retaliator && s.id === retaliator.id) {
           const dx = user.x - s.x;
@@ -15993,7 +16306,7 @@ function stepPlay(dt: number, act: Actions): void {
       for (const s of world.skaters) {
         if (s.kind === "goalie" && (s.stun > 0.04 || s.struck > 0.18 || s.tumble !== 0)) continue;
         if (s.id === clearingId) continue;
-        if (s.smashKind > 0) continue;
+        if (s.smashKind > 0 || goalRageBusy(s.id)) continue;
         s.vx *= Math.exp(-4 * dt);
         s.vz *= Math.exp(-4 * dt);
         s.x += s.vx * dt;
@@ -16037,7 +16350,7 @@ function stepPlay(dt: number, act: Actions): void {
         if (world.periodOver) return;
         resetWorld({ keepScore: true });
       }
-    } else if (world.stoppageT > 3.2) {
+    } else if (world.stoppageT > goalStoppageLimit()) {
       if (world.periodOver) return;
       if (endScrimmageMatch()) return;
       resetWorld({ keepScore: true });
@@ -16103,6 +16416,8 @@ function stepPlay(dt: number, act: Actions): void {
   }
 
   const hasPuck = world.puck.owner === user.id;
+  const homeGoalie = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  const goalieHas = !!homeGoalie && world.puck.owner === homeGoalie.id;
   const wx = world.camRx * act.moveX + world.camFx * act.moveY;
   const wz = world.camRz * act.moveX + world.camFz * act.moveY;
   const mag = Math.hypot(act.moveX, act.moveY);
@@ -16129,23 +16444,20 @@ function stepPlay(dt: number, act: Actions): void {
   if (hasPuck) {
     if (user.kind === "goalie") {
       const aim = shotAim(act);
-      if (aReady && act.aTap && world.time - world.lastPass > 0.2) {
-        doGoalieOutlet(user, aim.mx, aim.my, false);
-      }
-      if (aReady && act.aHoldRel && world.time - world.lastPass > 0.2) {
-        doGoalieOutlet(user, aim.mx, aim.my, true);
+      if (aReady && (act.aTap || act.aHoldRel) && world.time - world.lastPass > 0.2) {
+        withChargedPass(act.aHoldFor, () => {
+          doGoalieOutlet(user, aim.mx, aim.my, act.startDown);
+        });
       }
       if ((act.xTap || act.xHoldRel) && world.time - world.lastShoot > 0.25) {
         doShot(user, act.moveX, act.moveY, act.xHoldRel, world.shotWindupT);
       }
     } else {
       let passedThis = false;
-      if (aReady && act.aTap && world.time - world.lastPass > 0.2) {
-        doPass(user, act.moveX, act.moveY, false);
-        passedThis = true;
-      }
-      if (aReady && act.aHoldRel && world.time - world.lastPass > 0.2) {
-        doPass(user, act.moveX, act.moveY, true);
+      if (aReady && (act.aTap || act.aHoldRel) && world.time - world.lastPass > 0.2) {
+        withChargedPass(act.aHoldFor, () => {
+          doPass(user, act.moveX, act.moveY, act.startDown);
+        });
         passedThis = true;
       }
       if (passedThis && (act.xDown || act.xEdge || act.xTap || act.xHeld || act.xHoldRel)) {
@@ -16193,18 +16505,12 @@ function stepPlay(dt: number, act: Actions): void {
     if (user.deke > 0) tickDeke(user, dt);
     if (act.xDown && !world.windupCancel) {
       accumulateOwnedShotWindup(user, dt);
-      if (
-        user.kind !== "goalie" &&
-        useGame.getState().controlProfile === "stick" &&
-        puckOnBackhand(user)
-      ) {
-        user.windup = Math.min(0.48, user.windup);
-      }
+      capBackhandWindup(user);
       if (act.bEdge) {
         world.windupCancel = true;
         user.windup = 0;
         world.shotWindupT = 0;
-      } else if (user.kind !== "goalie") {
+      } else if (user.kind !== "goalie" && !releaseHeldBackhand(user, act)) {
         userWinding = true;
       }
     } else if (skillStickLoading && user.kind !== "goalie") {
@@ -16223,17 +16529,19 @@ function stepPlay(dt: number, act: Actions): void {
     if (skillPoke) skillPokePush = true;
     else armSkillStickHit(user, act, false);
     if (user.kind !== "goalie") stepSkillStick(user, act, false);
-    const g = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
-    const goalieHas = g !== undefined && world.puck.owner === g.id;
+    const g = homeGoalie;
     const xGo = act.xEdge || act.xTap || act.xDown || act.xHoldRel;
     if (
       aReady &&
       goalieHas &&
-      (act.aTap || act.aEdge || act.aHoldRel) &&
+      g &&
+      (act.aTap || act.aHoldRel) &&
       world.time - world.lastPass > 0.12
     ) {
       const aim = shotAim(act);
-      doGoalieOutlet(g, aim.mx, aim.my, act.aHoldRel);
+      withChargedPass(act.aHoldFor, () => {
+        doGoalieOutlet(g, aim.mx, aim.my, act.startDown);
+      });
     } else if (
       goalieHas &&
       g &&
@@ -16242,7 +16550,7 @@ function stepPlay(dt: number, act: Actions): void {
     ) {
       const aim = shotAim(act);
       doShot(g, aim.mx, aim.my, act.xHoldRel, world.shotWindupT);
-    } else if (aReady && act.aEdge && !userPassInFlight()) {
+    } else if (aReady && act.aEdge && !goalieHas && !userPassInFlight()) {
       changePlayer();
     }
     const shotArm = xGo;
@@ -16281,7 +16589,7 @@ function stepPlay(dt: number, act: Actions): void {
     if (!world.oneTimerArmed && user.kind !== "goalie" && !goalieHas) {
       if (act.xDown && !world.windupCancel) {
         world.shotWindupT += dt;
-        user.windup = Math.min(1, world.shotWindupT / 1);
+        user.windup = Math.min(1, world.shotWindupT / SHOT_FULL_HOLD);
         if (act.bEdge) {
           world.windupCancel = true;
           user.windup = 0;
@@ -16305,7 +16613,7 @@ function stepPlay(dt: number, act: Actions): void {
       world.oneTimerSlap = true;
       world.shotWindupT += dt;
       const t = oneTimerReceiver();
-      if (t) t.windup = Math.min(1, world.shotWindupT / 1);
+      if (t) t.windup = Math.min(1, world.shotWindupT / SHOT_FULL_HOLD);
       if (act.bEdge) {
         world.windupCancel = true;
         world.oneTimerSlap = false;
@@ -16330,10 +16638,10 @@ function stepPlay(dt: number, act: Actions): void {
   }
 
   let charge = 0;
-  let kind: "pass" | "shot" | null = null;
-  if (hasPuck && !world.faceoffA && act.aDown) {
-    charge = act.aHeld ? 1 : 0.4;
-    kind = "pass";
+  let kind: "pass" | "saucer" | "shot" | null = null;
+  if (aReady && act.aDown && (hasPuck || (goalieHas && user.kind !== "goalie"))) {
+    charge = Math.min(1, Math.max(0, act.aHoldFor) / PASS_FULL_HOLD);
+    kind = act.startDown ? "saucer" : "pass";
   } else if (act.xDown && !world.windupCancel && (hasPuck || world.shotWindupT > 0.28)) {
     charge = act.xHeld ? 1 : 0.4;
     kind = "shot";
@@ -16644,12 +16952,16 @@ export function installControlsProbe(): void {
       if (side === "home") world.userId = g.id;
       useGame.getState().setWhistle(null);
     },
-    forceGoal: () => {
-      const s = world.skaters[world.userId];
-      if (s) world.lastShooter = s.id;
-      world.puck.x = world.homeAttack * GOAL_LINE_X + world.homeAttack * 0.3;
+    forceGoal: (net?: 1 | -1) => {
+      const side = net === -1 || net === 1 ? net : world.homeAttack;
+      const want: "home" | "away" = side === world.homeAttack ? "home" : "away";
+      const scorer =
+        world.skaters.find((p) => p.id === world.userId && p.side === want && p.kind !== "goalie") ??
+        world.skaters.find((p) => p.side === want && p.kind !== "goalie");
+      if (scorer) world.lastShooter = scorer.id;
+      world.puck.x = side * GOAL_LINE_X + side * 0.3;
       world.puck.z = 0;
-      startStoppage("goal", world.homeAttack);
+      startStoppage("goal", side);
     },
   };
 }

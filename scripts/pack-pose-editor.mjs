@@ -75,11 +75,17 @@ const dist = join(root, distName);
 const { js, css } = bundleFrom(dist);
 if (isPublic) {
   const stripped = js.replaceAll("NeutralToneMapping", "").replaceAll("`Neutral`", "");
-  // faceoff, checked, backhandCarry, speedCarry, and the other public poses are public. These tokens stay private.
-  const leak = ["poseGalleryFull", "goalieBench", "Goalie bench", "goalieUpright", "Neutral"].find((token) =>
+  const leak = ["poseGalleryFull", "Neutral"].find((token) =>
     stripped.includes(token),
   );
   if (leak) throw new Error(`pack-pose-editor: public bundle references the private gallery (${leak})`);
+  for (const token of ["goalieUpright", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGloveSave", "goalieDivingGloveSave", "goalieProtectLeft", "goalieProtectRight", "goalieDivingStickSave", "goalieGetUp"]) {
+    if (!stripped.includes(token)) throw new Error(`pack-pose-editor: public bundle is missing ${token}`);
+  }
+} else {
+  for (const token of ["bench", "goalieUpright", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGetUp", "goalieGloveSave", "goalieDivingGloveSave", "goalieDivingStickSave", "goalieProtectLeft", "goalieProtectRight"]) {
+    if (!js.includes(token)) throw new Error(`pack-pose-editor: private bundle is missing ${token}`);
+  }
 }
 const html = `<!DOCTYPE html>
 <html lang="en">

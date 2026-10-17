@@ -1,5 +1,6 @@
 import {
   burstPoseWeight,
+  checkedCyclePose,
   goalieButterflyPose,
   goaliePlaysPuck,
   goalieZKind,
@@ -10,7 +11,6 @@ import {
 } from "./sim";
 import { setPoseInfer } from "./poseOverrides";
 
-const TUMBLE_UP = 1.12 / 1.55;
 const READY_COAST = 1.2;
 const READY_SKATE = 2.6;
 
@@ -26,12 +26,6 @@ function brawlLive(id: number): boolean {
 
 function tumbling(s: Skater): boolean {
   return s.tumble !== 0 && s.struck > 0.1;
-}
-
-function rising(s: Skater): boolean {
-  if (!tumbling(s)) return false;
-  const u = Math.min(1, Math.max(0, 1 - s.struck / 1.68));
-  return u >= TUMBLE_UP;
 }
 
 function forehandFollowHold(s: Skater): boolean {
@@ -62,6 +56,7 @@ function faceoffOpen(s: Skater): boolean {
 export function inferNamedPose(s: Skater, index: number): string | null {
   const goalie = s.kind === "goalie";
   if (brawlLive(s.id)) return "fight";
+  if (goalie && !tumbling(s) && s.smashKind > 0 && s.smashHit > 0 && s.dive <= 0.04) return "goalieRage";
   if (!goalie && s.celebrate > 0.05 && s.hit <= 0 && !tumbling(s) && s.struck <= 0.2 && !brawlLive(s.id) && !rageDraw(s.id) && s.dive <= 0.04) {
     return "celebrate";
   }
@@ -73,9 +68,10 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   if (!goalie && rageDraw(s.id)) return "rage";
   if (goalie && tumbling(s)) return "goalieGetUp";
   if (!goalie && s.dive > 0.04) return "dive";
-  if (!goalie && rising(s)) return "recover";
-  if (!goalie && tumbling(s)) return "knockout";
-  if (!goalie && s.struck > 0.2 && s.tumble === 0) return "absorb";
+  if (!goalie) {
+    const checked = checkedCyclePose(s.struck, s.tumble);
+    if (checked) return checked;
+  }
   if (!goalie && forehandFollowHold(s)) return "shot-follow-through";
   if (!goalie && s.follow <= 0.02 && s.windup > 0.5) return "slap";
   if (!goalie && s.follow <= 0.02 && s.windup > 0.04 && s.windup <= 0.5 && world.lastShotBackhand) return "backhandShot";
@@ -115,7 +111,7 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   }
 
   const speed = Math.hypot(s.vx, s.vz);
-  if (!goalie && !owns && speed >= READY_SKATE) return "stride";
+  if (!goalie && !owns && speed >= READY_SKATE) return "strideLeft";
   if (!goalie && !owns && speed <= READY_COAST && s.dive <= 0.04 && !tumbling(s) && s.hit <= 0 && s.struck <= 0.2 && s.poke <= 0.04 && s.celebrate <= 0.05) {
     return "ready";
   }

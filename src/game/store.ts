@@ -9,6 +9,17 @@ export type PlayMode = "practice" | "roller" | "scrimmage" | "game" | "drill";
 export type DrillTargets = 4 | 8 | 12 | 16;
 export type ControlProfile = "classic" | "wings" | "stick";
 export type ShotKind = "wrist" | "snap" | "slap" | "backhand";
+export type HudRelease = ShotKind | "pass" | "saucer";
+
+export function hudReleaseName(kind: HudRelease | null): string {
+  if (kind === "slap") return "slap shot";
+  if (kind === "snap") return "snap shot";
+  if (kind === "wrist") return "wrist shot";
+  if (kind === "backhand") return "backhand shot";
+  if (kind === "saucer") return "saucer pass";
+  if (kind === "pass") return "pass";
+  return "Shot";
+}
 export type WhistleKind = "goal" | "cover" | "offside" | "brawl" | "crowd" | null;
 
 export const LINEUP_CAP = 6;
@@ -74,13 +85,13 @@ type GameUi = {
   powerPlay: boolean;
   chaos: boolean;
   speed: number;
-  shotKind: ShotKind | null;
+  shotKind: HudRelease | null;
   quality: "high" | "low";
   arenaLook: ArenaLook;
   pad: "Keyboard" | "Gamepad";
   hasPuck: boolean;
   charge: number;
-  chargeKind: "pass" | "shot" | null;
+  chargeKind: "pass" | "saucer" | "shot" | null;
   homeScore: number;
   awayScore: number;
   whistle: WhistleKind;
@@ -130,12 +141,12 @@ type GameUi = {
   setPowerPlay: (v: boolean) => void;
   setChaos: (v: boolean) => void;
   setSpeed: (n: number) => void;
-  setShotKind: (k: ShotKind | null) => void;
+  setShotKind: (k: HudRelease | null) => void;
   setQuality: (q: "high" | "low") => void;
   setArenaLook: (v: ArenaLook) => void;
   setPad: (s: "Keyboard" | "Gamepad") => void;
   setHasPuck: (v: boolean) => void;
-  setCharge: (n: number, kind: "pass" | "shot" | null) => void;
+  setCharge: (n: number, kind: "pass" | "saucer" | "shot" | null) => void;
   setHomeScore: (n: number) => void;
   setAwayScore: (n: number) => void;
   setWhistle: (w: WhistleKind) => void;

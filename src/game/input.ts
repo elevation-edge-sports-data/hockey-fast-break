@@ -6,6 +6,7 @@ export type Actions = {
   aTap: boolean;
   aHoldRel: boolean;
   aHeld: boolean;
+  aHoldFor: number;
   aDown: boolean;
   xEdge: boolean;
   xTap: boolean;
@@ -27,6 +28,7 @@ export type Actions = {
   rbDown: boolean;
   viewPress: boolean;
   viewDown: boolean;
+  startDown: boolean;
   aimX: number;
   aimY: number;
   zoomIn: boolean;
@@ -50,10 +52,11 @@ type Face = {
   tap: boolean;
   holdRel: boolean;
   held: boolean;
+  heldFor: number;
 };
 
 function freshFace(): Face {
-  return { down: false, t0: 0, edge: false, tap: false, holdRel: false, held: false };
+  return { down: false, t0: 0, edge: false, tap: false, holdRel: false, held: false, heldFor: 0 };
 }
 
 const faceA = freshFace();
@@ -146,6 +149,13 @@ export function queueShoot(): void {
 
 export function queuePass(): void {
   faceA.tap = true;
+  faceA.heldFor = 0;
+}
+
+let injectedStart = false;
+
+export function setInjectedStart(v: boolean): void {
+  injectedStart = v;
 }
 
 function track(tr: Face, pressed: boolean, now: number): void {
@@ -157,10 +167,13 @@ function track(tr: Face, pressed: boolean, now: number): void {
     tr.t0 = now;
     tr.edge = true;
     tr.held = false;
+    tr.heldFor = 0;
   } else if (pressed && tr.down) {
-    tr.held = now - tr.t0 >= TAP;
+    tr.heldFor = now - tr.t0;
+    tr.held = tr.heldFor >= TAP;
   } else if (!pressed && tr.down) {
     const heldFor = now - tr.t0;
+    tr.heldFor = heldFor;
     if (heldFor >= TAP) tr.holdRel = true;
     else tr.tap = true;
     tr.down = false;
@@ -217,6 +230,7 @@ type PadRead = {
   lb: boolean;
   rb: boolean;
   view: boolean;
+  start: boolean;
   connected: boolean;
   name: string | null;
 };
@@ -277,6 +291,7 @@ function readStandardPad(pad: Gamepad): PadRead {
     lb: Boolean(pad.buttons[4]?.pressed),
     rb: Boolean(pad.buttons[5]?.pressed),
     view: Boolean(pad.buttons[8]?.pressed),
+    start: Boolean(pad.buttons[9]?.pressed),
     connected: true,
     name: pad.id,
   };
@@ -302,6 +317,7 @@ function readT9Pad(pad: Gamepad): PadRead {
     lb: t9Button(pad, 4),
     rb: t9Button(pad, 5),
     view: t9Button(pad, 8),
+    start: t9Button(pad, 9),
     connected: true,
     name: pad.id,
   };
@@ -337,6 +353,7 @@ function readPad(): PadRead {
       lb: false,
       rb: false,
       view: false,
+      start: false,
       connected: false,
       name: null,
     };
@@ -408,6 +425,7 @@ export function readActions(): Actions {
     aTap: faceA.tap,
     aHoldRel: faceA.holdRel,
     aHeld: faceA.held,
+    aHoldFor: faceA.heldFor,
     aDown: faceA.down,
     xEdge: faceX.edge,
     xTap: faceX.tap,
@@ -429,6 +447,7 @@ export function readActions(): Actions {
     rbDown,
     viewPress: faceView.edge,
     viewDown,
+    startDown: pad.start || injectedStart,
     aimX: ax,
     aimY: ay,
     zoomIn,

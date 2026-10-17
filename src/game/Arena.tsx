@@ -672,10 +672,26 @@ function Truss() {
   );
 }
 
-const HOME_BENCH_NUMS = [84, 62, 42, 25, 11, 10];
-const AWAY_BENCH_NUMS = [2, 4, 9, 14, 17, 19];
-const HOME_BENCH_XS = [-9.15, -7.75, -6.35, -4.95, -3.55, -2.15, -0.75];
-const AWAY_BENCH_XS = [0.75, 2.15, 3.55, 4.95, 6.35, 7.75, 9.15];
+const BENCH_SKATERS = 9;
+const BENCH_SEATS = BENCH_SKATERS + 1;
+const HOME_BENCH_NUMS = [84, 62, 42, 25, 11, 10, 15, 18, 21];
+const AWAY_BENCH_NUMS = [2, 4, 9, 14, 17, 19, 22, 27, 31];
+
+/** 9 skaters plus one goalie. Home index 0 is the end toward −X. */
+function benchXs(end: -1 | 1): number[] {
+  const inner = 0.88;
+  const outer = 9.42;
+  const xs: number[] = [];
+  for (let i = 0; i < BENCH_SEATS; i++) xs.push(inner + ((outer - inner) * i) / (BENCH_SEATS - 1));
+  if (end < 0) {
+    xs.reverse();
+    return xs.map((x) => -x);
+  }
+  return xs;
+}
+
+const HOME_BENCH_XS = benchXs(-1);
+const AWAY_BENCH_XS = benchXs(1);
 
 function penaltyBoxWidth(n: number): number {
   return n <= 2 ? 2.6 : Math.min(5.1, 1.15 + n * 0.96);
@@ -887,13 +903,13 @@ function Benches() {
       <group position={[0, 0, zPost]}>
         <BenchReporter />
       </group>
-      {/* Unrotated seats: local X is world X. holdStick is local -0.58, so only +X seats set it. */}
+      {/* Same pose on both benches. Stick side is not flipped toward center ice. */}
       {HOME_BENCH_XS.map((x, i) => {
         const goalie = i === homeGSlot;
         const number = goalie ? homeGNum : HOME_BENCH_NUMS[i < homeGSlot ? i : i - 1]!;
         return (
-          <group key={`h${number}-${home.id}`} position={[x, 0.75, zBench - 0.04]}>
-            <SeatedPlayer kit={home} number={number} holdStick={!goalie && x > 0} goalie={goalie} seatX={x} poseId={goalie ? "goalieBench" : "bench"} />
+          <group key={`h${i}`} position={[x, 0.75, zBench - 0.04]}>
+            <SeatedPlayer kit={home} number={number} holdStick={!goalie} goalie={goalie} seatX={x} poseId={goalie ? "goalieBench" : "bench"} />
           </group>
         );
       })}
@@ -901,8 +917,8 @@ function Benches() {
         const goalie = i === awayGSlot;
         const number = goalie ? awayGNum : AWAY_BENCH_NUMS[i < awayGSlot ? i : i - 1]!;
         return (
-          <group key={`a${number}-${away.id}`} position={[x, 0.75, zBench - 0.04]}>
-            <SeatedPlayer kit={away} number={number} holdStick={!goalie && x > 0} goalie={goalie} seatX={x} poseId={goalie ? "goalieBench" : "bench"} />
+          <group key={`a${i}`} position={[x, 0.75, zBench - 0.04]}>
+            <SeatedPlayer kit={away} number={number} holdStick={!goalie} goalie={goalie} seatX={x} poseId={goalie ? "goalieBench" : "bench"} />
           </group>
         );
       })}

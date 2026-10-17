@@ -109,7 +109,8 @@ export function releaseStickKnobPivot(stick: THREE.Object3D | null, pivot: THREE
 
 /**
  * Parent the stick under the hand without moving it in the world.
- * Goalie editors pass the right hand. Skater editors pass the left hand.
+ * Goalie editors pass the right hand (mesh lHand).
+ * Skater editors pass the left hand (mesh rHand), including strideLeft and strideRight.
  * The gameplay parent is remembered so a save can read the original local space.
  */
 export function mountStickOnHand(stick: THREE.Object3D, hand: THREE.Object3D): void {

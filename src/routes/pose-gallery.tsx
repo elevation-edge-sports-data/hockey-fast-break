@@ -7,7 +7,8 @@ export const Route = createFileRoute("/pose-gallery")({ component: PoseGalleryPa
 const LABEL: Record<PublicPoseId, string> = {
   default: "Default",
   ready: "Ready",
-  stride: "Stride",
+  strideLeft: "Stride left",
+  strideRight: "Stride right",
   faceoff: "Faceoff",
   coast: "Coast",
   puckPossess: "Puck possess",
@@ -26,8 +27,25 @@ const LABEL: Record<PublicPoseId, string> = {
   knockout: "Knockout",
   recover: "Recover",
   celebrate: "Celebrate",
+  rage: "Rage",
   fight: "Fight",
+  bench: "Bench",
+  goalieUpright: "Goalie upright",
+  goalieRage: "Goalie rage",
   goalieButterfly: "Goalie butterfly",
+  goalieMid: "Goalie mid",
+  goaliePerimeter: "Goalie perimeter",
+  goalieCheer: "Goalie celebrate",
+  goalieBench: "Goalie bench",
+  goaliePlay: "Goalie play puck",
+  goalieCover: "Goalie cover",
+  goalieGloveSave: "Goalie glove save",
+  goalieBlockerSave: "Goalie blocker save",
+  goalieProtectLeft: "Goalie protect left",
+  goalieProtectRight: "Goalie protect right",
+  goalieDivingGloveSave: "Goalie diving glove save",
+  goalieDivingStickSave: "Goalie diving stick save",
+  goalieGetUp: "Goalie recover",
 };
 
 function PoseGalleryPage() {
@@ -38,6 +56,7 @@ function PoseGalleryPage() {
       initial="default"
       applyPose={applyPose}
       releasePoseGallery={releasePoseGallery}
+      seated={(pose) => (pose === "goalieBench" ? "goalie" : pose === "bench" ? "skater" : null)}
     />
   );
 }

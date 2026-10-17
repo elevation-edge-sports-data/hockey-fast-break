@@ -43,7 +43,7 @@ const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
-const { GOALIE_Z, GOALIE_SOCKET_X, GOALIE_SOCKET_Y, poseGoaliePlay, poseGoalieZLimbs } = stance;
+const { GOALIE_STICK_LEN, GOALIE_Z, GOALIE_SOCKET_X, GOALIE_SOCKET_Y, poseGoaliePlay, poseGoalieZLimbs } = stance;
 const { goalieButterflyPose, goaliePlaysPuck, goalieShotSave, goalieZKind, resetWorld, stepSim, world } =
   sim;
 const { useGame } = store;
@@ -302,14 +302,31 @@ function assertHands(rig) {
   );
 }
 
+function assertStickLength(stick) {
+  const shaft = stick.getObjectByName("goalieShaft");
+  const blade = stick.getObjectByName("goalieBlade");
+  const knob = stick.getObjectByName("goalieKnob");
+  assert.equal(shaft.scale.y, GOALIE_STICK_LEN);
+  const len = knob.position.distanceTo(blade.position);
+  assert.ok(Math.abs(len - GOALIE_STICK_LEN) < 1e-6, `knob to heel ${len}`);
+}
+
 function assertIceOn(rig, x, z, front) {
   assertPerimeterBody(rig);
   assertHands(rig);
+  assertStickLength(rig.stick);
   const ice = new THREE.Vector3();
   rig.stick.getObjectByName("goalieIce").getWorldPosition(ice);
-  const miss = Math.hypot(ice.x - x, ice.z - z);
-  assert.ok(miss < 0.08, `ice missed (${x.toFixed(2)}, ${z.toFixed(2)}) by ${miss.toFixed(3)}`);
-  assert.ok(ice.y > 0.02 && ice.y < 0.09, `ice y ${ice.y.toFixed(3)}`);
+  const grip = new THREE.Vector3();
+  rig.stick.getWorldPosition(grip);
+  const toIce = ice.clone().sub(grip);
+  toIce.y = 0;
+  const toPuck = new THREE.Vector3(x - grip.x, 0, z - grip.z);
+  if (toPuck.length() > 0.05 && toIce.length() > 0.05) {
+    assert.ok(toIce.normalize().dot(toPuck.normalize()) > 0.85, "blade is not aimed toward the puck");
+  }
+  // The shaft no longer stretches to the puck, so a high grip leaves the heel above the ice.
+  assert.ok(ice.y > 0.02, `ice y ${ice.y.toFixed(3)}`);
   const { fwd, origin } = basis(rig.root);
   const iceFwd = (ice.x - origin.x) * fwd.x + (ice.z - origin.z) * fwd.z;
   assert.ok(
@@ -320,6 +337,19 @@ function assertIceOn(rig, x, z, front) {
   // Root scale (1.14, 1, 1.14) shears a flat blade, so a corner sits a few millimeters under the center.
   assert.ok(low > 0.015, `stick dug in at ${low.toFixed(3)}`);
 }
+
+test("goalie shaft stays the upright length", () => {
+  const shaft = new THREE.Group();
+  const knob = new THREE.Object3D();
+  knob.name = "goalieKnob";
+  const blade = new THREE.Object3D();
+  blade.name = "goalieBlade";
+  stance.layoutGoalieStick(shaft, knob, blade);
+  assert.equal(shaft.scale.y, 1.326);
+  assert.ok(Math.abs(knob.position.y - 1.326 / 3) < 1e-9);
+  assert.ok(Math.abs(blade.position.y - (-2 * 1.326) / 3) < 1e-9);
+  assert.ok(Math.abs(knob.position.distanceTo(blade.position) - 1.326) < 1e-9);
+});
 
 test("play pose keeps the perimeter body and puts both hands on the stick", () => {
   // Root sits at (12, 0, −6). These puck points are world literals.
@@ -381,7 +411,10 @@ test("a puck behind the pads or past reach still plants the blade in front", () 
   const held = play(far, 1.05, 0);
   const iceHold = new THREE.Vector3();
   far.stick.getObjectByName("goalieIce").getWorldPosition(iceHold);
-  assert.ok(Math.hypot(iceHold.x - held.spot.x, iceHold.z - held.spot.z) < 0.08);
+  const { fwd: farFwd, origin: farOrigin } = basis(far.root);
+  const farIceFwd = (iceHold.x - farOrigin.x) * farFwd.x + (iceHold.z - farOrigin.z) * farFwd.z;
+  assert.ok(farIceFwd > held.front + 0.12, `far ice ${farIceFwd.toFixed(3)} is not in front of the pads`);
+  assertStickLength(far.stick);
   assertHands(far);
 });
 

@@ -1,4 +1,5 @@
 import { Vector3, type Object3D } from "three";
+import { mirrorPoseJoints } from "./poseMirror";
 import { goalieHandPivotShift, torsoPivotY } from "./goalieStance";
 import { goalieBladeKnobShift, goalieStickKnobShift } from "./stickKnobPivot";
 import { world, type Skater } from "./sim";
@@ -88,6 +89,11 @@ function asFile(value: unknown): PoseFile {
   delete file.cheer;
   if (file.check && !file.shoulderCheck) file.shoulderCheck = file.check;
   delete file.check;
+  if (file.stride && !file.strideLeft) file.strideLeft = file.stride;
+  delete file.stride;
+  if (file.strideLeft && !file.strideRight) {
+    file.strideRight = mirrorPoseJoints(file.strideLeft as Record<string, number[]>);
+  }
   return file;
 }
 
@@ -137,7 +143,9 @@ export function poseOverrideRevision(): number {
 
 /**
  * Copy saved local transforms onto the groups.
- * Joints store Euler radians. A 6-number entry also stores local position.
+ * Joints store parent-local Euler radians. The pose editor shows the world
+ * XYZ decomposition and converts back to this local quaternion before saving.
+ * A 6-number entry also stores local position.
  * Euler order is left as the group already has it.
  */
 export function applyPoseJoints(name: string, groups: Partial<Record<PoseJointId, Object3D | null>>): boolean {

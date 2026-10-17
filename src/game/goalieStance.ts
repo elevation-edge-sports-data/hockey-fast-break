@@ -130,6 +130,94 @@ const PLAY_ICE_LEAD = 0.16;
 const PLAY_ICE_MAX = 1.22;
 const PLAY_HAND_GAP = 0.12;
 
+/**
+ * Knob to heel, every goalie pose. The grip sits one third of the way down
+ * from the knob, so the heel is two thirds of this length below the grip.
+ * Planted poses aim at the ice; they do not stretch this length.
+ */
+export const GOALIE_STICK_LEN = 1.326;
+
+/** Grip-frame layout. Stick local +Y runs from the heel, through the grip, to the knob. */
+export function layoutGoalieStick(shaft: THREE.Object3D, knob: THREE.Object3D, blade: THREE.Object3D): void {
+  const len = GOALIE_STICK_LEN;
+  const knobY = len / 3;
+  const heelY = (-2 * len) / 3;
+  shaft.position.set(0, (knobY + heelY) * 0.5, 0);
+  shaft.scale.set(1, len, 1);
+  knob.position.set(0, knobY, 0);
+  blade.position.set(0, heelY, 0);
+  blade.scale.set(1, 1, 1);
+}
+
+const _reachGrip = new THREE.Vector3();
+const _reachPt = new THREE.Vector3();
+const _reachOut = new THREE.Vector3();
+
+/**
+ * Ice point toward `want` whose forearm-local distance from the grip is the
+ * fixed grip-to-heel (two thirds of GOALIE_STICK_LEN). The shaft can then
+ * aim at it without changing length. Falls back to `want` when that length
+ * cannot meet the ice along this line. `out` must not be a module scratch vector.
+ */
+export function goalieIceHeel(
+  fore: THREE.Object3D,
+  anchorX: number,
+  anchorY: number,
+  anchorZ: number,
+  wantX: number,
+  wantY: number,
+  wantZ: number,
+  out: THREE.Vector3,
+): THREE.Vector3 {
+  const reach = (2 * GOALIE_STICK_LEN) / 3;
+  fore.updateWorldMatrix(true, false);
+  _reachGrip.set(anchorX, anchorY, anchorZ);
+  fore.localToWorld(_reachGrip);
+  const gx = _reachGrip.x;
+  const gz = _reachGrip.z;
+  let vx = wantX - gx;
+  let vz = wantZ - gz;
+  const span = Math.hypot(vx, vz);
+  if (span < 1e-6) {
+    vx = 0;
+    vz = 1;
+  } else {
+    vx /= span;
+    vz /= span;
+  }
+  const distAt = (h: number) => {
+    _reachPt.set(gx + vx * h, wantY, gz + vz * h);
+    fore.worldToLocal(_reachPt);
+    return Math.hypot(_reachPt.x - anchorX, _reachPt.y - anchorY, _reachPt.z - anchorZ);
+  };
+  let bestH = 0;
+  let bestErr = Math.abs(distAt(0) - reach);
+  const maxH = Math.max(span, reach * 2, 0.25);
+  const steps = 24;
+  for (let i = 1; i <= steps; i++) {
+    const h = (maxH * i) / steps;
+    const err = Math.abs(distAt(h) - reach);
+    if (err < bestErr) {
+      bestErr = err;
+      bestH = h;
+    }
+  }
+  let step = maxH / steps;
+  for (let i = 0; i < 12; i++) {
+    step *= 0.5;
+    for (const h of [bestH - step, bestH + step]) {
+      if (h < 0) continue;
+      const err = Math.abs(distAt(h) - reach);
+      if (err < bestErr) {
+        bestErr = err;
+        bestH = h;
+      }
+    }
+  }
+  if (bestErr > 0.02) return out.set(wantX, wantY, wantZ);
+  return out.set(gx + vx * bestH, wantY, gz + vz * bestH);
+}
+
 /** How far the stick's ice blade leads the pad face. The blade stays in front. */
 export const GOALIE_Z_BLADE_LEAD: Record<GoalieZName, number> = {
   upright: 0.2,
@@ -1012,9 +1100,10 @@ function playStickLow(stick: THREE.Object3D): number {
 }
 
 /**
- * Aim the stick from the blocker anchor to a heel on the ice.
+ * Aim the stick from the blocker anchor toward a heel on the ice.
  * Stick local +Y runs back up the shaft. The ice mesh sits 0.13 ahead of the heel.
- * Returns the shaft length, or 0 when the anchor and the heel are the same point.
+ * The shaft stays GOALIE_STICK_LEN; the heel is not pulled out to the aim point.
+ * Returns that length, or 0 when the anchor and the heel are the same point.
  */
 function plantPlayStick(
   stick: THREE.Object3D,
@@ -1038,8 +1127,21 @@ function plantPlayStick(
   stick.quaternion.identity();
   stick.scale.set(1, 1, 1);
   stick.visible = true;
+  goalieIceHeel(
+    fore,
+    PLAY_STICK_ANCHOR.x,
+    PLAY_STICK_ANCHOR.y,
+    PLAY_STICK_ANCHOR.z,
+    heelX,
+    heelY,
+    heelZ,
+    _reachOut,
+  );
+  const heelWX = _reachOut.x;
+  const heelWY = _reachOut.y;
+  const heelWZ = _reachOut.z;
   fore.updateWorldMatrix(true, false);
-  _hand.set(heelX, heelY, heelZ);
+  _hand.set(heelWX, heelWY, heelWZ);
   fore.worldToLocal(_hand);
   _dir.set(
     _hand.x - PLAY_STICK_ANCHOR.x,
@@ -1063,13 +1165,7 @@ function plantPlayStick(
   _m.makeBasis(_best, _face, _z);
   stick.quaternion.setFromRotationMatrix(_m);
   stick.position.set(PLAY_STICK_ANCHOR.x, PLAY_STICK_ANCHOR.y, PLAY_STICK_ANCHOR.z);
-  const shaftBottom = -lower;
-  const shaftTop = lower * 0.5;
-  shaft.position.set(0, (shaftTop + shaftBottom) * 0.5, 0);
-  shaft.scale.set(1, shaftTop - shaftBottom, 1);
-  knob.position.set(0, shaftTop, 0);
-  blade.position.set(0, -lower, 0);
-  blade.scale.set(1, 1, 1);
+  layoutGoalieStick(shaft, knob, blade);
   _x.set(catcherX, catcherY, catcherZ);
   _y.set(0, 1, 0);
   _z.set(fwdX, fwdY, fwdZ);
@@ -1083,7 +1179,7 @@ function plantPlayStick(
   stick.getWorldQuaternion(_q);
   blade.quaternion.copy(_q.invert()).multiply(_rootQ);
   ice.position.set(0, 0.016 - (heelY - (PLAY_ICE_Y + 0.002)), 0.13);
-  return lower;
+  return GOALIE_STICK_LEN;
 }
 
 function posePlayBlocker(

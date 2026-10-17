@@ -343,7 +343,7 @@ test("the left stick aims and the right stick does not", () => {
   assert.ok(Math.abs(world.puck.vz) < classic * 0.45, `stick x vz ${world.puck.vz}`);
 });
 
-test("X tap is a wrist, X hold is a slap, and off-hand X is a backhand", async () => {
+test("X tap is a wrist, X hold is a slap, and a held backhand releases as a backhand", async () => {
   fresh();
   setInjectedKeys(["KeyF"]);
   step(1);
@@ -383,20 +383,16 @@ test("X tap is a wrist, X hold is a slap, and off-hand X is a backhand", async (
 
   fresh("classic");
   setInjectedKeys(["KeyQ", "KeyF"]);
-  const t1 = performance.now();
-  let backhand = false;
-  while (performance.now() - t1 < 360) {
-    step(1, 0.12);
-    if (localX() > 0) backhand = true;
-    await new Promise((r) => setTimeout(r, 40));
-  }
-  assert.equal(backhand, true);
-  setInjectedKeys(["KeyQ"]);
-  step(1);
+  step(8, 0.1);
+  assert.ok(localX() > 0);
+  assert.equal(world.lastShotKind, null);
+  assert.equal(world.puck.owner, user().id);
+  step(8, 0.1);
   const classic = shotOf();
-  assert.equal(classic.kind, "slap");
-  assert.equal(classic.slap, true);
-  assert.ok(classic.mph >= 86, `classic backhand slap ${classic.mph}`);
+  assert.equal(classic.kind, "backhand");
+  assert.equal(classic.slap, false);
+  assert.ok(classic.mph > 58 && classic.mph < 68, `held backhand ${classic.mph}`);
+  assert.equal(world.puck.owner, null);
 });
 
 test("B cancels a loaded stick shot and Y still dekes", () => {

@@ -3,11 +3,13 @@ import { defineConfig } from "vite";
 import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { poseOverridesDataPlugin } from "./scripts/pose-overrides-plugin.mjs";
+import { mirrorPoseJoints } from "./src/game/poseMirror.ts";
 
 const PUBLIC_POSE_IDS = new Set([
   "default",
   "ready",
-  "stride",
+  "strideLeft",
+  "strideRight",
   "faceoff",
   "coast",
   "puckPossess",
@@ -26,8 +28,25 @@ const PUBLIC_POSE_IDS = new Set([
   "knockout",
   "recover",
   "celebrate",
+  "rage",
   "fight",
+  "bench",
+  "goalieUpright",
+  "goalieRage",
   "goalieButterfly",
+  "goalieMid",
+  "goaliePerimeter",
+  "goalieCheer",
+  "goalieBench",
+  "goaliePlay",
+  "goalieCover",
+  "goalieGloveSave",
+  "goalieBlockerSave",
+  "goalieProtectLeft",
+  "goalieProtectRight",
+  "goalieDivingGloveSave",
+  "goalieDivingStickSave",
+  "goalieGetUp",
 ]);
 
 /** Public gallery bundle keeps only the public pose entries from poseOverrides.json. */
@@ -75,6 +94,11 @@ function publicPoseOverridesPlugin() {
       delete data.cheer;
       if (data.check && !data.shoulderCheck) data.shoulderCheck = data.check;
       delete data.check;
+      if (data.stride && !data.strideLeft) data.strideLeft = data.stride;
+      delete data.stride;
+      if (data.strideLeft && !data.strideRight) {
+        data.strideRight = mirrorPoseJoints(data.strideLeft as Record<string, number[]>);
+      }
       const next: Record<string, unknown> = {};
       for (const key of Object.keys(data)) {
         if (PUBLIC_POSE_IDS.has(key)) next[key] = data[key];

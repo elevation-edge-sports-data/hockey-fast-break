@@ -1,12 +1,13 @@
-import { GOAL_LINE_X } from "./rink";
-import { attackDir, defendDir, holdBurstPose, resetWorld, world, type Skater } from "./sim";
+import { BLUE_LINE_W, BLUE_X, GOAL_LINE_X } from "./rink";
+import { armStickRage, attackDir, defendDir, holdBurstPose, resetWorld, world, type Skater } from "./sim";
 import { useGame, type ControlProfile } from "./store";
 
-/** Curated stills for /pose-gallery. The full set lives in the private gallery module. */
+/** Every still. The public gallery and public editor use this list. */
 export const PUBLIC_POSES = [
   "default",
   "ready",
-  "stride",
+  "strideLeft",
+  "strideRight",
   "faceoff",
   "coast",
   "puckPossess",
@@ -25,8 +26,25 @@ export const PUBLIC_POSES = [
   "knockout",
   "recover",
   "celebrate",
+  "rage",
   "fight",
+  "bench",
+  "goalieUpright",
+  "goalieRage",
   "goalieButterfly",
+  "goalieMid",
+  "goaliePerimeter",
+  "goalieCheer",
+  "goalieBench",
+  "goaliePlay",
+  "goalieCover",
+  "goalieGloveSave",
+  "goalieBlockerSave",
+  "goalieProtectLeft",
+  "goalieProtectRight",
+  "goalieDivingGloveSave",
+  "goalieDivingStickSave",
+  "goalieGetUp",
 ] as const;
 
 export type PublicPoseId = (typeof PUBLIC_POSES)[number];
@@ -256,17 +274,36 @@ export function holdShotFollow(s: Skater): void {
   world.puck.owner = null;
 }
 
-export function applyPose(pose: PublicPoseId): number {
-  const { s, index } = prepareGalleryPose(
-    pose === "goalieButterfly",
-    pose === "forehandDeke" || pose === "backhandDeke",
+function publicGoalie(pose: PublicPoseId): boolean {
+  return (
+    pose === "goalieUpright" ||
+    pose === "goalieRage" ||
+    pose === "goalieButterfly" ||
+    pose === "goalieGloveSave" ||
+    pose === "goalieBlockerSave" ||
+    pose === "goalieProtectLeft" ||
+    pose === "goalieProtectRight" ||
+    pose === "goalieDivingGloveSave" ||
+    pose === "goalieDivingStickSave" ||
+    pose === "goalieGetUp" ||
+    pose === "goalieMid" ||
+    pose === "goaliePerimeter" ||
+    pose === "goalieCheer" ||
+    pose === "goalieBench" ||
+    pose === "goaliePlay" ||
+    pose === "goalieCover"
   );
+}
+
+export function applyPose(pose: PublicPoseId): number {
+  const { s, index } = prepareGalleryPose(publicGoalie(pose), pose === "forehandDeke" || pose === "backhandDeke");
   switch (pose) {
     case "default":
       break;
     case "ready":
       break;
-    case "stride":
+    case "strideLeft":
+    case "strideRight":
       // READY_SKATE is 2.6. At that speed the ready-stand weight is 0.
       s.vx = 2.6;
       s.stride = Math.PI / 2;
@@ -354,12 +391,60 @@ export function applyPose(pose: PublicPoseId): number {
       s.celebrate = 2;
       world.time = 0.7;
       break;
-    case "goalieButterfly": {
+    case "rage":
+      s.smashKind = 1;
+      s.smash = 0.9;
+      s.smashHit = 0.8;
+      armStickRage(index);
+      break;
+    case "bench":
+      break;
+    case "goalieUpright":
+    case "goalieRage": {
+      const end = defendDir(s.side) > 0 ? 1 : -1;
+      const edge = BLUE_X + BLUE_LINE_W * 0.5;
+      loosePuck(-end * (edge + 6), 0);
+      break;
+    }
+    case "goalieButterfly":
+    case "goalieGloveSave":
+    case "goalieBlockerSave":
+    case "goalieProtectLeft":
+    case "goalieProtectRight":
+    case "goalieDivingGloveSave":
+    case "goalieDivingStickSave": {
       // 2.4 m off the goal line is inside the 4.9 m high-danger slot, the compact butterfly.
       const mouth = defendDir(s.side) * GOAL_LINE_X;
       loosePuck(mouth + attackDir(s.side) * 2.4, 0);
       break;
     }
+    case "goaliePerimeter":
+      loosePuck(0, 3);
+      break;
+    case "goalieMid": {
+      // Eight meters off the goal line is past the 4.9 m high-danger slot and still in his end.
+      const mouth = defendDir(s.side) * GOAL_LINE_X;
+      loosePuck(mouth + attackDir(s.side) * 8, 0);
+      break;
+    }
+    case "goalieCheer":
+      s.celebrate = 2;
+      world.time = 0.7;
+      break;
+    case "goalieBench":
+      break;
+    case "goaliePlay":
+      ownPuck(s.id, 0.2, -0.95);
+      break;
+    case "goalieCover":
+      s.coverPose = 1;
+      loosePuck(0, -0.55);
+      break;
+    case "goalieGetUp":
+      // p = (1.68 - struck) / 1.52 = 0.42, the GOALIE_ONE skate frame.
+      s.tumble = 1;
+      s.struck = 1.68 - 0.42 * 1.52;
+      break;
     case "fight": {
       const foe = world.skaters.find((o) => o.id !== s.id);
       world.lineBrawl = {

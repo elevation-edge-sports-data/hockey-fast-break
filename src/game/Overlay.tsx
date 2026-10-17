@@ -33,6 +33,7 @@ import {
   lineupTotal,
   modeLineupCap,
   patchLineup,
+  hudReleaseName,
   useGame,
   type CamMode,
   type DrillTargets,
@@ -863,8 +864,8 @@ function ControlsHelp() {
           <dt>With puck</dt>
           <dd>
             {stick
-              ? "A pass / hold saucer · right stick snap, wrist, backhand, slap · X tap wrist / hold slap · B cancel · Y deke · left stick aims"
-              : "A pass / hold saucer · X wrist / hold slap · B cancel slap · Y deke"}
+              ? "A tap 60 mph, hold 1.5s 90 mph, Start saucer · right stick snap, wrist, backhand, slap · X tap wrist / hold slap · B cancel · Y deke · left stick aims"
+              : "A tap 60 mph, hold 1.5s 90 mph, Start saucer · X wrist / hold slap · B cancel slap · Y deke"}
           </dd>
         </div>
         <div>
@@ -1028,16 +1029,7 @@ export function Overlay() {
   const liveAway = useGame((s) => s.liveAway);
   const speed = useGame((s) => s.speed);
   const shotKind = useGame((s) => s.shotKind);
-  const shotName =
-    shotKind === "wrist"
-      ? "Wrist"
-      : shotKind === "snap"
-        ? "Snap"
-        : shotKind === "slap"
-          ? "Slap"
-          : shotKind === "backhand"
-            ? "Backhand"
-            : "Shot";
+  const shotName = hudReleaseName(shotKind);
   const pad = useGame((s) => s.pad);
   const hasPuck = useGame((s) => s.hasPuck);
   const charge = useGame((s) => s.charge);
@@ -1229,7 +1221,7 @@ export function Overlay() {
             <span className="muted">{pad}</span>
             {chargeKind ? (
               <span className="charge">
-                {chargeKind === "shot" ? "Slap" : "Saucer"}
+                {chargeKind === "shot" ? "Slap" : chargeKind === "saucer" ? "Saucer" : "Pass"}
                 <i style={{ width: `${Math.round(charge * 100)}%` }} />
               </span>
             ) : null}

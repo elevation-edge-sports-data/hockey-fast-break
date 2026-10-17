@@ -48,7 +48,7 @@ test("the public editor can save idle and deke", async () => {
   const dir = mkdtempSync(join(tmpdir(), "hfb-pose-save-"));
   mkdirSync(join(dir, "src", "game"), { recursive: true });
   writeFileSync(join(dir, "src", "game", "poseOverrides.json"), "{}\n");
-  for (const poseName of ["coast", "puckPossess", "forehandDeke", "backhandShot", "backhandDeke", "autoDeke", "shoulderCheck", "absorb", "knockout", "fight", "celebrate", "speedPuckPossess", "recover"]) {
+  for (const poseName of ["coast", "puckPossess", "forehandDeke", "backhandShot", "backhandDeke", "autoDeke", "shoulderCheck", "absorb", "knockout", "fight", "celebrate", "speedPuckPossess", "recover", "bench", "goalieUpright", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGloveSave", "goalieDivingGloveSave", "goalieProtectLeft", "goalieProtectRight", "goalieDivingStickSave", "goalieGetUp"]) {
     const result = await saveAndRebuild(
       { poseName, joints: { body: [0.1, 0, 0] }, publicOnly: true },
       async () => {},
@@ -72,18 +72,16 @@ test("the public editor can save idle and deke", async () => {
   assert.deepEqual(file.fight.body, [0.1, 0, 0]);
 });
 
-test("the public editor cannot save a private pose name", async () => {
+test("the public editor rejects an unknown pose name", async () => {
   const dir = mkdtempSync(join(tmpdir(), "hfb-pose-save-"));
   mkdirSync(join(dir, "src", "game"), { recursive: true });
   writeFileSync(join(dir, "src", "game", "poseOverrides.json"), "{}\n");
-  for (const poseName of ["goalieBench"]) {
-    await assert.rejects(
-      saveAndRebuild({ poseName, joints: { body: [0.1, 0, 0] }, publicOnly: true }, async () => {}, dir),
-      /public editor/,
-    );
-  }
+  await assert.rejects(
+    saveAndRebuild({ poseName: "notAPose", joints: { body: [0.1, 0, 0] }, publicOnly: true }, async () => {}, dir),
+    /public editor/,
+  );
   const file = JSON.parse(readFileSync(join(dir, "src", "game", "poseOverrides.json"), "utf8"));
-  assert.equal(file.goalieBench, undefined);
+  assert.equal(file.notAPose, undefined);
 });
 
 test("a failed pack still keeps the written pose and reports the error", async () => {

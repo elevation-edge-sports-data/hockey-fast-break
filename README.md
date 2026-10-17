@@ -29,7 +29,8 @@ A puck that hits the crowd or stands stops the clock; the camera follows it for 
 | | Gamepad | Keyboard |
 |---|---|---|
 | Skate / aim pass or shot | Left stick | WASD or arrows |
-| Pass (hold for saucer) | A | E or J |
+| Pass, 60 mph on a tap, 90 mph after a 1.5s hold | A | E or J |
+| Saucer pass, held as that pass releases | Start | |
 | Wrist (hold for slap) | X | F, C, or K |
 | Cancel slap | B | Space |
 | Deke | Y | Q or I |

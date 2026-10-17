@@ -2,8 +2,8 @@ import { useLayoutEffect, useMemo, useRef, type ReactElement, type RefObject } f
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNumberTexture } from "./iceTexture";
-import { attackDir, burstPoseWeight, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, shotFollowTime, world, type Referee, type Skater } from "./sim";
-import { GOALIE_BUTTERFLY_BLADE_LEAD, GOALIE_Z, GOALIE_Z_BLADE_LEAD, bodyToLocal, bodyToWorld, poseGoalieButterflyArms, poseGoalieButterflyLimbs, poseGoalieHand, poseGoalieButterflyStanceLimbs, poseGoaliePlay, poseGoalieZArms, poseGoalieZLimbs, posedBody, torsoPivotY, torsoPlacedY } from "./goalieStance";
+import { attackDir, burstPoseWeight, checkedCyclePose, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, shotFollowTime, TUMBLE_PITCH_MAX, TUMBLE_PITCH_RATE, TUMBLE_STRIKE, TUMBLE_UP, world, type Referee, type Skater } from "./sim";
+import { GOALIE_BUTTERFLY_BLADE_LEAD, GOALIE_STICK_LEN, GOALIE_Z, GOALIE_Z_BLADE_LEAD, bodyToLocal, bodyToWorld, goalieIceHeel, layoutGoalieStick, poseGoalieButterflyArms, poseGoalieButterflyLimbs, poseGoalieHand, poseGoalieButterflyStanceLimbs, poseGoaliePlay, poseGoalieZArms, poseGoalieZLimbs, posedBody, torsoPivotY, torsoPlacedY } from "./goalieStance";
 import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, SKATER_TAPE_Z0, SKATER_TAPE_Z1, burstCarryStickAim, carryStickAim, dekePull, dekeStickAim, neutralCarryBlend, neutralCarryStickAim, shotStickAim, skaterBladeCurveX, skaterBladeLiePoint, skillCarryStickAim, stickFrame, type StickAim } from "./stickSide";
 import { kitById, type UniformKit } from "./uniforms";
 import { useGame } from "./store";
@@ -41,6 +41,8 @@ const PANTS_Y_GOALIE = 0.9 + 0.01 - PANTS_H / 2;
 const PANTS_Y_SKATER = 0.9 + 0.01 - SKATER_PANTS_H / 2;
 /** Seated hips group is at y=0.16. Hem is 0.24. Top overlaps it; bottom stays under the bench hip. */
 const PANTS_Y_SEAT = 0.24 + 0.003 - PANTS_H / 2 - 0.16;
+/** Bench skaters use the standing skater pants. Same hem overlap, taller box. */
+const PANTS_Y_SEAT_SKATER = 0.24 + 0.003 - SKATER_PANTS_H / 2 - 0.16;
 /** Inside skaterPantsGeo. ±0.20 left the thigh cap outside the pelvis on a hit. */
 const SKATER_HIP_X = 0.12;
 const SKATER_HIP_Y = 0.86;
@@ -565,7 +567,6 @@ const _rinkMarkLevel = new THREE.Quaternion();
 const _shadowCom = new THREE.Vector3();
 const SHADOW_ICE_Y = 0.015;
 const STICK_ICE_Y = 0.03;
-const GOALIE_STICK_LEN = 1.02;
 /** Grip in body space: in front of the chest (+Z) and out on the blocker side (−X). */
 const GOALIE_GRIP = { x: -0.38, y: 1.15, z: 0.4 } as const;
 const _goalieCarryQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -1.15);
@@ -3406,18 +3407,11 @@ function carryGoalieStick(stick: THREE.Group, cover: number) {
   stick.position.set(0.03, -0.22, 0.05);
   stick.rotation.set(0.06 + cover * 0.1, 0.04, -0.16);
   stick.scale.set(1, 1, 1);
-  const len = GOALIE_STICK_LEN;
   const shaft = stick.getObjectByName("goalieShaft");
   const blade = stick.getObjectByName("goalieBlade");
   const knob = stick.getObjectByName("goalieKnob");
-  if (shaft) {
-    shaft.position.set(0, -len / 6, 0);
-    shaft.scale.set(1, len, 1);
-  }
-  if (knob) knob.position.set(0, len / 3, 0);
-  if (blade) {
-    blade.position.set(0, (-2 * len) / 3, 0);
-    blade.scale.set(1, 1, 1);
+  if (shaft && knob && blade) {
+    layoutGoalieStick(shaft, knob, blade);
     blade.quaternion.copy(_goalieCarryQ);
     const ice = blade.getObjectByName("goalieIce");
     if (ice) ice.position.set(0, 0.016, 0.13);
@@ -3513,8 +3507,12 @@ function poseGoalieStick(stick: THREE.Group, cover: number, s: Skater, gloveArm:
     stick.position.set(anchorX, anchorY, anchorZ);
     stick.quaternion.identity();
     stick.scale.set(1, 1, 1);
+    goalieIceHeel(fore, anchorX, anchorY, anchorZ, hx, heelY, hz, _corner);
+    const aimX = _corner.x;
+    const aimY = _corner.y;
+    const aimZ = _corner.z;
     fore.updateWorldMatrix(true, false);
-    _liftPt.set(hx, heelY, hz);
+    _liftPt.set(aimX, aimY, aimZ);
     fore.worldToLocal(_liftPt);
     _ikD1.set(_liftPt.x - anchorX, _liftPt.y - anchorY, _liftPt.z - anchorZ);
     const lower = _ikD1.length();
@@ -3531,13 +3529,7 @@ function poseGoalieStick(stick: THREE.Group, cover: number, s: Skater, gloveArm:
     stick.quaternion.setFromRotationMatrix(_stickM);
     stick.position.set(anchorX, anchorY, anchorZ);
     stick.scale.set(1, 1, 1);
-    const shaftBottom = -lower;
-    const shaftTop = lower * 0.5;
-    shaft.position.set(0, (shaftTop + shaftBottom) * 0.5, 0);
-    shaft.scale.set(1, shaftTop - shaftBottom, 1);
-    knob.position.set(0, shaftTop, 0);
-    blade.position.set(0, -lower, 0);
-    blade.scale.set(1, 1, 1);
+    layoutGoalieStick(shaft, knob, blade);
     // Ice blade: +X toward the catcher, +Y up, +Z forward on the ice. Right-handed.
     _stickM.makeBasis(_ikD1.set(bx, by, bz), _ikD2.set(0, 1, 0), _liftAxis.set(fx, fy, fz));
     _stickQ.setFromRotationMatrix(_stickM);
@@ -3545,7 +3537,7 @@ function poseGoalieStick(stick: THREE.Group, cover: number, s: Skater, gloveArm:
     stick.getWorldQuaternion(_parentQ).invert();
     blade.quaternion.copy(_parentQ).multiply(_stickQ);
     ice.position.set(0, 0.016 - (heelY - plantY), 0.13);
-    return lower;
+    return GOALIE_STICK_LEN;
   };
   let heelY = STICK_ICE_Y;
   if (place(heelY) < 0.2) {
@@ -3770,13 +3762,8 @@ function poseGoalieCover(s: Skater, _root: THREE.Group, _body: THREE.Group | nul
   return true;
 }
 
-const TUMBLE_PITCH_MAX = 1.12;
-const TUMBLE_PITCH_RATE = 1.55;
-/** u where tumbleRoot pitch hits its cap. Before this the body is still going down. */
-const TUMBLE_UP = TUMBLE_PITCH_MAX / TUMBLE_PITCH_RATE;
-
 function tumbleRoot(struck: number, tumble: number, yaw: number) {
-  const u = Math.min(1, Math.max(0, 1 - struck / 1.68));
+  const u = Math.min(1, Math.max(0, 1 - struck / TUMBLE_STRIKE));
   const pitch = Math.min(TUMBLE_PITCH_MAX, u * TUMBLE_PITCH_RATE);
   const spin = u * 4.6 * tumble;
   const roll = Math.sin(spin) * 0.48;
@@ -3848,7 +3835,7 @@ function plantFlatRinkMark(mark: THREE.Object3D, worldX: number, worldZ: number,
 
 /** 0 when the fall finishes tipping, 1 when tumbling ends (struck just above 0.1). */
 function struckRise(u: number): number {
-  const end = 1 - 0.1 / 1.68;
+  const end = 1 - 0.1 / TUMBLE_STRIKE;
   const raw = (u - TUMBLE_UP) / (end - TUMBLE_UP);
   const x = raw < 0 ? 0 : raw > 1 ? 1 : raw;
   return x * x * (3 - 2 * x);
@@ -4339,7 +4326,7 @@ export function PlayerMesh({
     const diveU = Math.min(1, Math.max(0, s.dive / 0.95));
     const diving = !goalie && s.dive > 0.04;
     const tumbling = s.tumble !== 0 && s.struck > 0.1;
-    const tumbleU = tumbling ? Math.min(1, Math.max(0, 1 - s.struck / 1.68)) : 0;
+    const tumbleU = tumbling ? Math.min(1, Math.max(0, 1 - s.struck / TUMBLE_STRIKE)) : 0;
     const tumbleRise = tumbling && tumbleU >= TUMBLE_UP;
     const fallHand = tumbling && !tumbleRise;
     const goalieUp = goalie && tumbling;
@@ -5645,11 +5632,11 @@ function SeatedLeg({
       <mesh geometry={thighGeo} material={mats.pants} position={[0, -0.17, 0]} castShadow />
       <mesh geometry={thighStripeGeo} material={mats.stripe} position={[side * 0.082, -0.17, 0]} />
       <group ref={shinRef} position={[0, -0.36, 0]} rotation={[Math.PI / 2, 0, 0]}>
-        <mesh geometry={shinGeo} material={mats.socks} position={[0, -0.15, 0]} scale={[1.45, 1, 1.45]} />
-        <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.1, 0]} scale={[1.45, 1, 1.45]} />
-        <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, 0]} scale={[1.45, 1, 1.45]} />
+        <mesh geometry={shinGeo} material={mats.socks} position={[0, -0.15, 0]} />
+        <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.1, 0]} />
+        <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, 0]} />
         <group ref={bootRef} position={[0, -0.3, 0.05]}>
-          <mesh geometry={bootGeo} material={mats.skates} position={[0, -0.05, 0.02]} scale={[1.28, 1, 1.12]} />
+          <mesh geometry={bootGeo} material={mats.skates} position={[0, -0.05, 0.02]} />
           <SkateSole mats={mats} position={[0, -0.12, 0.02]} />
         </group>
       </group>
@@ -5657,8 +5644,17 @@ function SeatedLeg({
   );
 }
 
-/** Seated backup knob center, before the stick origin moved onto it. */
-const SEATED_GOALIE_KNOB_Y = 1.04;
+/**
+ * Seated backup knob-to-heel. The old prop was 1.04 m with the heel at the
+ * group origin; shaft and paddle centers are scaled from that frame.
+ */
+const SEATED_GOALIE_FROM = 1.04;
+const SEATED_GOALIE_KNOB_Y = GOALIE_STICK_LEN;
+const SEATED_STICK_SCALE = SEATED_GOALIE_KNOB_Y / SEATED_GOALIE_FROM;
+const SEATED_SHAFT_Y = 0.665 * SEATED_STICK_SCALE;
+const SEATED_SHAFT_SY = 0.71 * SEATED_STICK_SCALE;
+const SEATED_PADDLE_Y = 0.175 * SEATED_STICK_SCALE;
+const SEATED_PADDLE_SY = 0.58 * SEATED_STICK_SCALE;
 const _seatedGoalieKnobOff = new THREE.Vector3(0, SEATED_GOALIE_KNOB_Y, 0).applyQuaternion(
   new THREE.Quaternion().setFromEuler(new THREE.Euler(0.04, Math.PI, 0)),
 );
@@ -5672,6 +5668,7 @@ export function SeatedPlayer({
   poseId,
   onJointRefs,
   onJointClick,
+  posedEpoch = 0,
 }: {
   kit: UniformKit;
   number: number;
@@ -5681,6 +5678,8 @@ export function SeatedPlayer({
   poseId?: string;
   onJointRefs?: (refs: Record<string, THREE.Object3D | null>) => void;
   onJointClick?: (id: string) => void;
+  /** Bumps after a pose bake so the saved joints are stamped again once React commits. */
+  posedEpoch?: number;
 }) {
   const mats = useMemo(() => makeKitMats(kit, number, goalie), [kit, kit.id, number, goalie]);
   const body = useRef<THREE.Group>(null);
@@ -5702,10 +5701,9 @@ export function SeatedPlayer({
   const rBoot = useRef<THREE.Group>(null);
   const stick = useRef<THREE.Group>(null);
   const bladeGrp = useRef<THREE.Group>(null);
-  // Positive seats rest the paddle on -X so the shaft stays inside the end glass.
-  const goalieStickSide = (seatX ?? 0) > 0 ? -1 : 1;
+  // Same local stick on every seat. Bench side does not mirror it toward center ice.
   const seatedStickPos: [number, number, number] = [
-    goalieStickSide * 0.72 + _seatedGoalieKnobOff.x,
+    0.72 + _seatedGoalieKnobOff.x,
     0.04 + _seatedGoalieKnobOff.y,
     0.14 + _seatedGoalieKnobOff.z,
   ];
@@ -5726,28 +5724,29 @@ export function SeatedPlayer({
       group.position.add(new THREE.Vector3(0, torsoPivot - prev, 0).applyQuaternion(group.quaternion));
     } else group.position.set(0, torsoRestY, torsoRestZ);
   }, [goalie, torsoPivot, torsoRestY, torsoRestZ]);
+  const poseGroups = (): Partial<Record<PoseJointId, THREE.Object3D | null>> => ({
+    body: body.current,
+    torso: torso.current,
+    hips: hips.current,
+    shoulders: shoulders.current,
+    head: head.current,
+    lArm: lArm.current,
+    lFore: lFore.current,
+    lHand: lHand.current,
+    rArm: rArm.current,
+    rFore: rFore.current,
+    rHand: rHand.current,
+    lLeg: lLeg.current,
+    lShin: lShin.current,
+    lBoot: lBoot.current,
+    rLeg: rLeg.current,
+    rShin: rShin.current,
+    rBoot: rBoot.current,
+    stick: stick.current,
+    bladeGrp: bladeGrp.current,
+  });
   useLayoutEffect(() => {
-    const groups = {
-      body: body.current,
-      torso: torso.current,
-      hips: hips.current,
-      shoulders: shoulders.current,
-      head: head.current,
-      lArm: lArm.current,
-      lFore: lFore.current,
-      lHand: lHand.current,
-      rArm: rArm.current,
-      rFore: rFore.current,
-      rHand: rHand.current,
-      lLeg: lLeg.current,
-      lShin: lShin.current,
-      lBoot: lBoot.current,
-      rLeg: rLeg.current,
-      rShin: rShin.current,
-      rBoot: rBoot.current,
-      stick: stick.current,
-      bladeGrp: bladeGrp.current,
-    };
+    const groups = poseGroups();
     if (onJointClick && world.poseEditorActive) {
       for (const [id, obj] of Object.entries(groups)) {
         if (obj) obj.userData.poseJoint = id;
@@ -5761,49 +5760,28 @@ export function SeatedPlayer({
       }
     };
   }, [goalie, onJointClick, onJointRefs]);
+  useLayoutEffect(() => {
+    if (!onJointRefs || !posedEpoch || !world.poseEditorActive || !poseId) return;
+    releaseStickFromHand(stick.current);
+    applyPoseJoints(poseId, poseGroups());
+  }, [onJointRefs, poseId, posedEpoch]);
   useFrame(() => {
-    if (world.poseEditorActive) return;
+    if (world.poseEditorActive || world.poseEditorLock) return;
     const g = body.current;
     if (!g) return;
+    g.rotation.x = seatPitch;
+    g.rotation.z = 0;
+    if (poseId) applyPoseJoints(poseId, poseGroups());
     const d = world.benchDump;
     const near = seatX !== undefined && !!d && (d.phase !== "fly" || d.t > d.dur * 0.45) && ((d.kind === "help" && seatX > 0.4) || (d.kind === "shove" && seatX < -0.4)) && Math.abs(seatX - d.x1) < 2.8;
-    if (!near || !d) {
-      g.rotation.x = 0.08;
-      g.rotation.z = 0;
-      return;
-    }
+    if (!near || !d) return;
     if (d.kind === "help") {
-      g.rotation.x = 0.08 + 0.38 + Math.sin(world.time * 5.2) * 0.12;
+      g.rotation.x = seatPitch + 0.38 + Math.sin(world.time * 5.2) * 0.12;
       g.rotation.z = Math.sin(world.time * 3.4) * 0.05;
     } else {
       const jab = Math.max(0, Math.sin(world.time * 11));
-      g.rotation.x = 0.08 + jab * 0.62;
+      g.rotation.x = seatPitch + jab * 0.62;
       g.rotation.z = Math.sin(world.time * 11) * 0.16;
-      return;
-    }
-    const name = poseId ?? world.namedPose;
-    if (name) {
-      applyPoseJoints(name, {
-        body: body.current,
-        torso: torso.current,
-        hips: hips.current,
-        shoulders: shoulders.current,
-        head: head.current,
-        lArm: lArm.current,
-        lFore: lFore.current,
-        lHand: lHand.current,
-        rArm: rArm.current,
-        rFore: rFore.current,
-        rHand: rHand.current,
-        lLeg: lLeg.current,
-        lShin: lShin.current,
-        lBoot: lBoot.current,
-        rLeg: rLeg.current,
-        rShin: rShin.current,
-        rBoot: rBoot.current,
-        stick: stick.current,
-        bladeGrp: bladeGrp.current,
-      });
     }
   });
   const selectPoseJoint = (event: ThreeEvent<MouseEvent>) => {
@@ -5821,7 +5799,9 @@ export function SeatedPlayer({
   };
   return (
     <group onClick={onJointClick && world.poseEditorActive ? selectPoseJoint : undefined}>
-      <mesh geometry={shadowGeo} material={mats.shadow} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0.18]} scale={[0.9, 1.15, 0.7]} />
+      {poseId === "bench" || poseId === "goalieBench" ? null : (
+        <mesh geometry={shadowGeo} material={mats.shadow} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0.18]} scale={[0.9, 1.15, 0.7]} />
+      )}
       <group ref={body} rotation={[seatPitch, 0, 0]}>
         <group name="torsoFrame" position={[0, -torsoPivot, 0]}>
         <group ref={torso} name="torso" position={[0, torsoShift, 0]}>
@@ -5834,7 +5814,7 @@ export function SeatedPlayer({
           <mesh geometry={helmetGeo} material={mats.helmet} position={[0, 0.08, 0]} scale={[1.05, 0.92, 1.12]} castShadow />
           {goalie ? <GoalieMask material={mats.cage} /> : null}
         </group>
-        <mesh geometry={yokeTopGeo} material={mats.yoke} position={[0, 0.8, 0]} scale={[0.53 / 0.61, 1, 1]} castShadow />
+        <mesh geometry={yokeTopGeo} material={mats.yoke} position={[0, 0.8, 0]} scale={goalie ? [0.53 / 0.61, 1, 1] : 1} castShadow />
         <group ref={lArm} position={[-0.257, 0.76, 0.02]} rotation={[0.25, -0.2, -0.6]}>
           {kit.id === 0 ? (
             <>
@@ -5917,8 +5897,8 @@ export function SeatedPlayer({
       {goalie ? (
         <group ref={stick} position={seatedStickPos} rotation={[0.04, Math.PI, 0]}>
           <mesh name="goalieKnob" geometry={knobGeo} material={mats.tape} />
-          <mesh geometry={stickShaftGeo} material={mats.stick} position={[0, 0.665 - SEATED_GOALIE_KNOB_Y, 0]} scale={[1, 0.71, 1]} />
-          <mesh geometry={goaliePaddleGeo} material={mats.tape} position={[0, 0.175 - SEATED_GOALIE_KNOB_Y, 0]} scale={[1, 0.58, 1]} />
+          <mesh geometry={stickShaftGeo} material={mats.stick} position={[0, SEATED_SHAFT_Y - SEATED_GOALIE_KNOB_Y, 0]} scale={[1, SEATED_SHAFT_SY, 1]} />
+          <mesh geometry={goaliePaddleGeo} material={mats.tape} position={[0, SEATED_PADDLE_Y - SEATED_GOALIE_KNOB_Y, 0]} scale={[1, SEATED_PADDLE_SY, 1]} />
           <group ref={bladeGrp} position={[0, -SEATED_GOALIE_KNOB_Y, 0]}>
             <mesh geometry={goalieIceGeo} material={mats.tape} position={[0, 0.016, 0.13]} />
           </group>
@@ -5938,9 +5918,9 @@ export function SeatedPlayer({
         </group>
         </group>
         <group ref={hips} name="hips" position={[0, 0.16, 0.02]}>
-          <mesh geometry={pantsGeo} material={mats.pants} position={[0, PANTS_Y_SEAT, 0]} castShadow />
-          <mesh geometry={pantStripeGeo} material={mats.stripe} position={[-PANT_STRIPE_X, PANTS_Y_SEAT, 0]} scale={[1, PANTS_H / 0.2, 1]} />
-          <mesh geometry={pantStripeGeo} material={mats.stripe} position={[PANT_STRIPE_X, PANTS_Y_SEAT, 0]} scale={[1, PANTS_H / 0.2, 1]} />
+          <mesh geometry={goalie ? pantsGeo : skaterPantsGeo} material={mats.pants} position={[0, goalie ? PANTS_Y_SEAT : PANTS_Y_SEAT_SKATER, 0]} castShadow />
+          <mesh geometry={pantStripeGeo} material={mats.stripe} position={[-PANT_STRIPE_X, goalie ? PANTS_Y_SEAT : PANTS_Y_SEAT_SKATER, 0]} scale={goalie ? [1, PANTS_H / 0.2, 1] : [1, SKATER_PANTS_H / 0.2, 1]} />
+          <mesh geometry={pantStripeGeo} material={mats.stripe} position={[PANT_STRIPE_X, goalie ? PANTS_Y_SEAT : PANTS_Y_SEAT_SKATER, 0]} scale={goalie ? [1, PANTS_H / 0.2, 1] : [1, SKATER_PANTS_H / 0.2, 1]} />
           <SeatedLeg side={-1} mats={mats} goalie={goalie} thighRef={lLeg} shinRef={lShin} bootRef={lBoot} />
           <SeatedLeg side={1} mats={mats} goalie={goalie} thighRef={rLeg} shinRef={rShin} bootRef={rBoot} />
         </group>
@@ -5969,43 +5949,13 @@ const refBand = new THREE.BoxGeometry(0.13, 0.08, 0.14);
 const _refArmDown = new THREE.Vector3(0, -1, 0);
 const _refArmPoint = new THREE.Vector3(0, 0, 1);
 const REF_HIP = 0.78;
-const REF_HINGE_RISE = 0.95;
-const REF_TUMBLE_RISE = 0.62;
-const REF_SOLE_LEN = Math.hypot(0.15 - REF_HIP, 0.04);
-const _refEuler = new THREE.Euler(0, 0, 0, "XYZ");
-const _refQFall = new THREE.Quaternion();
-const _refQFold = new THREE.Quaternion();
-const _refQStand = new THREE.Quaternion();
-const _refQ = new THREE.Quaternion();
-const _refQInv = new THREE.Quaternion();
-const _refQLeg = new THREE.Quaternion();
-const _refHip0 = new THREE.Vector3(0, REF_HIP, 0);
-const _refIdleM = new THREE.Vector3(-0.13, 0.15, 0.04);
-const _refIdleP = new THREE.Vector3(0.13, 0.15, 0.04);
-const _refSoleLocal = new THREE.Vector3(0, 0.15 - REF_HIP, 0.04);
-const _refSoleDir = _refSoleLocal.clone().normalize();
+const REF_SHIN = new THREE.Vector3(0, -0.32, 0);
+const REF_BOOT = new THREE.Vector3(0, -0.3, 0.04);
+const REF_FORE = new THREE.Vector3(0, -0.28, 0.02);
 const _refHip = new THREE.Vector3();
-const _refHipB = new THREE.Vector3();
-const _refSoleM = new THREE.Vector3();
-const _refSoleP = new THREE.Vector3();
-const _refSoleMB = new THREE.Vector3();
-const _refSolePB = new THREE.Vector3();
-const _refSock = new THREE.Vector3();
-const _refDir = new THREE.Vector3();
-const _refLand = new THREE.Vector3();
-
-function refQuat(rx: number, ry: number, rz: number, out: THREE.Quaternion) {
-  _refEuler.set(rx, ry, rz);
-  return out.setFromEuler(_refEuler);
-}
-
-function refSmooth(t: number) {
-  const x = Math.min(1, Math.max(0, t));
-  return x * x * (3 - 2 * x);
-}
 
 function restRefRig(body: THREE.Group, lLeg: THREE.Group, rLeg: THREE.Group, shadow: THREE.Mesh | null) {
-  body.position.set(0, REF_HIP, 0);
+  body.position.set(0, 0, 0);
   body.rotation.set(0, 0, 0);
   lLeg.position.set(-0.13, REF_HIP, 0);
   lLeg.rotation.set(0, 0, 0);
@@ -6014,77 +5964,32 @@ function restRefRig(body: THREE.Group, lLeg: THREE.Group, rLeg: THREE.Group, sha
   if (shadow) shadow.position.set(0, SHADOW_ICE_Y, 0);
 }
 
-function writeRefSnap(kind: "down" | "one" | "both" | "stand", plantP: boolean, fallY: number, hip: THREE.Vector3, soleM: THREE.Vector3, soleP: THREE.Vector3): number {
-  if (kind === "down") {
-    hip.copy(_refHip0).applyQuaternion(_refQFall);
-    soleM.copy(_refIdleM).applyQuaternion(_refQFall);
-    soleP.copy(_refIdleP).applyQuaternion(_refQFall);
-    return fallY;
+function restRefShin(shin: THREE.Group | null, boot: THREE.Group | null) {
+  if (shin) {
+    shin.position.copy(REF_SHIN);
+    shin.quaternion.identity();
+    shin.rotation.set(0, 0, 0);
   }
-  let hx = 0;
-  let hy = REF_HIP;
-  let hz = 0;
-  let mx = -0.13;
-  let my = 0.15;
-  let mz = 0.04;
-  let px = 0.13;
-  let py = 0.15;
-  let pz = 0.04;
-  if (kind === "one") {
-    hx = plantP ? 0.05 : -0.05;
-    hy = 0.5;
-    hz = 0.3;
-    if (plantP) {
-      mx = -0.2;
-      my = 0.46;
-      mz = -0.2;
-      px = 0.18;
-      py = 0.15;
-      pz = 0.74;
-    } else {
-      mx = -0.18;
-      my = 0.15;
-      mz = 0.74;
-      px = 0.2;
-      py = 0.46;
-      pz = -0.2;
-    }
-  } else if (kind === "both") {
-    hy = 0.58;
-    hz = 0.16;
-    mx = -0.22;
-    my = 0.15;
-    mz = 0.58;
-    px = 0.22;
-    py = 0.15;
-    pz = 0.58;
+  if (boot) {
+    boot.position.copy(REF_BOOT);
+    boot.quaternion.identity();
+    boot.rotation.set(0, 0, 0);
   }
-  hip.set(hx, hy, hz).applyQuaternion(_refQStand);
-  soleM.set(mx, my, mz).applyQuaternion(_refQStand);
-  soleP.set(px, py, pz).applyQuaternion(_refQStand);
-  return 0;
 }
 
-function plantRefLeg(leg: THREE.Group, socketX: number, target: THREE.Vector3, floorY: number, rootY: number) {
-  _refSock.set(socketX, 0, 0).applyQuaternion(_refQ).add(_refHip);
-  _refDir.copy(target).sub(_refSock);
-  if (_refDir.lengthSq() < 1e-8) _refDir.set(0, -1, 0.15);
-  _refDir.normalize();
-  const minDirY = (floorY - rootY - _refSock.y) / REF_SOLE_LEN;
-  if (_refDir.y < minDirY) {
-    _refDir.y = Math.min(0.96, minDirY);
-    const h = Math.sqrt(Math.max(0, 1 - _refDir.y * _refDir.y));
-    const xz = Math.hypot(_refDir.x, _refDir.z) || 1;
-    _refDir.x = (_refDir.x / xz) * h;
-    _refDir.z = (_refDir.z / xz) * h;
+function restRefArm(arm: THREE.Group | null, fore: THREE.Group | null, x: number) {
+  if (arm) {
+    arm.position.set(x, 1.46, 0);
+    arm.scale.set(1, 1, 1);
+    arm.quaternion.identity();
+    arm.rotation.set(0.25, 0, 0);
   }
-  // Bend in the body frame, then take the body's yaw, so the boot does not twist against the pants.
-  _refQInv.copy(_refQ).invert();
-  _refDir.applyQuaternion(_refQInv);
-  _refQLeg.setFromUnitVectors(_refSoleDir, _refDir);
-  _refQLeg.premultiply(_refQ);
-  leg.position.copy(_refSock);
-  leg.quaternion.copy(_refQLeg);
+  if (fore) {
+    fore.position.copy(REF_FORE);
+    fore.quaternion.identity();
+    fore.rotation.set(0, 0, 0);
+    fore.scale.set(1, 1, 1);
+  }
 }
 
 /** Same absorb weight a checked skater uses: full from struck 0.9 down through 0.2. */
@@ -6093,105 +5998,114 @@ function refAbsorbK(struck: number): number {
   return smooth01(Math.min(1, (Math.min(struck, 1.15) - 0.2) / 0.7));
 }
 
-/** Checked referee, tumble 0. Same absorb clock and drives as a skater whose lean and stride are 0.
- *  Meshes live under an inner (0, -REF_HIP, 0) group, so the body origin is the hip after that
- *  offset takes the skater body pitch. Legs are siblings of the body: the socket follows the hip,
- *  and the single bone takes the skater thigh blend on top of that pitch. Root stays on the ice.
+function poseRefLeg(leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number, thigh: number, knee: number, bootX: number, roll: number) {
+  leg.position.set(x, REF_HIP, 0);
+  leg.rotation.set(thigh, 0, roll);
+  if (shin) {
+    shin.position.copy(REF_SHIN);
+    shin.rotation.set(knee, 0, 0);
+  }
+  if (boot) {
+    boot.position.copy(REF_BOOT);
+    boot.rotation.set(bootX, 0, 0);
+  }
+}
+
+/**
+ * Checked referee. Same windows as a skater: absorb, then tumbleRoot knockout, then recover.
+ * Saved player joints stamp last. The body is the feet frame, so thigh rotation does not add body pitch.
  */
-function poseRefAbsorb(r: Referee, root: THREE.Group, body: THREE.Group, lLeg: THREE.Group, rLeg: THREE.Group, shadow: THREE.Mesh | null, absorbK: number) {
-  const pitch = RECV_PITCH * absorbK;
-  const knee = 0.24 + (RECV_KNEE - 0.24) * absorbK;
-  const planted = checkPlant(pitch, knee, RECV_DORSI);
-  const drop = planted.drop * absorbK;
-  const bz = -Math.sin(pitch) * SKATER_HIP_Y * absorbK;
-  const cp = Math.cos(pitch);
-  const sp = Math.sin(pitch);
-  root.position.set(r.x, 0, r.z);
-  root.rotation.set(0, r.yaw + Math.PI, 0);
-  body.position.set(0, drop + REF_HIP * cp, bz + REF_HIP * sp);
-  body.rotation.set(pitch, 0, 0);
-  const legPitch = pitch + planted.thigh * absorbK;
-  lLeg.position.set(-0.13, body.position.y, body.position.z);
-  rLeg.position.set(0.13, body.position.y, body.position.z);
-  lLeg.rotation.set(legPitch, 0, 0);
-  rLeg.rotation.set(legPitch, 0, 0);
-  if (shadow) shadow.position.set(0, SHADOW_ICE_Y, 0);
-}
-
-function poseRefRise(r: Referee, root: THREE.Group, body: THREE.Group, lLeg: THREE.Group, rLeg: THREE.Group, shadow: THREE.Mesh | null) {
-  const start = r.tumble !== 0 ? REF_TUMBLE_RISE : REF_HINGE_RISE;
-  const p = (start - r.struck) / start;
-  let fallY = 0;
-  if (r.tumble !== 0) {
-    const t = tumbleRoot(REF_TUMBLE_RISE, r.tumble, r.yaw);
-    refQuat(t.rx, t.ry, t.rz, _refQFall);
-    fallY = t.y;
+function poseRefChecked(
+  r: Referee,
+  root: THREE.Group,
+  body: THREE.Group,
+  lArm: THREE.Group | null,
+  lFore: THREE.Group | null,
+  rArm: THREE.Group | null,
+  rFore: THREE.Group | null,
+  lLeg: THREE.Group,
+  lShin: THREE.Group | null,
+  lBoot: THREE.Group | null,
+  rLeg: THREE.Group,
+  rShin: THREE.Group | null,
+  rBoot: THREE.Group | null,
+  shadow: THREE.Mesh | null,
+): boolean {
+  const pose = checkedCyclePose(r.struck, r.tumble);
+  if (!pose) return false;
+  if (pose === "absorb") {
+    const absorbK = refAbsorbK(r.struck);
+    const sink = Math.max(0, 0.04 - 0.04 * Math.min(1, r.struck));
+    root.position.set(r.x, sink, r.z);
+    root.rotation.set(0, r.yaw + Math.PI, 0);
+    const pitch = RECV_PITCH * absorbK;
+    const knee = 0.24 + (RECV_KNEE - 0.24) * absorbK;
+    const planted = checkPlant(pitch, knee, RECV_DORSI);
+    const drop = planted.drop * absorbK;
+    const bz = -Math.sin(pitch) * SKATER_HIP_Y * absorbK;
+    body.position.set(0, drop, bz);
+    body.rotation.set(pitch, 0, 0);
+    const bootX = checkBoot(pitch, planted.thigh, knee, RECV_DORSI);
+    poseRefLeg(lLeg, lShin, lBoot, -0.13, planted.thigh * absorbK, knee * absorbK, bootX * absorbK, 0);
+    poseRefLeg(rLeg, rShin, rBoot, 0.13, planted.thigh * absorbK, knee * absorbK, bootX * absorbK, 0);
+    restRefArm(lArm, lFore, -0.24);
+    restRefArm(rArm, rFore, 0.24);
   } else {
-    refQuat(REF_HINGE_RISE * 1.05, r.yaw + Math.PI, REF_HINGE_RISE * 0.18, _refQFall);
+    const t = tumbleRoot(r.struck, r.tumble, r.yaw);
+    root.position.set(r.x, t.y, r.z);
+    root.rotation.set(t.rx, t.ry, t.rz);
+    body.position.set(0, 0, 0);
+    body.rotation.set(0, 0, 0);
+    const u = Math.min(1, Math.max(0, 1 - r.struck / TUMBLE_STRIKE));
+    const tuck = u * u * (3 - 2 * u);
+    poseRefLeg(lLeg, lShin, lBoot, -0.13, 0.05 + 0.8 * tuck, 0.25 + 0.45 * tuck, -0.16 + 0.26 * tuck, -0.22 * tuck);
+    poseRefLeg(rLeg, rShin, rBoot, 0.13, 0.05 + 1.1 * tuck, 0.25 + 0.6 * tuck, -0.16 + 0.28 * tuck, 0.28 * tuck);
+    if (pose === "knockout") {
+      if (lArm) {
+        lArm.position.set(-0.26, 1.46, 0.06);
+        lArm.scale.set(1, 1, 1);
+        lArm.rotation.set(0.7, -0.25, 0.15);
+      }
+      if (rArm) {
+        rArm.position.set(0.24, 1.46, 0.06);
+        rArm.scale.set(1, 1, 1);
+        rArm.rotation.set(-0.45, 0.35, -0.4);
+      }
+      if (lFore) {
+        lFore.position.copy(REF_FORE);
+        lFore.scale.set(1, 1, 1);
+        lFore.rotation.set(-0.85, 0, 0);
+      }
+      if (rFore) {
+        rFore.position.copy(REF_FORE);
+        rFore.scale.set(1, 1, 1);
+        rFore.rotation.set(-0.55, 0, 0);
+      }
+    } else {
+      restRefArm(lArm, lFore, -0.24);
+      restRefArm(rArm, rFore, 0.24);
+    }
   }
-  refQuat(REF_HINGE_RISE * 1.05, r.yaw + Math.PI, REF_HINGE_RISE * 0.18, _refQFold);
-  refQuat(0, r.yaw + Math.PI, 0, _refQStand);
-  // Chest stays folded on one skate, then comes upright as the second skate plants.
-  if (p < 0.4) {
-    if (r.tumble !== 0) _refQ.copy(_refQFall).slerp(_refQFold, refSmooth(Math.min(1, p / 0.18)));
-    else _refQ.copy(_refQFold);
-  } else if (p < 0.52) {
-    _refQ.copy(_refQFold).slerp(_refQStand, refSmooth((p - 0.4) / 0.12));
-  } else {
-    _refQ.copy(_refQStand);
-  }
-  const plantP = r.tumble >= 0;
-  let a: "down" | "one" | "both" | "stand" = "down";
-  let b: "down" | "one" | "both" | "stand" = "one";
-  let blend = 0;
-  if (p < 0.18) {
-    a = "down";
-    b = "one";
-    blend = refSmooth(p / 0.18);
-  } else if (p < 0.4) {
-    a = "one";
-    b = "one";
-  } else if (p < 0.52) {
-    a = "one";
-    b = "both";
-    blend = refSmooth((p - 0.4) / 0.12);
-  } else if (p < 0.7) {
-    a = "both";
-    b = "both";
-  } else {
-    a = "both";
-    b = "stand";
-    blend = refSmooth((p - 0.7) / 0.3);
-  }
-  const yA = writeRefSnap(a, plantP, fallY, _refHip, _refSoleM, _refSoleP);
-  const yB = writeRefSnap(b, plantP, fallY, _refHipB, _refSoleMB, _refSolePB);
-  _refHip.lerp(_refHipB, blend);
-  _refSoleM.lerp(_refSoleMB, blend);
-  _refSoleP.lerp(_refSolePB, blend);
-  const rootY = yA + (yB - yA) * blend;
-  const floorY = 0.14 * refSmooth(Math.min(1, Math.max(0, (p - 0.02) / 0.14)));
-  root.position.set(r.x, rootY, r.z);
-  root.rotation.set(0, 0, 0);
-  body.position.copy(_refHip);
-  body.quaternion.copy(_refQ);
-  plantRefLeg(lLeg, -0.13, _refSoleM, floorY, rootY);
-  plantRefLeg(rLeg, 0.13, _refSoleP, floorY, rootY);
+  applyPoseJoints(pose, {
+    body,
+    lArm,
+    lFore,
+    rArm,
+    rFore,
+    lLeg,
+    lShin,
+    lBoot,
+    rLeg,
+    rShin,
+    rBoot,
+  });
   if (shadow) {
-    _refLand.copy(_refSoleLocal).applyQuaternion(lLeg.quaternion).add(lLeg.position);
-    const lx = _refLand.x;
-    const lz = _refLand.z;
-    _refLand.copy(_refSoleLocal).applyQuaternion(rLeg.quaternion).add(rLeg.position);
-    shadow.position.set((lx + _refLand.x) * 0.5, SHADOW_ICE_Y, (lz + _refLand.z) * 0.5);
+    root.updateWorldMatrix(true, true);
+    _refHip.set(0, REF_HIP, 0);
+    body.localToWorld(_refHip);
+    plantRinkShadowAt(shadow, _refHip.x, _refHip.z, 1);
   }
-}
-
-function poseRefRiseArms(lArm: THREE.Group, rArm: THREE.Group, p: number, tumble: number) {
-  const brace = tumble !== 0 ? refSmooth(Math.min(1, p / 0.18)) : 1;
-  const up = p < 0.4 ? 0 : p < 0.52 ? refSmooth((p - 0.4) / 0.12) : 1;
-  const w = brace * (1 - up);
-  const hang = 0.25;
-  lArm.rotation.set(hang + (-0.35 - hang) * w, 0.2 * w, 0.85 * w);
-  rArm.rotation.set(hang + (-0.35 - hang) * w, -0.2 * w, -0.85 * w);
+  return true;
 }
 
 export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
@@ -6199,8 +6113,14 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
   const body = useRef<THREE.Group>(null);
   const lLeg = useRef<THREE.Group>(null);
   const rLeg = useRef<THREE.Group>(null);
+  const lShin = useRef<THREE.Group>(null);
+  const rShin = useRef<THREE.Group>(null);
+  const lBoot = useRef<THREE.Group>(null);
+  const rBoot = useRef<THREE.Group>(null);
   const lArm = useRef<THREE.Group>(null);
   const rArm = useRef<THREE.Group>(null);
+  const lFore = useRef<THREE.Group>(null);
+  const rFore = useRef<THREE.Group>(null);
   const shadow = useRef<THREE.Mesh>(null);
   const mats = useMemo(
     () => ({
@@ -6233,44 +6153,34 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
     const ll = lLeg.current;
     const rl = rLeg.current;
     if (!g || !b || !ll || !rl) return;
-    // A checked referee (tumble 0) uses the skater absorb clock. Tumble still rises on its own.
-    const absorbK = r.tumble === 0 ? refAbsorbK(r.struck) : 0;
-    const rising = r.tumble !== 0 && r.struck > 0 && r.struck < REF_TUMBLE_RISE;
-    let down = 0;
-    if (absorbK > 0) {
-      poseRefAbsorb(r, g, b, ll, rl, shadow.current, absorbK);
-    } else if (rising) {
-      poseRefRise(r, g, b, ll, rl, shadow.current);
-    } else if (r.tumble !== 0 && r.struck >= REF_TUMBLE_RISE) {
-      const t = tumbleRoot(r.struck, r.tumble, r.yaw);
-      g.position.set(r.x, t.y, r.z);
-      g.rotation.set(t.rx, t.ry, t.rz);
-      restRefRig(b, ll, rl, shadow.current);
-    } else {
-      down = r.struck > 0.2 ? Math.min(1, r.struck) : 0;
-      g.position.set(r.x, 0, r.z);
-      g.rotation.set(down * 1.05, r.yaw + Math.PI, down * 0.18);
-      restRefRig(b, ll, rl, shadow.current);
+    if (
+      poseRefChecked(
+        r,
+        g,
+        b,
+        lArm.current,
+        lFore.current,
+        rArm.current,
+        rFore.current,
+        ll,
+        lShin.current,
+        lBoot.current,
+        rl,
+        rShin.current,
+        rBoot.current,
+        shadow.current,
+      )
+    ) {
+      return;
     }
-    if (lArm.current) {
-      lArm.current.position.set(-0.24, 1.46, 0);
-      lArm.current.scale.set(1, 1, 1);
-      lArm.current.quaternion.identity();
-      lArm.current.rotation.set(0.25, 0, 0);
-    }
-    if (rArm.current) {
-      rArm.current.position.set(0.24, 1.46, 0);
-      rArm.current.scale.set(1, 1, 1);
-      rArm.current.quaternion.identity();
-      rArm.current.rotation.set(0.25, 0, 0);
-    }
-    if (rising && lArm.current && rArm.current) {
-      const start = r.tumble !== 0 ? REF_TUMBLE_RISE : REF_HINGE_RISE;
-      poseRefRiseArms(lArm.current, rArm.current, (start - r.struck) / start, r.tumble);
-    } else if (down > 0.18) {
-      if (lArm.current) lArm.current.rotation.set(-0.35, 0.2, 0.85);
-      if (rArm.current) rArm.current.rotation.set(-0.35, -0.2, -0.85);
-    } else if (r.pose === "drop") {
+    g.position.set(r.x, 0, r.z);
+    g.rotation.set(0, r.yaw + Math.PI, 0);
+    restRefRig(b, ll, rl, shadow.current);
+    restRefShin(lShin.current, lBoot.current);
+    restRefShin(rShin.current, rBoot.current);
+    restRefArm(lArm.current, lFore.current, -0.24);
+    restRefArm(rArm.current, rFore.current, 0.24);
+    if (r.pose === "drop") {
       const dx = world.puck.x - r.x;
       const dy = world.puck.y - 1.46;
       const dz = world.puck.z - r.z;
@@ -6310,7 +6220,7 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
       if (rArm.current) rArm.current.rotation.set(0.1, 0, -1.35);
       if (lArm.current) lArm.current.rotation.set(0.1, 0, 1.35);
     }
-    if (shadow.current) plantRinkShadow(shadow.current, shadow.current.position.x, shadow.current.position.z, 1);
+    if (shadow.current) plantRinkShadow(shadow.current, 0, 0, 1);
   });
 
   return (
@@ -6318,8 +6228,7 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
       <mesh ref={shadow} geometry={refShadowGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, SHADOW_ICE_Y, 0]}>
         <meshBasicMaterial color="#000000" transparent opacity={0.1} depthWrite={false} />
       </mesh>
-      <group ref={body} position={[0, REF_HIP, 0]}>
-        <group position={[0, -REF_HIP, 0]}>
+      <group ref={body}>
           <mesh geometry={refNeck} material={mats.white} position={[0, 1.52, 0.02]} />
           <mesh geometry={refHelmet} material={mats.helm} position={[0, 1.62, 0.02]} scale={[1.05, 0.92, 1.12]} />
           <mesh geometry={refTorso} material={mats.white} position={[0, 1.18, 0]} />
@@ -6348,7 +6257,9 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
               return <mesh key={`lz${i}`} geometry={refArmSideStripe} material={mats.black} position={[0, -0.2, z]} />;
             })}
             <mesh geometry={refBand} material={mats.orange} position={[0, -0.26, 0]} />
-            <mesh geometry={gloveGeo} material={mats.black} position={[0, -0.44, 0.02]} />
+            <group ref={lFore} position={[0, -0.28, 0.02]}>
+              <mesh geometry={gloveGeo} material={mats.black} position={[0, -0.16, 0]} />
+            </group>
           </group>
           <group ref={rArm} position={[0.24, 1.46, 0]}>
             <mesh geometry={refArm} material={mats.white} position={[0, -0.2, 0]} />
@@ -6361,19 +6272,28 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
               return <mesh key={`rz${i}`} geometry={refArmSideStripe} material={mats.black} position={[0, -0.2, z]} />;
             })}
             <mesh geometry={refBand} material={mats.orange} position={[0, -0.26, 0]} />
-            <mesh geometry={gloveGeo} material={mats.black} position={[0, -0.44, 0.02]} />
+            <group ref={rFore} position={[0, -0.28, 0.02]}>
+              <mesh geometry={gloveGeo} material={mats.black} position={[0, -0.16, 0]} />
+            </group>
           </group>
-        </group>
-      </group>
-      <group ref={lLeg} position={[-0.13, REF_HIP, 0]}>
-        <mesh geometry={refLeg} material={mats.pants} position={[0, 0.55 - REF_HIP, 0]} />
-        <mesh geometry={refBoot} material={mats.helm} position={[0, 0.22 - REF_HIP, 0.04]} />
-        <SkateSole mats={{ blade: mats.blade, skates: mats.helm, mask: mats.mask }} position={[0, 0.15 - REF_HIP, 0.04]} />
-      </group>
-      <group ref={rLeg} position={[0.13, REF_HIP, 0]}>
-        <mesh geometry={refLeg} material={mats.pants} position={[0, 0.55 - REF_HIP, 0]} />
-        <mesh geometry={refBoot} material={mats.helm} position={[0, 0.22 - REF_HIP, 0.04]} />
-        <SkateSole mats={{ blade: mats.blade, skates: mats.helm, mask: mats.mask }} position={[0, 0.15 - REF_HIP, 0.04]} />
+          <group ref={lLeg} position={[-0.13, REF_HIP, 0]}>
+            <mesh geometry={refLeg} material={mats.pants} position={[0, 0.55 - REF_HIP, 0]} />
+            <group ref={lShin} position={[0, -0.32, 0]}>
+              <group ref={lBoot} position={[0, -0.3, 0.04]}>
+                <mesh geometry={refBoot} material={mats.helm} position={[0, 0.06, 0]} />
+                <SkateSole mats={{ blade: mats.blade, skates: mats.helm, mask: mats.mask }} position={[0, -0.01, 0]} />
+              </group>
+            </group>
+          </group>
+          <group ref={rLeg} position={[0.13, REF_HIP, 0]}>
+            <mesh geometry={refLeg} material={mats.pants} position={[0, 0.55 - REF_HIP, 0]} />
+            <group ref={rShin} position={[0, -0.32, 0]}>
+              <group ref={rBoot} position={[0, -0.3, 0.04]}>
+                <mesh geometry={refBoot} material={mats.helm} position={[0, 0.06, 0]} />
+                <SkateSole mats={{ blade: mats.blade, skates: mats.helm, mask: mats.mask }} position={[0, -0.01, 0]} />
+              </group>
+            </group>
+          </group>
       </group>
     </group>
   );

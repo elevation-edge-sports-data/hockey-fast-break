@@ -5,6 +5,16 @@ import * as THREE from "three";
 import { PlayerMesh, SeatedPlayer } from "./PlayerMesh";
 import { applyPose, holdNamedPose, prepareGalleryPose, PUBLIC_POSES, releasePoseGallery, type PublicPoseId } from "./poseGallery";
 import { applyPoseJoints, noteSavedPose, POSE_JOINTS, poseStoredPosition, pullPoseOverrides, savePoseOverride, type PoseJoints } from "./poseOverrides";
+import {
+  addWorldEuler,
+  applyWorldQuaternion,
+  originForFixedRotationOffset,
+  readWorldEuler,
+  rotateAboutWorldAxis,
+  rotationFrameOffset,
+  rotationWorldQuaternion,
+  setWorldEulerAxis,
+} from "./poseWorldEuler";
 import { mountStickKnobPivot, mountStickOnHand, releaseStickFromHand, releaseStickKnobPivot } from "./stickKnobPivot";
 import { world } from "./sim";
 import { kitById, UNIFORMS } from "./uniforms";
@@ -45,7 +55,13 @@ const SHAFT_HIT = "shaftHold";
 /**
  * Mesh l* groups sit on the player's right, for skaters and goalies.
  * Menu labels and mesh clicks swap through this map. Stick and blade are not sided.
+ * The stick stays on the player's left hand (mesh rHand) for strideLeft and strideRight.
  */
+/** Player's left hand. Body +X. Both stride poses parent the stick here. */
+function skaterLeftHand(joints: Record<string, THREE.Object3D | null>): THREE.Object3D | null {
+  return joints.rHand ?? null;
+}
+
 const SIDE_SWAP: Record<string, string> = {
   lArm: "rArm",
   rArm: "lArm",
@@ -117,7 +133,6 @@ const VIEW_MARGIN = 0.96;
 const UNDO_MAX = 20;
 const _jointPos = new THREE.Vector3();
 const _jointQuat = new THREE.Quaternion();
-const _jointInv = new THREE.Quaternion();
 const _viewWorld = new THREE.Vector3();
 const _viewCam = new THREE.Vector3();
 const _viewFwd = new THREE.Vector3();
@@ -132,9 +147,13 @@ const _gizmoScratchQuat = new THREE.Quaternion();
 const _gizmoOrbit = new THREE.Vector3();
 const _gizmoBox = new THREE.Box3();
 const _gizmoBoxTmp = new THREE.Box3();
-const _eulerStart = new THREE.Euler();
+const _quatStart = new THREE.Quaternion();
 const _pivotWorld = new THREE.Vector3();
 const _localOff = new THREE.Vector3();
+/** Joint or stick-knob pivot receiving the world-axis drag. */
+let _spinTarget: THREE.Object3D | null = null;
+/** Body/torso anchor. Its world point stays fixed while the joint turns. */
+let _orbitAnchor: THREE.Object3D | null = null;
 /** Stick pieces. They would pull the body center off the player. */
 const BODY_GIZMO_SKIP = new Set(["goalieKnob", "goalieShaft", "goalieBlade", "goalieIce"]);
 
@@ -195,13 +214,13 @@ function bodyVisualCenter(body: THREE.Object3D, out: THREE.Vector3): boolean {
 /** Put the anchor on the swapped center, oriented with the joint. */
 function placeGizmoAnchor(anchor: THREE.Object3D, joint: THREE.Object3D, id: string, lastPos: THREE.Vector3, lastQuat: THREE.Quaternion, pose: string): boolean {
   joint.updateWorldMatrix(true, false);
-  if (id === "body" && (pose === "goalieButterfly" || pose === "goalieGloveSave" || pose === "goalieBlockerSave")) {
+  if (id === "body" && (pose === "goalieButterfly" || pose === "goalieGloveSave" || pose === "goalieBlockerSave" || pose === "goalieDivingGloveSave" || pose === "goalieDivingStickSave" || pose === "goalieProtectLeft" || pose === "goalieProtectRight" || pose === "goalieCover")) {
     if (!bodyVisualCenter(joint, _gizmoLocal)) return false;
   } else {
     if (!swappedGizmoOffset(id, joint, _gizmoLocal)) return false;
     joint.localToWorld(_gizmoLocal);
   }
-  joint.getWorldQuaternion(_gizmoQuat);
+  rotationWorldQuaternion(joint, _gizmoQuat);
   anchor.position.copy(_gizmoLocal);
   anchor.quaternion.copy(_gizmoQuat);
   anchor.scale.set(1, 1, 1);
@@ -211,55 +230,58 @@ function placeGizmoAnchor(anchor: THREE.Object3D, joint: THREE.Object3D, id: str
   return true;
 }
 
-/** Remember the Euler angles before a wheel drag so one axis can be added back on. */
-function beginAxisDrag(joint: THREE.Object3D, anchor: THREE.Object3D | null) {
-  _eulerStart.copy(joint.rotation);
+/**
+ * Remember the world orientation before a wheel drag.
+ * Body and torso orbit the anchor. The stick gizmo turns the knob pivot, so
+ * the knob stays put. Every other joint turns about its own origin.
+ */
+function beginRotationDrag(joint: THREE.Object3D, gizmo: THREE.Object3D | null, anchor: THREE.Object3D | null) {
+  _orbitAnchor = null;
   _localOff.set(0, 0, 0);
-  joint.updateWorldMatrix(true, false);
-  if (!anchor || anchor === joint) {
-    joint.getWorldPosition(_pivotWorld);
-    return;
+  if (anchor && anchor !== joint) {
+    _spinTarget = joint;
+    _orbitAnchor = anchor;
+    joint.updateWorldMatrix(true, false);
+    anchor.updateWorldMatrix(true, false);
+    anchor.getWorldPosition(_pivotWorld);
+    joint.getWorldPosition(_gizmoJointPos);
+    rotationWorldQuaternion(joint, _gizmoJointQuat);
+    rotationFrameOffset(_gizmoJointPos, _pivotWorld, _gizmoJointQuat, _localOff);
+  } else if (gizmo && gizmo !== joint) {
+    _spinTarget = gizmo;
+  } else {
+    _spinTarget = joint;
   }
-  anchor.updateWorldMatrix(true, false);
-  anchor.getWorldPosition(_pivotWorld);
-  joint.getWorldPosition(_gizmoJointPos);
-  joint.getWorldQuaternion(_gizmoJointQuat);
-  _localOff.copy(_pivotWorld).sub(_gizmoJointPos).applyQuaternion(_gizmoScratchQuat.copy(_gizmoJointQuat).invert());
+  rotationWorldQuaternion(_spinTarget, _quatStart);
 }
 
-/**
- * One wheel changes one Euler component. The quaternion stays in sync, and the
- * other two angles are left as they were at the start of the drag.
- */
-function applySingleAxisRotation(joint: THREE.Object3D, anchor: THREE.Object3D | null, axis: "X" | "Y" | "Z", angle: number) {
-  const parent = joint.parent;
-  if (!parent) return;
-  const key = axis.toLowerCase() as "x" | "y" | "z";
-  joint.rotation.order = "XYZ";
-  joint.rotation.set(
-    key === "x" ? _eulerStart.x + angle : _eulerStart.x,
-    key === "y" ? _eulerStart.y + angle : _eulerStart.y,
-    key === "z" ? _eulerStart.z + angle : _eulerStart.z,
-  );
-  if (_localOff.lengthSq() > 1e-12) {
+/** Turn the drag target about one fixed world axis, from the pointer-down pose. */
+function applyRotationDrag(axis: "X" | "Y" | "Z", angle: number) {
+  const target = _spinTarget;
+  if (!target) return;
+  rotateAboutWorldAxis(target, axis, angle, _quatStart);
+  const anchor = _orbitAnchor;
+  if (anchor && _localOff.lengthSq() > 1e-12) {
+    const parent = target.parent;
+    if (!parent) return;
+    rotationWorldQuaternion(target, _gizmoQuat);
+    originForFixedRotationOffset(_pivotWorld, _gizmoQuat, _localOff, _gizmoJointPos);
     parent.updateWorldMatrix(true, false);
-    _gizmoQuat.copy(parent.getWorldQuaternion(_gizmoScratchQuat)).multiply(joint.quaternion);
-    _gizmoOrbit.copy(_localOff).applyQuaternion(_gizmoQuat);
-    _gizmoJointPos.copy(_pivotWorld).sub(_gizmoOrbit);
-    parent.worldToLocal(joint.position.copy(_gizmoJointPos));
-  }
-  joint.updateMatrixWorld(true);
-  if (anchor && anchor !== joint) {
-    joint.getWorldQuaternion(anchor.quaternion);
+    parent.worldToLocal(target.position.copy(_gizmoJointPos));
+    target.updateMatrixWorld(true);
+    rotationWorldQuaternion(target, anchor.quaternion);
     anchor.position.copy(_pivotWorld);
     anchor.updateMatrixWorld(true);
+    return;
   }
+  target.updateMatrixWorld(true);
 }
 
 /**
  * Drag of the anchor moves the joint around that swapped center.
- * Translation changes position only. The goalie root scale shears a world
- * quaternion, so copying it back onto the joint turns a move into a spin.
+ * Translation changes position only. Rotation uses the scale-free world
+ * quaternion. Decomposing matrixWorld shears under the goalie root scale
+ * and turns a move into a spin.
  */
 function applyGizmoAnchor(anchor: THREE.Object3D, joint: THREE.Object3D, lastPos: THREE.Vector3, lastQuat: THREE.Quaternion, translating: boolean) {
   const parent = joint.parent;
@@ -275,18 +297,17 @@ function applyGizmoAnchor(anchor: THREE.Object3D, joint: THREE.Object3D, lastPos
     lastPos.copy(_gizmoPos);
     return;
   }
-  anchor.getWorldQuaternion(_gizmoQuat);
+  rotationWorldQuaternion(anchor, _gizmoQuat);
   _gizmoDelta.copy(_gizmoQuat).multiply(_gizmoScratchQuat.copy(lastQuat).invert());
   joint.getWorldPosition(_gizmoJointPos);
-  joint.getWorldQuaternion(_gizmoJointQuat);
+  rotationWorldQuaternion(joint, _gizmoJointQuat);
   _gizmoOrbit.copy(_gizmoJointPos).sub(lastPos);
   _gizmoOrbit.applyQuaternion(_gizmoDelta);
   _gizmoJointPos.copy(lastPos).add(_gizmoOrbit).add(_gizmoPos).sub(lastPos);
   _gizmoJointQuat.premultiply(_gizmoDelta);
   parent.updateWorldMatrix(true, false);
   parent.worldToLocal(joint.position.copy(_gizmoJointPos));
-  parent.getWorldQuaternion(_gizmoScratchQuat).invert();
-  joint.quaternion.copy(_gizmoScratchQuat).multiply(_gizmoJointQuat);
+  applyWorldQuaternion(joint, _gizmoJointQuat);
   joint.updateMatrixWorld(true);
   lastPos.copy(_gizmoPos);
   lastQuat.copy(_gizmoQuat);
@@ -325,14 +346,14 @@ function captureJoint(object: THREE.Object3D): JointSnap {
   return {
     object,
     position: object.getWorldPosition(new THREE.Vector3()),
-    quaternion: object.getWorldQuaternion(new THREE.Quaternion()),
+    quaternion: rotationWorldQuaternion(object, new THREE.Quaternion()),
   };
 }
 
 function jointMoved(snap: JointSnap): boolean {
   snap.object.updateWorldMatrix(true, false);
   snap.object.getWorldPosition(_jointPos);
-  snap.object.getWorldQuaternion(_jointQuat);
+  rotationWorldQuaternion(snap.object, _jointQuat);
   if (_jointPos.distanceToSquared(snap.position) > 1e-10) return true;
   return Math.abs(1 - Math.abs(_jointQuat.dot(snap.quaternion))) > 1e-8;
 }
@@ -342,8 +363,7 @@ function applyJoint(snap: JointSnap) {
   if (!parent) return;
   parent.updateWorldMatrix(true, false);
   parent.worldToLocal(snap.object.position.copy(snap.position));
-  parent.getWorldQuaternion(_jointInv).invert();
-  snap.object.quaternion.copy(_jointInv).multiply(snap.quaternion);
+  applyWorldQuaternion(snap.object, snap.quaternion);
   snap.object.updateMatrixWorld();
 }
 
@@ -423,7 +443,7 @@ function Scene({
   posedEpoch: number;
   /** Stick group. Parented under `hand` while the editor is active. */
   stick: THREE.Object3D | null;
-  /** Goalie right hand, or the skater left hand. */
+  /** Goalie right hand (mesh lHand), or the skater left hand (mesh rHand). */
   hand: THREE.Object3D | null;
 }) {
   const orbitRef = useRef<ComponentRef<typeof OrbitControls>>(null);
@@ -599,6 +619,7 @@ function Scene({
             goalie={seat === "goalie"}
             seatX={-1}
             poseId={pose}
+            posedEpoch={posedEpoch}
             onJointRefs={setJoints}
             onJointClick={editable ? setSelected : undefined}
           />
@@ -620,14 +641,14 @@ function Scene({
           ref={controlsRef}
           object={gizmo}
           mode={mode}
-          space={mode === "rotate" ? "local" : "world"}
+          space="world"
           size={0.55}
           onMouseDown={() => {
             if (orbitRef.current) orbitRef.current.enabled = false;
             draggingGizmo.current = gizmo === anchorRef.current;
             rememberDrag();
             const joint = objectRef.current;
-            if (joint) beginAxisDrag(joint, gizmo === anchorRef.current ? anchorRef.current : null);
+            if (joint) beginRotationDrag(joint, gizmo, gizmo === anchorRef.current ? anchorRef.current : null);
           }}
           onMouseUp={() => {
             if (orbitRef.current) orbitRef.current.enabled = true;
@@ -644,7 +665,8 @@ function Scene({
             if (!joint || !controls?.dragging) return;
             const axis = controls.axis;
             if (controls.mode === "rotate" && (axis === "X" || axis === "Y" || axis === "Z")) {
-              applySingleAxisRotation(joint, gizmo === anchorRef.current ? anchorRef.current : null, axis, controls.rotationAngle);
+              applyRotationDrag(axis, controls.rotationAngle);
+              invalidate();
               return;
             }
             if (gizmo !== anchorRef.current) return;
@@ -826,6 +848,8 @@ export function PoseEditor({
     for (const id of POSE_JOINTS) {
       const group = jointsRef.current[id];
       if (!group) continue;
+      // Parent-local Euler. The panel edits world XYZ, which is already
+      // converted into this local quaternion. Existing pose files stay valid.
       const r = group.rotation;
       const rx = Math.round(r.x * 10000) / 10000;
       const ry = Math.round(r.y * 10000) / 10000;
@@ -1022,8 +1046,8 @@ export function PoseEditor({
               stick={joints.stick ?? null}
               hand={
                 (seated?.(pose) === "goalie" || (meshIndex != null && world.skaters[meshIndex]?.kind === "goalie")
-                  ? joints.lHand
-                  : joints.rHand) ?? null
+                  ? joints.lHand ?? null
+                  : skaterLeftHand(joints))
               }
             />
           </Canvas>
@@ -1169,6 +1193,7 @@ function JointNumbers({
 }) {
   if (!object) return null;
   const axes = ["x", "y", "z"] as const;
+  const worldRot = readWorldEuler(object);
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 16 }}>
       <div>
@@ -1185,15 +1210,15 @@ function JointNumbers({
         ))}
       </div>
       <div>
-        <div style={menuHead}>Rotation</div>
+        <div style={menuHead}>World rotation</div>
         {axes.map((axis) => (
           <AxisRow
             key={`r-${axis}-${revision}`}
             label={axis.toUpperCase()}
-            value={object.rotation[axis]}
+            value={worldRot[axis]}
             disabled={disabled}
-            onCommit={(next) => onCommit((obj) => (obj.rotation[axis] = next))}
-            onNudge={(dir) => onCommit((obj) => (obj.rotation[axis] += dir * ROT_STEP))}
+            onCommit={(next) => onCommit((obj) => setWorldEulerAxis(obj, axis, next))}
+            onNudge={(dir) => onCommit((obj) => addWorldEuler(obj, axis, dir * ROT_STEP))}
           />
         ))}
       </div>
