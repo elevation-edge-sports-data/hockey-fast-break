@@ -42,7 +42,7 @@ const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 
-const { resetWorld, stepSim, world } = sim;
+const { resetWorld, stepSim, world, checkedCyclePose, TUMBLE_STRIKE } = sim;
 const { useGame } = store;
 const { setInjectedKeys, setInjectedAim } = input;
 
@@ -115,6 +115,60 @@ function parkIdle(keep) {
     s.struck = 0;
     s.tumble = 0;
     s.celebrate = 0;
+  }
+  if (!keep.has(world.ref)) {
+    world.ref.x = 36;
+    world.ref.z = 6;
+    world.ref.vx = 0;
+    world.ref.vz = 0;
+    world.ref.struck = 0;
+    world.ref.tumble = 0;
+  }
+  if (!keep.has(world.ref2)) {
+    world.ref2.x = 36;
+    world.ref2.z = -6;
+    world.ref2.vx = 0;
+    world.ref2.vz = 0;
+    world.ref2.struck = 0;
+    world.ref2.tumble = 0;
+  }
+}
+
+function pinPair(foe) {
+  const u = user();
+  u.x = 0;
+  u.z = 0;
+  u.vx = 0;
+  u.vz = 0;
+  u.yaw = -Math.PI / 2;
+  u.hit = 0;
+  u.stun = 0;
+  u.struck = 0;
+  u.tumble = 0;
+  if (!foe) return;
+  foe.x = 1.05;
+  foe.z = 0;
+  foe.vx = 0;
+  foe.vz = 0;
+}
+
+function holdOthers(keep) {
+  const u = user();
+  u.x = -22;
+  u.z = 0;
+  u.vx = 0;
+  u.vz = 0;
+  u.hit = 0;
+  for (const s of world.skaters) {
+    if (s === u || keep.has(s)) continue;
+    s.x = s.side === "home" ? -30 : 30;
+    s.z = (s.id % 7) * 1.4 - 4;
+    s.vx = 0;
+    s.vz = 0;
+    s.hit = 0;
+    s.stun = 40;
+    s.struck = 0;
+    s.tumble = 0;
   }
   if (!keep.has(world.ref)) {
     world.ref.x = 36;
@@ -311,4 +365,164 @@ test("a celebrating CPU just after a goal is checkable from well outside the nor
   pressY();
   assert.equal(foe.struck, 0);
   assert.equal(world.lastHitTime, -10);
+});
+
+test("a skater checked during knockout or recover restarts at knockout", () => {
+  sheet();
+  const foe = placeFoe("winger");
+  foe.struck = 0.8;
+  foe.tumble = 1;
+  foe.stun = 0.4;
+  pinPair(foe);
+  world.lastHitTime = -10;
+  pressY();
+  assert.ok(foe.tumble > 0, `knockout tumble ${foe.tumble}`);
+  assert.equal(checkedCyclePose(foe.struck, foe.tumble), "knockout");
+  assert.ok(foe.struck > TUMBLE_STRIKE - 0.08, `knockout restart ${foe.struck}`);
+
+  foe.struck = 0.3;
+  foe.tumble = -1.1;
+  foe.stun = 0;
+  pinPair(foe);
+  world.lastHitTime = -10;
+  pressY();
+  assert.ok(foe.tumble < 0, `recover tumble ${foe.tumble}`);
+  assert.equal(checkedCyclePose(foe.struck, foe.tumble), "knockout");
+  assert.ok(foe.struck > TUMBLE_STRIKE - 0.08, `recover restart ${foe.struck}`);
+});
+
+test("a skater checked during absorb restarts absorb", () => {
+  sheet();
+  const foe = placeFoe("winger");
+  let opened = false;
+  for (let n = 0; n < 40 && !opened; n++) {
+    pinPair(foe);
+    foe.struck = 0;
+    foe.tumble = 0;
+    foe.stun = 0;
+    world.lastHitTime = -10;
+    pressY();
+    opened = foe.tumble === 0 && foe.struck > 1;
+  }
+  assert.ok(opened, "never absorbed");
+  for (let i = 0; i < 90 && foe.struck > 0.55; i++) {
+    stepSim(DT);
+    holdOthers(new Set([foe]));
+    foe.vx = 0;
+    foe.vz = 0;
+    foe.x = 4;
+    foe.z = 0;
+  }
+  assert.equal(checkedCyclePose(foe.struck, foe.tumble), "absorb");
+  assert.ok(foe.struck <= 0.55 && foe.struck > 0.2, `mid absorb ${foe.struck}`);
+  pinPair(foe);
+  world.lastHitTime = -10;
+  pressY();
+  assert.equal(foe.tumble, 0);
+  assert.equal(checkedCyclePose(foe.struck, foe.tumble), "absorb");
+  assert.ok(foe.struck > 1.15, `absorb restart ${foe.struck}`);
+});
+
+test("a goalie checked during the get-up or absorb restarts that opening", () => {
+  sheet();
+  const foe = placeFoe("goalie");
+  foe.struck = 0.55;
+  foe.tumble = 1;
+  foe.stun = 0.2;
+  pinPair(foe);
+  world.lastHitTime = -10;
+  pressY();
+  assert.notEqual(foe.tumble, 0);
+  assert.equal(checkedCyclePose(foe.struck, foe.tumble), "knockout");
+  assert.ok(foe.struck > TUMBLE_STRIKE - 0.08, `get-up restart ${foe.struck}`);
+
+  let opened = false;
+  for (let n = 0; n < 40 && !opened; n++) {
+    pinPair(foe);
+    foe.struck = 0;
+    foe.tumble = 0;
+    foe.stun = 0;
+    foe.coverPose = 0;
+    world.lastHitTime = -10;
+    pressY();
+    opened = foe.tumble === 0 && foe.struck > 1.4;
+  }
+  assert.ok(opened, "goalie never absorbed");
+  for (let i = 0; i < 140 && foe.struck > 0.8; i++) {
+    stepSim(DT);
+    holdOthers(new Set([foe]));
+    foe.vx = 0;
+    foe.vz = 0;
+    foe.x = 4;
+    foe.z = 0;
+  }
+  assert.equal(foe.tumble, 0);
+  assert.equal(checkedCyclePose(foe.struck, foe.tumble), "absorb");
+  pinPair(foe);
+  world.lastHitTime = -10;
+  pressY();
+  assert.equal(foe.tumble, 0);
+  assert.ok(foe.struck > 1.6, `goalie absorb restart ${foe.struck}`);
+});
+
+test("a referee checked during absorb, knockout, or recover restarts at absorb", () => {
+  sheet();
+  parkIdle(new Set([world.ref]));
+  const setups = [
+    { name: "absorb", struck: 0.4, tumble: 0 },
+    { name: "knockout", struck: 0.8, tumble: 1 },
+    { name: "recover", struck: 0.25, tumble: 1 },
+  ];
+  for (const st of setups) {
+    world.ref.struck = st.struck;
+    world.ref.tumble = st.tumble;
+    world.ref.vx = 0;
+    world.ref.vz = 0;
+    world.ref.x = 1.05;
+    world.ref.z = 0;
+    pinPair(null);
+    world.lastHitTime = -10;
+    pressY();
+    assert.equal(world.ref.tumble, 0, st.name);
+    assert.equal(checkedCyclePose(world.ref.struck, world.ref.tumble), "absorb", st.name);
+    assert.ok(world.ref.struck > 1.1, `${st.name} struck ${world.ref.struck}`);
+  }
+  const u = user();
+  u.x = -24;
+  u.vx = 0;
+  u.vz = 0;
+  u.hit = 0;
+  const names = [];
+  let last = "";
+  for (let i = 0; i < 220; i++) {
+    stepSim(DT);
+    holdOthers(new Set([world.ref]));
+    const pose = checkedCyclePose(world.ref.struck, world.ref.tumble);
+    if (pose !== last) {
+      names.push(pose);
+      last = pose;
+    }
+    if (pose === null && names.includes("recover")) break;
+  }
+  assert.deepEqual(names, ["absorb", "knockout", "recover", null]);
+});
+
+test("a poke flinch is a new check, not an absorb restart", () => {
+  sheet();
+  const foe = placeFoe("winger");
+  let tumbled = false;
+  for (let n = 0; n < 30 && !tumbled; n++) {
+    pinPair(foe);
+    foe.struck = 0;
+    foe.tumble = 0;
+    foe.stun = 0;
+    stepSim(DT);
+    foe.struck = 0.48;
+    foe.tumble = 0;
+    foe.stun = 0;
+    world.lastHitTime = -10;
+    pressY();
+    if (foe.tumble !== 0) tumbled = true;
+  }
+  assert.ok(tumbled, "poke flinch was forced back to absorb");
 });

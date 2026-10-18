@@ -85,11 +85,14 @@ function desperateDivePose(s: Skater): "goalieDivingStickSave" | "goalieDivingGl
   return null;
 }
 
-function faceoffOpen(s: Skater): boolean {
+function faceoffDot(s: Skater): boolean {
+  return s.id === world.homeDot || s.id === world.awayDot;
+}
+
+function faceoffStill(s: Skater): boolean {
   return (
     s.kind !== "goalie" &&
     world.faceoff &&
-    world.faceoffPhase !== "live" &&
     !tumbling(s) &&
     s.dive <= 0.04 &&
     s.celebrate <= 0.05 &&
@@ -108,9 +111,10 @@ export function inferNamedPose(s: Skater, index: number): string | null {
     return "celebrate";
   }
   if (goalie && !tumbling(s) && s.celebrate > 0.05) return "goalieCheer";
-  if (faceoffOpen(s)) {
-    const taker = s.id === world.homeDot || s.id === world.awayDot;
-    return taker ? "faceoff" : "coast";
+  // The live draw keeps the centers on the crouch spots. Ready would stand
+  // them up inside each other. Wings leave that set once the puck is down.
+  if (faceoffStill(s) && (faceoffDot(s) || world.faceoffPhase !== "live")) {
+    return faceoffDot(s) ? "faceoff" : "coast";
   }
   if (!goalie && rageDraw(s.id)) return "rage";
   if (goalie && tumbling(s)) return "goalieGetUp";

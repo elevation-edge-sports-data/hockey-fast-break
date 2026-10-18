@@ -42,8 +42,10 @@ const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
+const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 
 const { resetWorld, stepSim, world, defendDir, faceYaw } = sim;
+const { inferNamedPose } = poses;
 const { useGame } = store;
 const { FACEOFF_EZ_X, FACEOFF_NZ_X, FACEOFF_R, FACEOFF_SPOT_Z } = rink;
 const { setInjectedKeys } = input;
@@ -236,4 +238,70 @@ test("the hash-fourth forward stays on the hash", () => {
   for (const [h, a] of pairs) assertWingPair(h, a, "hash fourth");
   assertDefenseParked();
   assertCentersAndPuck();
+});
+
+test("dot takers keep the faceoff crouch through the live draw", () => {
+  drop();
+  for (let i = 0; i < 80 && world.faceoffPhase !== "live"; i++) stepSim(1 / 60);
+  assert.equal(world.faceoffPhase, "live");
+  assert.equal(world.faceoff, true);
+  const home = world.skaters.find((s) => s.id === world.homeDot);
+  const away = world.skaters.find((s) => s.id === world.awayDot);
+  assert.equal(inferNamedPose(home, home.id), "faceoff");
+  assert.equal(inferNamedPose(away, away.id), "faceoff");
+  assert.ok(Math.abs(Math.abs(home.x - world.faceX) - 0.393) < 1e-9);
+  assert.ok(Math.abs(Math.abs(away.x - world.faceX) - 0.393) < 1e-9);
+  assert.ok(Math.abs(home.z - world.faceZ) < 1e-9);
+  assert.ok(Math.abs(away.z - world.faceZ) < 1e-9);
+  for (let i = 0; i < 12; i++) stepSim(1 / 60);
+  assert.equal(world.faceoff, true);
+  assert.equal(inferNamedPose(home, home.id), "faceoff");
+  assert.equal(inferNamedPose(away, away.id), "faceoff");
+  const wing = world.skaters.find((s) => s.side === "home" && s.kind === "winger" && s.id !== home.id);
+  assert.notEqual(inferNamedPose(wing, wing.id), "faceoff");
+  assert.notEqual(inferNamedPose(wing, wing.id), "coast");
+});
+
+test("centers stay apart after the puck drop", () => {
+  drop();
+  let releaseT = -1;
+  let minLive = Infinity;
+  const dt = 1 / 60;
+  for (let i = 0; i < 180; i++) {
+    stepSim(dt);
+    const home = world.skaters.find((s) => s.id === world.homeDot);
+    const away = world.skaters.find((s) => s.id === world.awayDot);
+    const d = Math.hypot(home.x - away.x, home.z - away.z);
+    if (world.faceoff) {
+      assert.ok(Math.abs(Math.abs(home.x - world.faceX) - 0.393) < 1e-9);
+      assert.ok(Math.abs(Math.abs(away.x - world.faceX) - 0.393) < 1e-9);
+      assert.ok(Math.abs(home.z - world.faceZ) < 1e-9);
+      assert.ok(Math.abs(away.z - world.faceZ) < 1e-9);
+    } else if (releaseT < 0) {
+      releaseT = world.time;
+    }
+    if (releaseT >= 0 && world.time - releaseT <= 1.5 && d < minLive) minLive = d;
+  }
+  assert.ok(releaseT >= 0);
+  assert.ok(minLive >= 1.5, `centers closed to ${minLive.toFixed(3)} m after the drop`);
+});
+
+test("centers still separate when the user skates through the dot", () => {
+  drop();
+  setInjectedKeys(["KeyW"]);
+  let releaseT = -1;
+  let minLive = Infinity;
+  const dt = 1 / 60;
+  for (let i = 0; i < 180; i++) {
+    stepSim(dt);
+    if (world.faceoff) continue;
+    if (releaseT < 0) releaseT = world.time;
+    if (world.time - releaseT > 1.5) continue;
+    const home = world.skaters.find((s) => s.id === world.homeDot);
+    const away = world.skaters.find((s) => s.id === world.awayDot);
+    const d = Math.hypot(home.x - away.x, home.z - away.z);
+    if (d < minLive) minLive = d;
+  }
+  setInjectedKeys([]);
+  assert.ok(minLive >= 1.5, `skated centers closed to ${minLive.toFixed(3)} m`);
 });
