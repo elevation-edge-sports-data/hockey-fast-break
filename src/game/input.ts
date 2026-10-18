@@ -29,6 +29,8 @@ export type Actions = {
   viewPress: boolean;
   viewDown: boolean;
   startDown: boolean;
+  /** Seconds Start has been held. Independent of aHoldFor. */
+  startHoldFor: number;
   aimX: number;
   aimY: number;
   zoomIn: boolean;
@@ -68,6 +70,7 @@ const facePause = freshFace();
 const faceLt = freshFace();
 const faceRt = freshFace();
 const faceView = freshFace();
+const faceStart = freshFace();
 let touchLt = false;
 let touchView = false;
 
@@ -361,6 +364,16 @@ function readPad(): PadRead {
   return t9Raw(pad) ? readT9Pad(pad) : readStandardPad(pad);
 }
 
+// Pass and shot holds share this face clock (performance time, seconds).
+// A under 0.28s releases as aTap; longer is aHoldRel. xHeld flips at that same 0.28s.
+// That flip is not the wrist/slap switch. sim winds shotWindupT and slaps at half of SHOT_FULL_HOLD.
+// startDown is gamepad Start (button 9), including a standard Terios index 9. Held at the A
+// release it selects a saucer. It does not change pass speed. Select does not. No keyboard saucer.
+// startHoldFor is Start's own clock, not aHoldFor. Sauce used to read aHoldFor, so the meter
+// stayed off until A went down, and a pass that was already full snapped sauce to full.
+// The sauce meter fills from the moment Start is down, even if A is still up.
+// bEdge is gamepad B, or Space on the keyboard. It already cancels a shot windup.
+// A charged pass had no cancel: A up always launched it. B during that hold now drops it.
 export function readActions(): Actions {
   const k = activeKeys();
   let mx = 0;
@@ -403,6 +416,7 @@ export function readActions(): Actions {
   track(faceLt, ltDown, now);
   track(faceRt, rtDown, now);
   track(faceView, viewDown, now);
+  track(faceStart, pad.start || injectedStart, now);
 
   const zoomIn =
     faceX.down || k.has("Equal") || k.has("NumpadAdd") || k.has("BracketRight");
@@ -447,7 +461,8 @@ export function readActions(): Actions {
     rbDown,
     viewPress: faceView.edge,
     viewDown,
-    startDown: pad.start || injectedStart,
+    startDown: faceStart.down,
+    startHoldFor: faceStart.heldFor,
     aimX: ax,
     aimY: ay,
     zoomIn,

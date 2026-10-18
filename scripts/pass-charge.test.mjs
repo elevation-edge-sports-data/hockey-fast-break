@@ -1,6 +1,8 @@
 /**
  * User pass power follows how long A is held. A tap is 60 mph and 1.5s is 90.
  * Start (gamepad button 9) held at release makes that pass a saucer.
+ * Sauce height is a second curve on that hold: empty at the tap, full at 1s.
+ * The shot meter fills across the 1.5s windup. Slap starts at half of that, not at xHeld.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -42,10 +44,12 @@ const server = await createServer({
 const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
+const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
 const { resetWorld, stepSim, world, stickBlade } = sim;
 const { useGame, hudReleaseName } = store;
 const { setInjectedKeys, setInjectedAim, setInjectedStart } = input;
+const { GOAL_H, GOAL_LINE_X, BOARD_H, GLASS_H, RINK_W } = rink;
 
 after(() => server.close());
 
@@ -67,7 +71,7 @@ function mph() {
 
 function expectedMph(holdS) {
   const t = Math.min(1, Math.max(0, holdS / 1.5));
-  return (60 + 30 * t) * Math.exp(-0.35 * DT);
+  return (60 + 30 * t) * Math.exp(-0.15 * DT);
 }
 
 function padButton(pressed) {
@@ -286,4 +290,301 @@ test("hud release names are the four shots and both passes", () => {
   assert.equal(hudReleaseName("pass"), "pass");
   assert.equal(hudReleaseName("saucer"), "saucer pass");
   assert.equal(hudReleaseName(null), "Shot");
+});
+
+function parkGoalie() {
+  for (const s of world.skaters) {
+    if (s.kind !== "goalie") continue;
+    s.x = -40;
+    s.z = 30;
+    s.vx = 0;
+    s.vz = 0;
+  }
+}
+
+test("sauce meter fills across 1s beside the pass meter and does not change pass speed", () => {
+  fresh();
+  holdStart(true);
+  pressPass();
+  clockMs += 500;
+  step(1);
+  const mid = useGame.getState();
+  assert.equal(mid.chargeKind, "saucer");
+  assert.equal(mid.chargeWind, "Saucer");
+  assert.ok(Math.abs(mid.sauce - 0.5) < 0.04, `sauce ${mid.sauce}`);
+  assert.ok(Math.abs(mid.charge - 0.5 / 1.5) < 0.04, `pass charge ${mid.charge}`);
+  clockMs += 700;
+  step(1);
+  const full = useGame.getState();
+  assert.ok(full.sauce > 0.99, `full sauce ${full.sauce}`);
+  assert.ok(Math.abs(full.charge - 1.2 / 1.5) < 0.04, `pass charge ${full.charge}`);
+  releasePass();
+  assertSpeed(1.2);
+  assertHud(1.2, "saucer");
+
+  fresh();
+  pressPass();
+  clockMs += 500;
+  step(1);
+  const ice = useGame.getState();
+  assert.equal(ice.chargeKind, "pass");
+  assert.equal(ice.chargeWind, "Pass");
+  assert.equal(ice.sauce, 0);
+});
+
+test("sauce starts on Start alone, and a full pass does not fill it", () => {
+  fresh();
+  holdStart(true);
+  step(1);
+  clockMs += 500;
+  step(1);
+  const early = useGame.getState();
+  assert.equal(early.chargeKind, null);
+  assert.equal(early.charge, 0);
+  assert.equal(early.chargeWind, "Saucer");
+  assert.ok(Math.abs(early.sauce - 0.5) < 0.04, `early sauce ${early.sauce}`);
+
+  pressPass();
+  const joined = useGame.getState();
+  assert.equal(joined.chargeKind, "saucer");
+  assert.ok(joined.charge < 0.05, `pass just started ${joined.charge}`);
+  assert.ok(Math.abs(joined.sauce - 0.5) < 0.06, `sauce stayed ${joined.sauce}`);
+
+  fresh();
+  pressPass();
+  clockMs += 1600;
+  step(1);
+  const fullPass = useGame.getState();
+  assert.equal(fullPass.chargeKind, "pass");
+  assert.ok(fullPass.charge > 0.99, `pass ${fullPass.charge}`);
+  assert.equal(fullPass.sauce, 0);
+  holdStart(true);
+  step(1);
+  const started = useGame.getState();
+  assert.equal(started.chargeKind, "saucer");
+  assert.ok(started.charge > 0.99, `pass stayed ${started.charge}`);
+  assert.ok(started.sauce < 0.05, `sauce restart ${started.sauce}`);
+  clockMs += 400;
+  step(1);
+  const mid = useGame.getState();
+  assert.ok(mid.charge > 0.99, `pass still full ${mid.charge}`);
+  assert.ok(Math.abs(mid.sauce - 0.4) < 0.05, `sauce ${mid.sauce}`);
+});
+
+test("a full pass plus a new sauce stays low, and sauce charged before a tap stays high", () => {
+  fresh();
+  parkGoalie();
+  settleUser();
+  user().z = 6;
+  setInjectedAim(0, 1);
+  pressPass();
+  clockMs += 1600;
+  step(1);
+  holdStart(true);
+  clockMs += 40;
+  releasePass();
+  assertSpeed(1.64);
+  assertHud(1.64, "saucer");
+  const low = yAtGoalLine();
+  assert.ok(low !== null && low < GOAL_H * 0.45, `late sauce y ${low}`);
+
+  fresh();
+  parkGoalie();
+  settleUser();
+  user().z = 6;
+  setInjectedAim(0, 1);
+  holdStart(true);
+  step(1);
+  clockMs += 1100;
+  step(1);
+  pressPass();
+  releasePass();
+  assertSpeed(0);
+  assertHud(0, "saucer");
+  const high = yAtGoalLine();
+  assert.ok(high !== null && high > GOAL_H * 0.9 && high < GOAL_H + 0.2, `early sauce y ${high}`);
+});
+
+function yAtGoalLine() {
+  let crossed = null;
+  for (let i = 0; i < 240; i++) {
+    const prevX = world.puck.x;
+    const prevY = world.puck.y;
+    step(1);
+    if (world.puck.owner !== null) break;
+    if (prevX < GOAL_LINE_X && world.puck.x >= GOAL_LINE_X) {
+      const t = (GOAL_LINE_X - prevX) / (world.puck.x - prevX || 1);
+      crossed = prevY + (world.puck.y - prevY) * t;
+      break;
+    }
+  }
+  return crossed;
+}
+
+test("full sauce reaches the top of the net and a tap sauce stays low", () => {
+  fresh();
+  parkGoalie();
+  settleUser();
+  user().z = 6;
+  setInjectedAim(0, 1);
+  holdStart(true);
+  pressPass();
+  clockMs += 1200;
+  releasePass();
+  const high = yAtGoalLine();
+  assert.ok(high !== null, "full sauce did not reach the goal line");
+  assert.ok(high > GOAL_H * 0.9 && high < GOAL_H + 0.2, `full sauce y ${high} goal ${GOAL_H}`);
+
+  fresh();
+  parkGoalie();
+  settleUser();
+  user().z = 6;
+  setInjectedAim(0, 1);
+  holdStart(true);
+  passFor(0.02);
+  let peak = world.puck.y;
+  for (let i = 0; i < 90; i++) {
+    step(1);
+    if (world.puck.y > peak) peak = world.puck.y;
+    if (world.puck.x > GOAL_LINE_X - 1) break;
+  }
+  assert.ok(peak < GOAL_H * 0.45, `tap sauce peak ${peak}`);
+});
+
+function boardSauce(roll) {
+  fresh();
+  parkGoalie();
+  settleUser();
+  setInjectedAim(1, 0);
+  holdStart(true);
+  pressPass();
+  clockMs += 1200;
+  const real = Math.random;
+  Math.random = () => roll;
+  try {
+    releasePass();
+  } finally {
+    Math.random = real;
+  }
+}
+
+test("a full board saucer usually hits the glass high, and can still reach the crowd", () => {
+  boardSauce(0.99);
+  let bounced = false;
+  let escaped = false;
+  let peak = world.puck.y;
+  for (let i = 0; i < 200; i++) {
+    const prevVz = world.puck.vz;
+    step(1);
+    if (world.puck.owner !== null) break;
+    if (world.puck.y > peak) peak = world.puck.y;
+    if (world.puck.y > BOARD_H + GLASS_H - 0.05 && Math.abs(world.puck.z) > RINK_W / 2 - 0.15) escaped = true;
+    if (prevVz > 0.4 && world.puck.vz < -0.2 && world.puck.y > BOARD_H + 0.45) bounced = true;
+  }
+  assert.equal(escaped, false);
+  assert.ok(bounced, `glass bounce peak ${peak} z ${world.puck.z}`);
+  assert.ok(peak > BOARD_H + GLASS_H * 0.45, `high glass peak ${peak}`);
+
+  boardSauce(0);
+  let back = false;
+  for (let i = 0; i < 200; i++) {
+    step(1);
+    if (world.puck.owner === user().id && world.whistle === null && !world.stoppage) {
+      back = true;
+      break;
+    }
+  }
+  assert.ok(back, "practice crowd entry did not return the puck");
+  assert.equal(world.faceoff, false);
+
+  fresh();
+  parkGoalie();
+  settleUser();
+  setInjectedAim(1, 0);
+  holdStart(true);
+  passFor(0.02);
+  let lowPeak = world.puck.y;
+  let lowEscaped = false;
+  for (let i = 0; i < 120; i++) {
+    step(1);
+    if (world.puck.y > lowPeak) lowPeak = world.puck.y;
+    if (world.puck.y > BOARD_H + GLASS_H - 0.05 && Math.abs(world.puck.z) > RINK_W / 2 - 0.15) {
+      lowEscaped = true;
+    }
+  }
+  assert.equal(lowEscaped, false);
+  assert.ok(lowPeak < BOARD_H + GLASS_H * 0.55, `tap board peak ${lowPeak}`);
+});
+
+test("B cancels a charged pass and does not release it", () => {
+  fresh();
+  pressPass();
+  clockMs += 800;
+  step(1);
+  const charging = useGame.getState();
+  assert.equal(charging.chargeKind, "pass");
+  assert.ok(charging.charge > 0.4, `charge ${charging.charge}`);
+  setInjectedKeys(["KeyE", "Space"]);
+  step(1);
+  const dropped = useGame.getState();
+  assert.equal(dropped.chargeKind, null);
+  assert.equal(dropped.charge, 0);
+  assert.equal(dropped.sauce, 0);
+  assert.equal(world.puck.owner, user().id);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(world.puck.owner, user().id);
+  assert.notEqual(world.lastPasser, user().id);
+
+  holdStart(true);
+  pressPass();
+  clockMs += 400;
+  step(1);
+  assert.ok(useGame.getState().sauce > 0.3);
+  setInjectedKeys(["KeyE", "Space"]);
+  step(1);
+  assert.equal(useGame.getState().chargeKind, null);
+  assert.equal(useGame.getState().sauce, 0);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(world.puck.owner, user().id);
+});
+
+test("shot charge fills continuously and the label previews wrist then slap", () => {
+  fresh();
+  setInjectedKeys(["KeyF"]);
+  step(2);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(useGame.getState().shotKind, "wrist");
+
+  settleUser();
+  setInjectedKeys(["KeyF"]);
+  step(8);
+  const brief = useGame.getState();
+  assert.equal(brief.shotKind, "wrist");
+  assert.equal(brief.chargeKind, "shot");
+  assert.equal(brief.chargeWind, "Wrist");
+  assert.equal(brief.chargeMark, 0.5);
+  assert.ok(brief.charge < 0.5, `brief charge ${brief.charge}`);
+  assert.ok(Math.abs(brief.charge - 8 / 60 / 1.5) < 0.04, `brief fill ${brief.charge}`);
+
+  step(42);
+  const loaded = useGame.getState();
+  assert.equal(loaded.shotKind, "wrist");
+  assert.equal(loaded.chargeWind, "Slap");
+  assert.ok(loaded.charge >= 0.5, `slap fill ${loaded.charge}`);
+  assert.equal(world.puck.owner, user().id);
+
+  fresh();
+  useGame.getState().setControlProfile("stick");
+  settleUser();
+  setInjectedAim(-0.9, 0);
+  setInjectedKeys(["KeyF"]);
+  step(50);
+  const back = useGame.getState();
+  assert.equal(back.chargeKind, "shot");
+  assert.equal(back.chargeWind, "Backhand");
+  assert.equal(back.chargeMark, null);
+  assert.equal(world.puck.owner, user().id);
 });

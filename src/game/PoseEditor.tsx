@@ -16,7 +16,7 @@ import {
   setWorldEulerAxis,
 } from "./poseWorldEuler";
 import { mountStickKnobPivot, mountStickOnHand, releaseStickFromHand, releaseStickKnobPivot } from "./stickKnobPivot";
-import { world } from "./sim";
+import { setRageGizmoDrag, world } from "./sim";
 import { kitById, UNIFORMS } from "./uniforms";
 
 function applyEditorPose(pose: string, applyFull: ((pose: string) => number) | null): number {
@@ -589,11 +589,13 @@ function Scene({
     else {
       releasePivot();
       draggingGizmo.current = false;
+      setRageGizmoDrag(false);
       setGizmo(null);
     }
     return () => {
       releasePivot();
       draggingGizmo.current = false;
+      setRageGizmoDrag(false);
       if (stickPivotRef.current?.release === releasePivot) stickPivotRef.current = null;
     };
   }, [editable, posedEpoch, releasePivot, restorePivot, stickPivotRef]);
@@ -646,6 +648,7 @@ function Scene({
           onMouseDown={() => {
             if (orbitRef.current) orbitRef.current.enabled = false;
             draggingGizmo.current = gizmo === anchorRef.current;
+            setRageGizmoDrag(true);
             rememberDrag();
             const joint = objectRef.current;
             if (joint) beginRotationDrag(joint, gizmo, gizmo === anchorRef.current ? anchorRef.current : null);
@@ -654,6 +657,8 @@ function Scene({
             if (orbitRef.current) orbitRef.current.enabled = true;
             commitDrag();
             draggingGizmo.current = false;
+            setRageGizmoDrag(false);
+            invalidate();
             const joint = objectRef.current;
             if (joint && gizmo === anchorRef.current && (selected === "body" || selected === "torso")) {
               placeGizmoAnchor(anchorRef.current, joint, selected, anchorPos.current, anchorQuat.current, pose);

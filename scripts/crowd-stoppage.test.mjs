@@ -364,24 +364,37 @@ test("a loose puck on the ice or above the boards does not whistle", () => {
   assert.ok(world.puck.y < 0.2);
 });
 
-test("drill and practice do not whistle a puck that lands beyond the stands", () => {
-  for (const mode of ["drill", "practice"]) {
-    liveSheet();
-    useGame.getState().setClockMode(mode);
-    launchOverBowl();
-    let landed = false;
-    for (let i = 0; i < 500; i++) {
-      stepSim(DT);
-      assert.notEqual(world.whistle, "crowd", mode);
-      const puck = world.puck;
-      if (outsideStandFootprint(puck.x, puck.z) && puck.y <= 0.05 && Math.abs(puck.vy) < 0.4) {
-        landed = true;
-        break;
-      }
+test("drill does not whistle a puck beyond the stands; practice replaces it", () => {
+  liveSheet();
+  useGame.getState().setClockMode("drill");
+  launchOverBowl();
+  let landed = false;
+  for (let i = 0; i < 500; i++) {
+    stepSim(DT);
+    assert.notEqual(world.whistle, "crowd", "drill");
+    const puck = world.puck;
+    if (outsideStandFootprint(puck.x, puck.z) && puck.y <= 0.05 && Math.abs(puck.vy) < 0.4) {
+      landed = true;
+      break;
     }
-    assert.ok(landed, `${mode} puck never landed outside the bowl`);
-    assert.equal(world.whistle, null);
-    for (let i = 0; i < 30; i++) stepSim(DT);
-    assert.notEqual(world.whistle, "crowd", mode);
   }
+  assert.ok(landed, "drill puck never landed outside the bowl");
+  assert.equal(world.whistle, null);
+
+  liveSheet();
+  useGame.getState().setClockMode("practice");
+  const userId = world.userId;
+  launchOverBowl();
+  let back = false;
+  for (let i = 0; i < 180; i++) {
+    stepSim(DT);
+    assert.notEqual(world.whistle, "crowd");
+    assert.equal(world.stoppage, false);
+    assert.equal(world.faceoff, false);
+    if (world.puck.owner === userId) {
+      back = true;
+      break;
+    }
+  }
+  assert.ok(back, "practice did not put a new puck on the stick");
 });

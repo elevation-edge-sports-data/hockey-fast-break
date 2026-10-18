@@ -245,7 +245,15 @@ export function createIceCanvases(w = 2048, h = 872, blueLines = true, nzDots = 
   ctx.beginPath();
   ctx.ellipse(wx(0), wz(0), mx(FACEOFF_MARK_R), mz(FACEOFF_MARK_R), 0, 0, Math.PI * 2);
   ctx.fill();
-  strokeV(0, LINE_RED, mx(CENTER_LINE_W));
+  const crestZ = Math.sqrt(Math.max(0, FACEOFF_MARK_R * FACEOFF_MARK_R - (CENTER_LINE_W / 2) ** 2));
+  ctx.strokeStyle = LINE_RED;
+  ctx.lineWidth = mx(CENTER_LINE_W);
+  ctx.beginPath();
+  ctx.moveTo(wx(0), wz(-RINK_W / 2));
+  ctx.lineTo(wx(0), wz(-crestZ));
+  ctx.moveTo(wx(0), wz(crestZ));
+  ctx.lineTo(wx(0), wz(RINK_W / 2));
+  ctx.stroke();
   if (blueLines) {
     strokeV(BLUE_X, LINE_BLUE, mx(BLUE_LINE_W));
     strokeV(-BLUE_X, LINE_BLUE, mx(BLUE_LINE_W));

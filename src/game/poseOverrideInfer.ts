@@ -1,11 +1,17 @@
+import { CREASE_R, GOAL_LINE_X, GOAL_W } from "./rink";
 import {
+  attackDir,
   burstPoseWeight,
   checkedCyclePose,
+  defendDir,
   goalieButterflyPose,
   goaliePlaysPuck,
+  goalieShotSave,
   goalieZKind,
   rageDraw,
   shotFollowTime,
+  shotThreatensBar,
+  shotTopCornerHand,
   world,
   type Skater,
 } from "./sim";
@@ -13,6 +19,12 @@ import { setPoseInfer } from "./poseOverrides";
 
 const READY_COAST = 1.2;
 const READY_SKATE = 2.6;
+/** Same pad goalieOutOfCrease adds to CREASE_R. */
+const CREASE_OUT = CREASE_R + 0.12;
+/** Skater dive reach in cpuDefend. The loose puck has to be this close. */
+const LOOSE_SAVE_REACH = 4.4;
+/** Same toward-net component tryGoalieCatch uses. */
+const LOOSE_AT_NET = 1.2;
 
 function brawlLive(id: number): boolean {
   const brawl = world.lineBrawl;
@@ -36,6 +48,41 @@ function forehandFollowHold(s: Skater): boolean {
   const rel = Math.min(0.08, Math.max(0.03, total * 0.1));
   const fol = Math.max(0.05, total - blend - rel);
   return elapsed >= rel && elapsed < rel + fol;
+}
+
+/**
+ * Puck on the boards side of this goalie's goal line.
+ * Glove is the opposite of the blocker post. Posts sit at ±GOAL_W/2.
+ */
+function behindNetPose(s: Skater): "goalieProtectLeft" | "goalieProtectRight" | "goalieButterfly" | null {
+  const end = defendDir(s.side);
+  const past = (world.puck.x - end * GOAL_LINE_X) * end;
+  if (past <= 0) return null;
+  const half = GOAL_W / 2;
+  const blockerDir = attackDir(s.side) > 0 ? 1 : -1;
+  if (world.puck.z * -blockerDir > half) return "goalieProtectLeft";
+  if (world.puck.z * blockerDir > half) return "goalieProtectRight";
+  return "goalieButterfly";
+}
+
+/**
+ * Outside the crease circle on a shot at this net, or a close loose puck
+ * moving toward it. Glove side uses the stick dive. Blocker side uses the glove dive.
+ */
+function desperateDivePose(s: Skater): "goalieDivingStickSave" | "goalieDivingGloveSave" | null {
+  const end = defendDir(s.side);
+  const fromCrease = Math.hypot(s.x - end * GOAL_LINE_X, s.z);
+  if (fromCrease <= CREASE_OUT) return null;
+  const puck = world.puck;
+  const loose =
+    puck.owner === null &&
+    Math.hypot(puck.x - s.x, puck.z - s.z) < LOOSE_SAVE_REACH &&
+    puck.vx * end > LOOSE_AT_NET;
+  if (!goalieShotSave(s) && !loose) return null;
+  const blockerDir = attackDir(s.side) > 0 ? 1 : -1;
+  if (s.z * -blockerDir > 0) return "goalieDivingStickSave";
+  if (s.z * blockerDir > 0) return "goalieDivingGloveSave";
+  return null;
 }
 
 function faceoffOpen(s: Skater): boolean {
@@ -101,6 +148,14 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   if (carrying && s.burst <= 0 && s.deke <= 0.02 && Math.abs(s.stickPull) <= 0.02) return "puckPossess";
 
   if (goalie && !tumbling(s) && s.celebrate <= 0.05 && s.dive <= 0.04) {
+    if (shotThreatensBar(s)) return "goalieUpright";
+    const hand = shotTopCornerHand(s);
+    if (hand === "blocker") return "goalieBlockerSave";
+    if (hand === "glove") return "goalieGloveSave";
+    const behind = behindNetPose(s);
+    if (behind) return behind;
+    const dive = desperateDivePose(s);
+    if (dive) return dive;
     if (goaliePlaysPuck(s)) return "goaliePlay";
     if (s.coverPose >= 0.35 || goalieButterflyPose(s)) return "goalieCover";
     const zone = goalieZKind(s);
@@ -111,7 +166,7 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   }
 
   const speed = Math.hypot(s.vx, s.vz);
-  if (!goalie && !owns && speed >= READY_SKATE) return "strideLeft";
+  if (!goalie && !owns && speed >= READY_SKATE) return Math.sin(s.stride * Math.PI) > 0 ? "strideLeft" : "strideRight";
   if (!goalie && !owns && speed <= READY_COAST && s.dive <= 0.04 && !tumbling(s) && s.hit <= 0 && s.struck <= 0.2 && s.poke <= 0.04 && s.celebrate <= 0.05) {
     return "ready";
   }

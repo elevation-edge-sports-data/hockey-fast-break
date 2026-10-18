@@ -247,7 +247,7 @@ function keepPuckFramed(
 }
 
 function userSkater() {
-  return world.skaters[world.userId] ?? world.skaters[0];
+  return world.userId >= 0 ? world.skaters[world.userId] : undefined;
 }
 
 function puckBlockedByBoards(camera: THREE.Camera): boolean {
@@ -712,9 +712,11 @@ function CameraRig() {
       const fc = world.freeCam;
       const puck = world.puck;
       const drillCam = drillFollow();
-      const tx = drillCam ? drillCam.x : puck.x;
-      const tz = drillCam ? drillCam.z : puck.z;
-      const ty = drillCam ? drillCam.y : Math.max(0.45, puck.y);
+      const goalUser =
+        world.whistle === "goal" && world.userId >= 0 ? world.skaters[world.userId] : undefined;
+      const tx = drillCam ? drillCam.x : goalUser ? goalUser.x : puck.x;
+      const tz = drillCam ? drillCam.z : goalUser ? goalUser.z : puck.z;
+      const ty = drillCam ? drillCam.y : goalUser ? 1.05 : Math.max(0.45, puck.y);
       const k = 1 - Math.exp(-3.4 * Math.min(dt, 0.1));
       fc.tx += (tx - fc.tx) * k;
       fc.tz += (tz - fc.tz) * k;
@@ -743,16 +745,16 @@ function CameraRig() {
     const drillCam = drillFollow();
     const scoring =
       !idle && world.whistle === "goal" && (world.goalSide === "home" || world.goalSide === "away");
-    const scorer = scoring && world.lastShooter !== null ? world.skaters[world.lastShooter] : undefined;
-    const px = idle ? 0 : drillCam ? drillCam.x : scorer ? scorer.x : puck.x;
-    const pz = idle ? 0 : drillCam ? drillCam.z : scorer ? scorer.z : puck.z;
-    const py = idle ? 0.45 : drillCam ? drillCam.y : scorer ? 1.05 : Math.max(0.35, puck.y);
+    const controlled = scoring && world.userId >= 0 ? world.skaters[world.userId] : undefined;
+    const px = idle ? 0 : drillCam ? drillCam.x : controlled ? controlled.x : puck.x;
+    const pz = idle ? 0 : drillCam ? drillCam.z : controlled ? controlled.z : puck.z;
+    const py = idle ? 0.45 : drillCam ? drillCam.y : controlled ? 1.05 : Math.max(0.35, puck.y);
     if (periodSnap) seenPeriod.current = world.periodView;
     const switched = prevMode.current !== mode || fromTitle || drillSnap || periodSnap;
     prevMode.current = mode;
 
     const puckJump = Math.hypot(px - _follow.x, pz - _follow.z);
-    const skater = drillCam ? world.skaters[world.userId] : undefined;
+    const skater = drillCam ? world.skaters[world.userId] : controlled;
     const puckSpd = skater ? Math.hypot(skater.vx, skater.vz) : Math.hypot(puck.vx, puck.vz);
     const rate = puckJump > 9 ? 14 : 4.6 + Math.min(9, puckSpd * 0.42);
     const followK = idle || switched || crowdSnap || puckJump > 16 ? 1 : 1 - Math.exp(-rate * d);

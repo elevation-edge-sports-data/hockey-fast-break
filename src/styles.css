@@ -1247,6 +1247,16 @@ h2 {
   line-height: 1.4;
 }
 
+.hud-release {
+  text-transform: uppercase;
+}
+
+.charge-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
 .charge {
   display: flex;
   flex-direction: column;
@@ -1266,6 +1276,67 @@ h2 {
   background: var(--color-accent);
   border-radius: 99px;
   min-width: 6px;
+}
+
+.charge.is-slot {
+  visibility: hidden;
+}
+
+.sauce {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  color: var(--color-accent);
+}
+
+.sauce b {
+  position: relative;
+  display: block;
+  width: 6px;
+  height: 46px;
+  border-radius: 99px;
+  background: color-mix(in oklab, var(--color-accent) 22%, transparent);
+}
+
+.sauce b i {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: block;
+  height: 0;
+  min-height: 6px;
+  background: var(--color-accent);
+  border-radius: 99px;
+}
+
+.charge-track {
+  position: relative;
+  display: block;
+  width: 92px;
+  height: 6px;
+  border-radius: 99px;
+  background: color-mix(in oklab, var(--color-accent) 22%, transparent);
+}
+
+.charge .charge-track i {
+  height: 100%;
+  min-width: 0;
+}
+
+.charge-track em {
+  position: absolute;
+  top: -4px;
+  width: 2px;
+  height: 14px;
+  margin-left: -1px;
+  background: var(--color-fg);
+  border-radius: 1px;
 }
 
 .face-pad {

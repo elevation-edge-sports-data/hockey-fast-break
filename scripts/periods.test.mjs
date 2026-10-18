@@ -183,14 +183,14 @@ function assertAttackNetOnTop(attack) {
   assert.ok(awayG && awayG.x * attack > 0, "away goalie did not switch ends");
 }
 
-test("period length is 1 to 5 minutes and defaults to 2", () => {
+test("period length is 1 to 5 minutes and defaults to 1", () => {
   mem.set("hfb-game-length", "10");
   mem.set("hfb-game-minutes", "8");
   assert.equal(GAME_MINUTES_MIN, 1);
   assert.equal(GAME_MINUTES_MAX, 5);
-  assert.equal(GAME_MINUTES_DEFAULT, 2);
+  assert.equal(GAME_MINUTES_DEFAULT, 1);
   assert.equal(GAME_PERIODS, 3);
-  assert.equal(useGame.getState().gameMinutes, 2);
+  assert.equal(useGame.getState().gameMinutes, 1);
   assert.equal(clampGameMinutes(0), 1);
   assert.equal(clampGameMinutes(1.4), 1);
   assert.equal(clampGameMinutes(5), 5);
@@ -311,15 +311,15 @@ test("three periods switch ends and keep the attack net at the top", () => {
 test("roller is two 18:00 periods and switches ends after the first", () => {
   assert.equal(ROLLER_PERIODS, 2);
   assert.equal(ROLLER_CLOCK_DISPLAY_MINUTES, 18);
-  assert.equal(ROLLER_MINUTES_DEFAULT, 3);
-  assert.equal(useGame.getState().rollerMinutes, 3);
+  assert.equal(ROLLER_MINUTES_DEFAULT, 1);
+  assert.equal(useGame.getState().rollerMinutes, 1);
   assert.equal(useGame.getState().gameMinutes, 2);
   assert.equal(rollerClockScale(1), 18);
   assert.equal(rollerClockScale(3), 6);
   assert.equal(rollerClockScale(5), 18 / 5);
   assert.equal(clampRollerMinutes(0), 1);
   assert.equal(clampRollerMinutes(9), 5);
-  assert.equal(clampRollerMinutes(Number.NaN), 3);
+  assert.equal(clampRollerMinutes(Number.NaN), 1);
 
   freshRoller();
   assert.equal(world.period, 1);

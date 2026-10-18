@@ -337,6 +337,24 @@ function Crease({ side }: { side: 1 | -1 }) {
   );
 }
 
+function CenterRedLine() {
+  const halfW = CENTER_LINE_W / 2;
+  const crest = Math.sqrt(Math.max(0, FACEOFF_MARK_R * FACEOFF_MARK_R - halfW * halfW));
+  const halfIce = Math.max(1, iceWidthAtX(0) - 0.18) / 2;
+  const seg = Math.max(0.2, halfIce - crest);
+  const z = (halfIce + crest) / 2;
+  return (
+    <>
+      {([-1, 1] as const).map((side) => (
+        <mesh key={side} position={[0, 0.024, side * z]} rotation={[-Math.PI / 2, 0, 0]}>
+          <planeGeometry args={[CENTER_LINE_W, seg]} />
+          <meshBasicMaterial color={LINE_RED} toneMapped={false} />
+        </mesh>
+      ))}
+    </>
+  );
+}
+
 function IceLines({ blue }: { blue: boolean }) {
   return (
     <group>
@@ -350,7 +368,7 @@ function IceLines({ blue }: { blue: boolean }) {
           <IceStripe x={BLUE_X} color={LINE_BLUE} width={BLUE_LINE_W} />
         </>
       ) : null}
-      <IceStripe x={0} color={LINE_RED} width={CENTER_LINE_W} />
+      <CenterRedLine />
     </group>
   );
 }

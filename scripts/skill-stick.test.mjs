@@ -1,6 +1,7 @@
 /**
  * Headless Skill Stick: right-stick gestures, left-stick aim, plant deadzone,
- * and the X fallback. Classic and Wings stay on their own shot paths.
+ * and the X fallback. Shot plant is Skill Stick only. Classic and Wings stay
+ * on their own shot paths.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -174,7 +175,7 @@ test("up from neutral is a snap", () => {
   assert.equal(shot.kind, "snap");
   assert.equal(shot.ui, "snap");
   assert.equal(shot.slap, false);
-  assert.ok(shot.mph > 81 && shot.mph < 86, `snap ${shot.mph}`);
+  assert.ok(shot.mph > 85 && shot.mph < 90, `snap ${shot.mph}`);
   assert.equal(shot.owner, null);
 });
 
@@ -218,14 +219,14 @@ test("right then up is a wrist, and a deeper roll is a harder wrist", () => {
   const soft = shotOf();
   assert.equal(soft.kind, "wrist");
   assert.equal(soft.ui, "wrist");
-  assert.ok(soft.mph > 72 && soft.mph < 76, `soft wrist ${soft.mph}`);
+  assert.ok(soft.mph > 76 && soft.mph < 80, `soft wrist ${soft.mph}`);
 
   fresh();
   hold(0.72, -0.48);
   release(0, 1);
   const hard = shotOf();
   assert.equal(hard.kind, "wrist");
-  assert.ok(hard.mph > soft.mph + 3 && hard.mph < 83, `hard wrist ${hard.mph}`);
+  assert.ok(hard.mph > soft.mph + 3 && hard.mph < 87, `hard wrist ${hard.mph}`);
 });
 
 test("left then up is a backhand, including a slap load", () => {
@@ -266,7 +267,7 @@ test("pull back and a toe drag are slap, only on the forehand", () => {
   assert.equal(solid.kind, "slap");
   assert.equal(solid.ui, "slap");
   assert.equal(solid.slap, true);
-  assert.ok(solid.mph > 94 && solid.mph < 100, `solid slap ${solid.mph}`);
+  assert.ok(solid.mph > 98 && solid.mph < 104, `solid slap ${solid.mph}`);
   assert.ok(user().follow > 0.55, `slap follow ${user().follow}`);
 
   fresh();
@@ -274,7 +275,7 @@ test("pull back and a toe drag are slap, only on the forehand", () => {
   release(0, 1);
   const full = shotOf();
   assert.equal(full.kind, "slap");
-  assert.ok(full.mph > 100, `full slap ${full.mph}`);
+  assert.ok(full.mph > 104, `full slap ${full.mph}`);
 
   fresh();
   hold(0.9, 0, 3);
@@ -303,6 +304,34 @@ test("a side hold does not shoot, and a resting stick does not plant", () => {
   assert.equal(world.puck.owner, user().id);
   assert.equal(world.lastShoot, -10);
   assert.equal(user().deke, 0);
+});
+
+test("shot plant is skill stick only", () => {
+  for (const profile of ["classic", "wings"]) {
+    fresh(profile);
+    setInjectedKeys(["KeyW"]);
+    step(40);
+    const coast = Math.hypot(user().vx, user().vz);
+    assert.ok(coast > 3, `${profile} coast ${coast}`);
+    setInjectedKeys(["KeyW", "KeyF"]);
+    step(20);
+    const moving = Math.hypot(user().vx, user().vz);
+    assert.ok(moving > coast * 0.5, `${profile} still skates ${moving} from ${coast}`);
+    assert.equal(world.puck.owner, user().id);
+    assert.equal(world.lastShoot, -10);
+  }
+
+  fresh("stick");
+  setInjectedKeys(["KeyW"]);
+  step(40);
+  const coast = Math.hypot(user().vx, user().vz);
+  assert.ok(coast > 3, `stick coast ${coast}`);
+  setInjectedKeys(["KeyW", "KeyF"]);
+  step(20);
+  const planted = Math.hypot(user().vx, user().vz);
+  assert.ok(planted < 0.5, `stick plant ${planted}`);
+  assert.equal(world.puck.owner, user().id);
+  assert.equal(world.lastShoot, -10);
 });
 
 test("the left stick aims and the right stick does not", () => {
@@ -353,7 +382,7 @@ test("X tap is a wrist, X hold is a slap, and a held backhand releases as a back
   const tap = shotOf();
   assert.equal(tap.kind, "wrist");
   assert.equal(tap.slap, false);
-  assert.ok(tap.mph >= 69 && tap.mph < 80, `tap ${tap.mph}`);
+  assert.ok(tap.mph >= 73 && tap.mph < 84, `tap ${tap.mph}`);
 
   fresh();
   setInjectedAim(-0.9, 0);
@@ -379,12 +408,14 @@ test("X tap is a wrist, X hold is a slap, and a held backhand releases as a back
   const held = shotOf();
   assert.equal(held.kind, "slap");
   assert.equal(held.slap, true);
-  assert.ok(held.mph >= 86, `x slap ${held.mph}`);
+  assert.ok(held.mph >= 90, `x slap ${held.mph}`);
 
   fresh("classic");
-  setInjectedKeys(["KeyQ", "KeyF"]);
+  setInjectedKeys(["KeyQ"]);
   step(8, 0.1);
   assert.ok(localX() > 0);
+  setInjectedKeys(["KeyQ", "KeyF"]);
+  step(8, 0.1);
   assert.equal(world.lastShotKind, null);
   assert.equal(world.puck.owner, user().id);
   step(8, 0.1);

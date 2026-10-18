@@ -45,7 +45,7 @@ const input = await server.ssrLoadModule("/src/game/input.ts");
 const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
-const { resetWorld, stepSim, world, rageDraw, checkedCyclePose, defendDir, installControlsProbe } = sim;
+const { resetWorld, stepSim, world, rageDraw, checkedCyclePose, defendDir, installControlsProbe, armStickRage, stepRagePreview } = sim;
 const { GOAL_LINE_X } = rink;
 const { inferNamedPose } = poses;
 const { useGame } = store;
@@ -121,6 +121,7 @@ test("user goal: CPU smashes, goalie rages after the scoop, then the faceoff ret
   const ragers = stickRagers("away");
   assert.ok(ragers.length >= 1 && ragers.length <= 3);
   for (const s of ragers) assert.ok(rageDraw(s.id));
+  assert.equal(ragers[0].smashHit, 0.7);
   for (const s of world.skaters) {
     if (s.side === "home") assert.equal(s.smashKind, 0);
   }
@@ -136,7 +137,7 @@ test("user goal: CPU smashes, goalie rages after the scoop, then the faceoff ret
   assert.ok((ragers[0].x - x0) * toward > 0.4, "raging skater skates toward the net");
   seconds(2.2);
   assert.ok(cpuGoalie.smashKind > 0);
-  assert.ok(cpuGoalie.smashHit > 0);
+  assert.equal(cpuGoalie.smashHit, 0.7);
   assert.equal(inferNamedPose(cpuGoalie, cpuGoalie.id), "goalieRage");
   let seen = 0;
   let guard = 0;
@@ -165,19 +166,27 @@ test("user goal: a CPU skater checks the referee through absorb, tumble, and rec
       (s) => s.side === "away" && s.kind !== "goalie" && s.smashKind <= 0 && s.id !== world.userId,
     );
     assert.ok(checker);
-    seconds(1.35);
-    assert.notEqual(down[0].tumble, 0);
-    assert.equal(checkedCyclePose(down[0].struck, down[0].tumble), "knockout");
+    let sawKnockout = false;
     let sawRecover = false;
+    let reactions = 0;
+    let upAt = -1;
     let guard = 0;
-    while (world.stoppage && guard < 400 && !sawRecover) {
+    while (world.stoppage && guard < 400 && upAt < 0) {
       stepSim(DT);
       guard += 1;
-      if (checkedCyclePose(down[0].struck, down[0].tumble) === "recover") sawRecover = true;
+      const pose = checkedCyclePose(down[0].struck, down[0].tumble);
+      if (pose === "knockout") sawKnockout = true;
+      if (pose === "recover" && !sawRecover) {
+        sawRecover = true;
+        reactions = reactionCount("away");
+      }
+      if (down[0].struck === 0 && down[0].tumble === 0) upAt = world.stoppageT;
     }
+    assert.equal(sawKnockout, true);
     assert.equal(sawRecover, true);
+    assert.ok(upAt > 0 && upAt < 1.7, `ref up at ${upAt}`);
     assert.equal(world.stoppage, true);
-    assert.ok(reactionCount("away") >= 3 && reactionCount("away") <= 4);
+    assert.ok(reactions >= 3 && reactions <= 4, `reactions ${reactions}`);
   } finally {
     Math.random = orig;
   }
@@ -260,4 +269,57 @@ test("scrimmage knockdown: the other team rages without a goalie", () => {
   } finally {
     Math.random = orig;
   }
+});
+
+test("rage preview plays the break without skating, then loops", () => {
+  sheet("game");
+  const s = world.skaters.find((p) => p.kind !== "goalie" && p.side === "away");
+  assert.ok(s);
+  const x0 = s.x;
+  const z0 = s.z;
+  world.poseHold = true;
+  world.namedPose = "rage";
+  world.namedPoseIndex = s.id;
+  s.smashKind = 1;
+  s.smash = 0;
+  s.smashHit = 0.7;
+  armStickRage(s.id);
+  assert.equal(rageDraw(s.id).blade.on, false);
+  stepRagePreview(0.5);
+  assert.ok(s.smash > 0.45 && s.smash < 0.7);
+  assert.equal(rageDraw(s.id).blade.on, false);
+  assert.equal(s.x, x0);
+  assert.equal(s.z, z0);
+  stepRagePreview(0.25);
+  assert.ok(s.smash >= 0.7);
+  assert.equal(rageDraw(s.id).blade.on, true);
+  assert.equal(rageDraw(s.id).shaft.on, false);
+  stepRagePreview(0.45);
+  assert.equal(rageDraw(s.id).shaft.on, true);
+  const held = s.smash;
+  world.poseHold = false;
+  stepRagePreview(0.2);
+  assert.equal(s.smash, held);
+  world.poseHold = true;
+  s.smash = 0.7 + 1.6;
+  stepRagePreview(0.02);
+  assert.equal(s.smash, 0);
+  assert.equal(rageDraw(s.id).blade.on, false);
+  assert.equal(rageDraw(s.id).shaft.on, false);
+  const g = goalie("away");
+  assert.ok(g);
+  const gx = g.x;
+  const gz = g.z;
+  world.namedPose = "goalieRage";
+  world.namedPoseIndex = g.id;
+  g.smashKind = 1;
+  g.smash = 0;
+  g.smashHit = 0.7;
+  stepRagePreview(0.5);
+  assert.ok(g.smash > 0.45 && g.smash < 0.7);
+  assert.equal(g.x, gx);
+  assert.equal(g.z, gz);
+  world.poseHold = false;
+  world.namedPose = null;
+  world.namedPoseIndex = null;
 });

@@ -49,11 +49,20 @@ export function clampSlot(slot: keyof Lineup, v: number): number {
   return Math.max(0, Math.min(max, Math.round(v)));
 }
 
-export function patchLineup(l: Lineup, slot: keyof Lineup, v: number, cap = LINEUP_CAP): Lineup {
+export function patchLineup(
+  l: Lineup,
+  slot: keyof Lineup,
+  v: number,
+  cap = LINEUP_CAP,
+  goalieExtra = false,
+): Lineup {
   const n = clampSlot(slot, v);
   const next = { ...l, [slot]: n };
-  const total = lineupTotal(next);
-  if (total > cap) return l;
+  if (goalieExtra) {
+    if (next.g > 1 || next.d + next.o > cap) return l;
+    return next;
+  }
+  if (lineupTotal(next) > cap) return l;
   return next;
 }
 
@@ -92,6 +101,12 @@ type GameUi = {
   hasPuck: boolean;
   charge: number;
   chargeKind: "pass" | "saucer" | "shot" | null;
+  /** 0–1 sauce height while Start is held. 0 hides nothing by itself; the saucer kind shows the meter. */
+  sauce: number;
+  /** Live charge label: Pass, Saucer, Wrist, Slap, or Backhand. Not the previous release. */
+  chargeWind: string | null;
+  /** Shot-meter tick, as a fraction of the full windup. Null on passes and backhands. */
+  chargeMark: number | null;
   homeScore: number;
   awayScore: number;
   whistle: WhistleKind;
@@ -146,7 +161,13 @@ type GameUi = {
   setArenaLook: (v: ArenaLook) => void;
   setPad: (s: "Keyboard" | "Gamepad") => void;
   setHasPuck: (v: boolean) => void;
-  setCharge: (n: number, kind: "pass" | "saucer" | "shot" | null) => void;
+  setCharge: (
+    n: number,
+    kind: "pass" | "saucer" | "shot" | null,
+    sauce?: number,
+    wind?: string | null,
+    mark?: number | null,
+  ) => void;
   setHomeScore: (n: number) => void;
   setAwayScore: (n: number) => void;
   setWhistle: (w: WhistleKind) => void;
@@ -284,14 +305,14 @@ function saveControlProfile(v: ControlProfile): void {
 
 export const GAME_MINUTES_MIN = 1;
 export const GAME_MINUTES_MAX = 5;
-export const GAME_MINUTES_DEFAULT = 2;
+export const GAME_MINUTES_DEFAULT = 1;
 /** Each period counts down 20:00, scaled to the real length. A game is three of them. */
 export const GAME_CLOCK_DISPLAY_MINUTES = 20;
 export const GAME_PERIODS = 3;
 /** Each roller period counts down 18:00. A roller match is two of them. */
 export const ROLLER_CLOCK_DISPLAY_MINUTES = 18;
 export const ROLLER_PERIODS = 2;
-export const ROLLER_MINUTES_DEFAULT = 3;
+export const ROLLER_MINUTES_DEFAULT = 1;
 
 export function clampPeriodMinutes(n: number, fallback: number): number {
   if (!Number.isFinite(n)) return fallback;
@@ -333,13 +354,68 @@ export function periodEndCopy(period: number, homeScore: number, awayScore: numb
   };
 }
 
-/** A full page load always starts at 2 for game and 3 for roller. The in-memory length survives the next visit, not a refresh. */
+/** A full page load always starts at 1 minute for game and roller. The in-memory length survives the next visit, not a refresh. */
 function loadGameMinutes(): number {
   return GAME_MINUTES_DEFAULT;
 }
 
 function loadRollerMinutes(): number {
   return ROLLER_MINUTES_DEFAULT;
+}
+
+/** CPU kits already used in this sequence. The user kit is never an entry. */
+const cpuKitSeen = new Set<number>();
+let cpuCycleArmed = false;
+
+function markCpuSeen(id: number): void {
+  if (id >= 0 && id < UNIFORMS.length && id !== useGame.getState().homeKit) cpuKitSeen.add(id);
+}
+
+/** Next CPU kit from the kits this sequence has not used. A finished sequence starts over, skipping the kit just worn. */
+export function drawCpuKit(
+  home: number,
+  away: number,
+  seen: Iterable<number>,
+): { next: number; seen: number[] } {
+  const nextSeen = new Set<number>();
+  for (const id of seen) {
+    if (id >= 0 && id < UNIFORMS.length && id !== home) nextSeen.add(id);
+  }
+  if (away >= 0 && away < UNIFORMS.length && away !== home) nextSeen.add(away);
+  const eligible = UNIFORMS.map((u) => u.id).filter((id) => id !== home);
+  let pool = eligible.filter((id) => !nextSeen.has(id));
+  if (pool.length === 0) {
+    nextSeen.clear();
+    if (away >= 0 && away < UNIFORMS.length && away !== home) nextSeen.add(away);
+    pool = eligible.filter((id) => !nextSeen.has(id));
+  }
+  if (pool.length === 0) return { next: away, seen: [...nextSeen] };
+  const next = pool[Math.floor(Math.random() * pool.length)]!;
+  nextSeen.add(next);
+  return { next, seen: [...nextSeen] };
+}
+
+/** After a user win or a finished drill, the next continue draws a CPU kit this sequence has not used. */
+export function cycleMatchKits(): void {
+  const cur = useGame.getState();
+  const draw = drawCpuKit(cur.homeKit, cur.awayKit, cpuKitSeen);
+  cpuKitSeen.clear();
+  for (const id of draw.seen) cpuKitSeen.add(id);
+  if (draw.next !== cur.awayKit) cur.setAwayKit(draw.next);
+}
+
+export function armCpuKitCycle(): void {
+  cpuCycleArmed = true;
+}
+
+export function applyArmedCpuKitCycle(): void {
+  if (!cpuCycleArmed) return;
+  cpuCycleArmed = false;
+  cycleMatchKits();
+}
+
+export function disarmCpuKitCycle(): void {
+  cpuCycleArmed = false;
 }
 
 function rollAwayKit(): number {
@@ -396,6 +472,9 @@ export const useGame = create<GameUi>((set, get) => ({
   hasPuck: false,
   charge: 0,
   chargeKind: null,
+  sauce: 0,
+  chargeWind: null,
+  chargeMark: null,
   homeScore: 0,
   awayScore: 0,
   whistle: null,
@@ -441,6 +520,8 @@ export const useGame = create<GameUi>((set, get) => ({
     const home = get().homeKit;
     if (id === home) return;
     if (id < 0 || id >= UNIFORMS.length) return;
+    markCpuSeen(id);
+    if (get().awayKit === id) return;
     set({ awayKit: id, lineupRev: get().lineupRev + 1 });
   },
   rerollClockMode: () => {
@@ -453,7 +534,7 @@ export const useGame = create<GameUi>((set, get) => ({
     const pool = other.length ? other : UNIFORMS.map((u) => u.id).filter((id) => id !== home);
     const next = pool[Math.floor(Math.random() * pool.length)];
     if (next === undefined || next === away) return;
-    set({ awayKit: next, lineupRev: get().lineupRev + 1 });
+    get().setAwayKit(next);
   },
   setHomeLineup: (l) => {
     set({ homeLineup: l, liveHome: { g: l.g, d: l.d, o: l.o }, lineupRev: get().lineupRev + 1 });
@@ -481,7 +562,8 @@ export const useGame = create<GameUi>((set, get) => ({
   },
   setPad: (s) => set({ pad: s }),
   setHasPuck: (v) => set({ hasPuck: v }),
-  setCharge: (n, kind) => set({ charge: n, chargeKind: kind }),
+  setCharge: (n, kind, sauce = 0, wind = null, mark = null) =>
+    set({ charge: n, chargeKind: kind, sauce, chargeWind: wind, chargeMark: mark }),
   setHomeScore: (n) => set({ homeScore: n }),
   setAwayScore: (n) => set({ awayScore: n }),
   setWhistle: (w) => set({ whistle: w }),
@@ -577,3 +659,5 @@ export const useGame = create<GameUi>((set, get) => ({
   setUserDefense: (n) => set({ userDefense: snapSlider(n, 0, 2) }),
   setUserGoalie: (n) => set({ userGoalie: snapSlider(n, 0, 1) }),
 }));
+
+markCpuSeen(useGame.getState().awayKit);

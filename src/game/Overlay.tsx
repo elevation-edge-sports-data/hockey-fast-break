@@ -34,6 +34,7 @@ import {
   modeLineupCap,
   patchLineup,
   hudReleaseName,
+  applyArmedCpuKitCycle,
   useGame,
   type CamMode,
   type DrillTargets,
@@ -164,18 +165,24 @@ function Stepper({
   const max = slot === "g" ? 1 : slot === "d" ? 2 : 4;
   const val = lineup[slot];
   const total = lineupTotal(lineup);
-  const cap = modeLineupCap(useGame.getState().clockMode);
-  const canInc = !disabled && val < max && total < cap;
+  const mode = useGame((s) => s.clockMode);
+  const cap = modeLineupCap(mode);
+  const goalieExtra = mode === "scrimmage";
+  const skaters = lineup.d + lineup.o;
+  const canInc =
+    !disabled &&
+    val < max &&
+    (goalieExtra ? (slot === "g" ? true : skaters < cap) : total < cap);
   const canDec = !disabled && val > 0;
   return (
     <div className="stepper">
       <span>{label}</span>
       <div className="stepper-row">
-        <button type="button" aria-label={`${label} down`} disabled={!canDec} onClick={() => onChange(patchLineup(lineup, slot, val - 1, cap))}>
+        <button type="button" aria-label={`${label} down`} disabled={!canDec} onClick={() => onChange(patchLineup(lineup, slot, val - 1, cap, goalieExtra))}>
           −
         </button>
         <b>{val}</b>
-        <button type="button" aria-label={`${label} up`} disabled={!canInc} onClick={() => onChange(patchLineup(lineup, slot, val + 1, cap))}>
+        <button type="button" aria-label={`${label} up`} disabled={!canInc} onClick={() => onChange(patchLineup(lineup, slot, val + 1, cap, goalieExtra))}>
           +
         </button>
       </div>
@@ -242,12 +249,11 @@ function LineupStrip({
   onChange: (l: Lineup) => void;
   disabled: boolean;
 }) {
-  const noGoalie = useGame((s) => s.clockMode) === "scrimmage";
   return (
     <div className="lineup-strip is-vert">
       <Stepper label="F" slot="o" lineup={lineup} onChange={onChange} disabled={disabled} />
       <Stepper label="D" slot="d" lineup={lineup} onChange={onChange} disabled={disabled} />
-      <Stepper label="G" slot="g" lineup={lineup} onChange={onChange} disabled={disabled || noGoalie} />
+      <Stepper label="G" slot="g" lineup={lineup} onChange={onChange} disabled={disabled} />
     </div>
   );
 }
@@ -344,13 +350,13 @@ function SideSliders({ who }: { who: "user" | "cpu" }) {
   const rows =
     who === "user"
       ? [
-          { label: "Offense", value: userOffense, min: 0, max: 1.2, set: setUserOffense },
-          { label: "Defense", value: userDefense, min: 0, max: 2, set: setUserDefense },
+          { label: "Forwards", value: userOffense, min: 0, max: 1.2, set: setUserOffense },
+          { label: "Defencemen", value: userDefense, min: 0, max: 2, set: setUserDefense },
           { label: "Goalie", value: userGoalie, min: 0, max: 1, set: setUserGoalie },
         ]
       : [
-          { label: "Offense", value: cpuOffense, min: 0, max: 2, set: setCpuOffense },
-          { label: "Defense", value: cpuDefense, min: 0, max: 2, set: setCpuDefense },
+          { label: "Forwards", value: cpuOffense, min: 0, max: 2, set: setCpuOffense },
+          { label: "Defencemen", value: cpuDefense, min: 0, max: 2, set: setCpuDefense },
           { label: "Goalie", value: cpuGoalie, min: 0, max: 1.6, set: setCpuGoalie },
         ];
   return (
@@ -470,7 +476,7 @@ function ClockSetup() {
         <button
           type="button"
           className={clockMode === "scrimmage" ? "is-on" : ""}
-          title="No goalies. Knock down the other team's targets."
+          title="Knock down the other team's targets. Goalies are optional."
           onClick={() => chooseMode("scrimmage")}
         >
           Scrimmage
@@ -519,19 +525,7 @@ function ClockSetup() {
   );
 }
 
-type MenuId = "mode" | "controller" | "gameplay" | "camera";
-
-const MODES: { id: PlayMode; label: string; title?: string }[] = [
-  { id: "drill", label: "Drill" },
-  { id: "practice", label: "Practice" },
-  {
-    id: "scrimmage",
-    label: "Scrimmage",
-    title: "No goalies. Knock down the other team's targets.",
-  },
-  { id: "roller", label: "Roller" },
-  { id: "game", label: "Game" },
-];
+type MenuId = "controller" | "gameplay" | "camera";
 
 function TargetCountRow({
   label,
@@ -560,12 +554,12 @@ function ScrimmageTargetPick() {
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
   const draft = usePauseDraft();
-  const home = playing && paused && draft ? draft.scrimmageHome : storeHome;
-  const away = playing && paused && draft ? draft.scrimmageAway : storeAway;
+  const youTotal = playing && paused && draft ? draft.scrimmageAway : storeAway;
+  const cpuTotal = playing && paused && draft ? draft.scrimmageHome : storeHome;
   return (
     <div className="scrimmage-targets">
-      <TargetCountRow label="Home" value={home} onPick={(n) => previewPausedScrimmage("home", n)} />
-      <TargetCountRow label="Away" value={away} onPick={(n) => previewPausedScrimmage("away", n)} />
+      <TargetCountRow label="Home" value={youTotal} onPick={(n) => previewPausedScrimmage("away", n)} />
+      <TargetCountRow label="Away" value={cpuTotal} onPick={(n) => previewPausedScrimmage("home", n)} />
     </div>
   );
 }
@@ -619,7 +613,6 @@ function MainMenus() {
   const setCamMode = useGame((s) => s.setCamMode);
   const arenaLook = useGame((s) => s.arenaLook);
   const setArenaLook = useGame((s) => s.setArenaLook);
-  const clockMode = useGame((s) => s.clockMode);
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
   const replay = useGame((s) => s.replay);
@@ -665,31 +658,7 @@ function MainMenus() {
           <SideSliders who="cpu" />
         </div>
       ) : null}
-      {menu === "mode" ? (
-        <div className="mode-grid">
-          {clockMode === "drill" || clockMode === "scrimmage" || clockMode === "roller" || clockMode === "game" ? (
-            <>
-              <div>{clockMode === "drill" ? <DrillTargetPick /> : null}</div>
-              <div />
-              <div>{clockMode === "scrimmage" ? <ScrimmageTargetPick /> : null}</div>
-              <div>{clockMode === "roller" ? <PeriodMinutes kind="roller" /> : null}</div>
-              <div>{clockMode === "game" ? <PeriodMinutes kind="game" /> : null}</div>
-            </>
-          ) : null}
-          {MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              className={clockMode === m.id ? "is-on" : ""}
-              title={m.title}
-              onClick={() => chooseMode(m.id)}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      {menu && menu !== "mode" ? (
+      {menu ? (
         <div className="cam-row menu-sub">
           {menu === "controller" ? (
             <>
@@ -792,27 +761,11 @@ function MainMenus() {
       <div className="cam-row">
         <button
           type="button"
-          className={menu === "mode" ? "is-on" : ""}
-          aria-expanded={menu === "mode"}
-          onClick={() => toggle("mode")}
-        >
-          Mode
-        </button>
-        <button
-          type="button"
-          className={menu === "controller" ? "is-on" : ""}
-          aria-expanded={menu === "controller"}
-          onClick={() => toggle("controller")}
-        >
-          Controller
-        </button>
-        <button
-          type="button"
           className={menu === "gameplay" ? "is-on" : ""}
           aria-expanded={menu === "gameplay"}
           onClick={() => toggle("gameplay")}
         >
-          Gameplay
+          Settings
         </button>
         <button
           type="button"
@@ -829,6 +782,14 @@ function MainMenus() {
           onClick={startReplay}
         >
           Replay
+        </button>
+        <button
+          type="button"
+          className={menu === "controller" ? "is-on" : ""}
+          aria-expanded={menu === "controller"}
+          onClick={() => toggle("controller")}
+        >
+          Controller
         </button>
         <div className="cam-pop">
           {help ? <ControlsHelp /> : null}
@@ -1030,10 +991,12 @@ export function Overlay() {
   const speed = useGame((s) => s.speed);
   const shotKind = useGame((s) => s.shotKind);
   const shotName = hudReleaseName(shotKind);
-  const pad = useGame((s) => s.pad);
   const hasPuck = useGame((s) => s.hasPuck);
   const charge = useGame((s) => s.charge);
   const chargeKind = useGame((s) => s.chargeKind);
+  const sauce = useGame((s) => s.sauce);
+  const chargeWind = useGame((s) => s.chargeWind);
+  const chargeMark = useGame((s) => s.chargeMark);
   const homeScore = useGame((s) => s.homeScore);
   const awayScore = useGame((s) => s.awayScore);
   const whistle = useGame((s) => s.whistle);
@@ -1088,6 +1051,8 @@ export function Overlay() {
   );
 
   const skate = useCallback(() => {
+    const ui = useGame.getState();
+    if (ui.playing && (ui.periodOver || world.periodOver)) applyArmedCpuKitCycle();
     resetWorld();
     setPlaying(true);
   }, [setPlaying]);
@@ -1095,14 +1060,15 @@ export function Overlay() {
   const homeUni = kitById(homeKit);
   const awayUni = kitById(awayKit);
   const drillNext = clockMode === "drill" && world.drillWon ? drillNextLine(drillTargets) : null;
+  const pauseModeChanged = !!pauseDraft && pauseDraft.clockMode !== clockMode;
   const newGameDraft =
-    !!pauseDraft &&
-    (pauseDraft.clockMode !== clockMode ||
-      pauseDraft.drillTargets !== drillTargets ||
-      pauseDraft.scrimmageHome !== scrimmageHomeTargets ||
-      pauseDraft.scrimmageAway !== scrimmageAwayTargets ||
-      pauseDraft.gameMinutes !== gameMinutes ||
-      pauseDraft.rollerMinutes !== rollerMinutes);
+    pauseModeChanged ||
+    (!!pauseDraft &&
+      (pauseDraft.drillTargets !== drillTargets ||
+        pauseDraft.scrimmageHome !== scrimmageHomeTargets ||
+        pauseDraft.scrimmageAway !== scrimmageAwayTargets ||
+        pauseDraft.gameMinutes !== gameMinutes ||
+        pauseDraft.rollerMinutes !== rollerMinutes));
 
   return (
     <div className={playing ? "hud" : "hud is-title"}>
@@ -1210,19 +1176,55 @@ export function Overlay() {
                 </>
               )}
             </span>
-            <span>
-              {shotName} <b>{speed.toFixed(0)}</b>
-              <small> mph</small>
-            </span>
-            <span className={hasPuck ? "puck-chip" : "muted"}>
-              {hasPuck ? "Puck on stick" : "Loose puck"}
+            {/*
+              Speed line is the previous release. Under it this column used to add
+              "Puck on stick" / "Loose puck" from hasPuck, then pad ("Keyboard" or "Gamepad").
+              The pass bar label was chargeWind, so a sauce hold read Saucer.
+              Those two status lines are gone. The pass bar always reads Pass.
+              Sauce stays on its own meter. chargeWind "Saucer" still means that meter is
+              live while the pass bar is hidden. Shot labels stay Wrist, Slap, or Backhand.
+            */}
+            <span className="hud-release">
+              {shotName.toUpperCase()} <b>{speed.toFixed(0)}</b>
+              <small> MPH</small>
             </span>
             {passChain > 0 ? <span className="puck-chip">Chain {passChain}</span> : null}
-            <span className="muted">{pad}</span>
-            {chargeKind ? (
-              <span className="charge">
-                {chargeKind === "shot" ? "Slap" : chargeKind === "saucer" ? "Saucer" : "Pass"}
-                <i style={{ width: `${Math.round(charge * 100)}%` }} />
+            {/*
+              hud-stats is a right-aligned column. This row is flex-end: sauce, then the
+              pass bar (min-width 92px). Dropping the pass bar used to shrink the row, so
+              the sauce meter slid right to where the pass bar sits. The hidden slot keeps
+              that pass box, so sauce stays to its left with the bottoms aligned.
+            */}
+            {chargeKind || chargeWind === "Saucer" ? (
+              <span className="charge-row">
+                {chargeKind === "saucer" || chargeWind === "Saucer" ? (
+                  <span className="sauce" aria-label="Sauce height">
+                    Sauce
+                    <b>
+                      <i style={{ height: `${Math.round(sauce * 100)}%` }} />
+                    </b>
+                  </span>
+                ) : null}
+                {chargeKind ? (
+                  <span className="charge">
+                    {chargeKind === "shot" ? (chargeWind ?? "Wrist") : "Pass"}
+                    {chargeKind === "shot" ? (
+                      <b className="charge-track">
+                        <i style={{ width: `${Math.round(charge * 100)}%` }} />
+                        {chargeMark !== null ? (
+                          <em style={{ left: `${chargeMark * 100}%` }} />
+                        ) : null}
+                      </b>
+                    ) : (
+                      <i style={{ width: `${Math.round(charge * 100)}%` }} />
+                    )}
+                  </span>
+                ) : (
+                  <span className="charge is-slot" aria-hidden="true">
+                    Pass
+                    <i />
+                  </span>
+                )}
               </span>
             ) : null}
           </div>
@@ -1260,11 +1262,15 @@ export function Overlay() {
           <div className="cam-adjust">
             <p>
               <b>Paused</b>
-              <span>Drag to look · X zoom in · B zoom out · A resumes this game</span>
+              <span>
+                {pauseModeChanged
+                  ? "Drag to look · X zoom in · B zoom out · A starts the new game · Y resumes"
+                  : "Drag to look · X zoom in · B zoom out · A resumes this game"}
+              </span>
             </p>
             <div className="btn-row cam-adjust-btns">
               <button type="button" className="btn-primary" onClick={() => resumePausedGame()}>
-                Resume
+                {newGameDraft ? "Cancel" : "Resume"}
               </button>
               <button
                 type="button"
@@ -1286,9 +1292,9 @@ export function Overlay() {
                 Reset
               </button>
             </div>
-            <section className="pause-new" aria-label="New game">
+            <section className="pause-new" aria-label="Skate">
               <p>
-                <b>New game</b>
+                <b>Skate</b>
                 <span>Pick a setup to start</span>
               </p>
               <ClockSetup />
@@ -1303,7 +1309,7 @@ export function Overlay() {
                   }}
                   onClick={() => startPausedNewGame()}
                 >
-                  New game
+                  Skate
                 </button>
               </div>
             </section>
@@ -1353,7 +1359,9 @@ export function Overlay() {
           {replay
             ? ""
             : paused
-              ? " · Drag or stick to look · X / B zoom · A resumes this game"
+              ? pauseModeChanged
+                ? " · Drag or stick to look · X / B zoom · A starts the new game · Y resumes"
+                : " · Drag or stick to look · X / B zoom · A resumes this game"
               : whistle === "goal"
                 ? " · A switch · B skip celebration · stick skates · Y hit"
                 : whistle === "brawl"
@@ -1474,7 +1482,8 @@ export function Overlay() {
             </div>
           ) : paused ? (
             <div className="face-pad">
-              <FaceBtn face="a" className="pass" label="Resume" />
+              {pauseModeChanged ? <FaceBtn face="y" className="face-y" label="Cancel" /> : null}
+              <FaceBtn face="a" className="pass" label={pauseModeChanged ? "Skate" : "Resume"} />
               <FaceBtn face="x" className="dump" label="Zoom+" />
               <FaceBtn face="b" className="burst" label="Zoom−" />
             </div>

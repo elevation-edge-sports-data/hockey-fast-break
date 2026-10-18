@@ -392,9 +392,10 @@ export function applyPose(pose: PublicPoseId): number {
       world.time = 0.7;
       break;
     case "rage":
+      // smashHit 0.7: wind-up until ~0.18, contact at 0.7. The preview clock advances smash.
       s.smashKind = 1;
-      s.smash = 0.9;
-      s.smashHit = 0.8;
+      s.smash = 0;
+      s.smashHit = 0.7;
       armStickRage(index);
       break;
     case "bench":
@@ -404,6 +405,11 @@ export function applyPose(pose: PublicPoseId): number {
       const end = defendDir(s.side) > 0 ? 1 : -1;
       const edge = BLUE_X + BLUE_LINE_W * 0.5;
       loosePuck(-end * (edge + 6), 0);
+      if (pose === "goalieRage") {
+        s.smashKind = 1;
+        s.smash = 0;
+        s.smashHit = 0.7;
+      }
       break;
     }
     case "goalieButterfly":

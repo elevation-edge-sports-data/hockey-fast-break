@@ -700,7 +700,7 @@ function predictShot(x0, z0, vx, vy, end) {
       if (pvy < 0) pvy *= -0.28;
       if (Math.abs(pvy) < 0.4) pvy = 0;
     }
-    const damp = Math.exp(-0.35 * dt);
+    const damp = Math.exp(-0.15 * dt);
     pvx *= damp;
     pvz *= damp;
     const barHit = segCircle(px, py, x, y, mouth, GOAL_H, BAR_R);
