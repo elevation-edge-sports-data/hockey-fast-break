@@ -3,7 +3,7 @@ import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNumberTexture } from "./iceTexture";
 import { attackDir, burstPoseWeight, checkedCyclePose, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, rageGizmoDragOn, rageIron, shotFollowTime, stepRagePreview, TUMBLE_PITCH_MAX, TUMBLE_PITCH_RATE, TUMBLE_STRIKE, TUMBLE_UP, world, type Referee, type Skater } from "./sim";
-import { GOALIE_BUTTERFLY_BLADE_LEAD, GOALIE_STICK_LEN, GOALIE_Z, GOALIE_Z_BLADE_LEAD, bodyToLocal, bodyToWorld, goalieIceHeel, layoutGoalieStick, poseGoalieButterflyArms, poseGoalieButterflyLimbs, poseGoalieHand, poseGoalieButterflyStanceLimbs, poseGoaliePlay, poseGoalieZArms, poseGoalieZLimbs, posedBody, torsoPivotY, torsoPlacedY } from "./goalieStance";
+import { GOALIE_BUTTERFLY_BLADE_LEAD, GOALIE_ICE_CENTER_Z, GOALIE_PADDLE_T, GOALIE_PADDLE_W, GOALIE_STICK_LEN, GOALIE_Z, GOALIE_Z_BLADE_LEAD, bodyToLocal, bodyToWorld, goalieIceGeo, goalieIceHeel, layoutGoalieStick, placeGoalieIceMesh, poseGoalieButterflyArms, poseGoalieButterflyLimbs, poseGoalieHand, poseGoalieButterflyStanceLimbs, poseGoaliePlay, poseGoalieZArms, poseGoalieZLimbs, posedBody, torsoPivotY, torsoPlacedY } from "./goalieStance";
 import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, SKATER_TAPE_Z0, SKATER_TAPE_Z1, burstCarryStickAim, carryStickAim, dekePull, dekeStickAim, neutralCarryBlend, neutralCarryStickAim, shotStickAim, skaterBladeCurveX, skaterBladeLiePoint, skillCarryStickAim, stickFrame, type StickAim } from "./stickSide";
 import { kitById, type UniformKit } from "./uniforms";
 import { useGame } from "./store";
@@ -17,7 +17,6 @@ export const USER_MARK_OUTER = 0.54;
 export const PUCK_MARK_INNER = 0.15;
 export const PUCK_MARK_OUTER = 0.22;
 
-const helmetGeo = new THREE.SphereGeometry(0.132, 18, 14);
 const visorGeo = new THREE.BoxGeometry(0.2, 0.07, 0.08);
 /** 10% narrower, 10% shorter, and 20% shallower than the 0.46 × 0.64 × 0.3 jersey. */
 const torsoGeo = new THREE.BoxGeometry(0.414, 0.576, 0.24);
@@ -173,26 +172,38 @@ const goaliePadShinGeo = makeGoalieShinPad();
 /** Thin cage wires. Each segment is scaled to the distance between two grid points. */
 const cageBarV = new THREE.BoxGeometry(0.0055, 1, 0.0055);
 const cageBarH = new THREE.BoxGeometry(1, 0.0055, 0.0055);
-/** Matches the helmet mesh: sphere radius 0.132 at y=0.08, scale [1.05, 0.92, 1.12]. */
+/**
+ * Rectangular shell shared by skaters, goalies, and referees. +Z is the face.
+ * Depth matches the shoulder cap (yokeTopGeo is 0.24 along Z).
+ * The other edges keep the 0.76 : 0.92 : 1.12 ratio, so front-to-back is
+ * longest, then top-to-bottom, then side-to-side.
+ * Goalie heads undo the root scale, so a goalie shell matches a skater shell.
+ */
+const HELMET_DEPTH = 0.24;
+const HELMET_SX = 0.76;
+const HELMET_SY = 0.92;
+const HELMET_SZ = 1.12;
 const HELMET_POS_Y = 0.08;
-const HELMET_RX = 0.132 * 1.05;
-const HELMET_RY = 0.132 * 0.92;
-const HELMET_RZ = 0.132 * 1.12;
-/** 7×7 opening. Outer x is ±0.09 and outer y is 0..0.14, on the shell. */
-const CAGE_X = [-0.09, -0.06, -0.03, 0, 0.03, 0.06, 0.09] as const;
+const HELMET_RZ = HELMET_DEPTH / 2;
+const HELMET_RX = HELMET_RZ * (HELMET_SX / HELMET_SZ);
+const HELMET_RY = HELMET_RZ * (HELMET_SY / HELMET_SZ);
+const helmetGeo = new THREE.BoxGeometry(HELMET_RX * 2, HELMET_RY * 2, HELMET_RZ * 2);
+/** Referee shell. Same box as skaters and goalies. */
+const refHelmet = helmetGeo;
+/** 7×7 opening. Outer x stays inside the front face. Outer y is 0..0.14. */
+const CAGE_HALF_X = 0.065;
+const CAGE_X = [-3, -2, -1, 0, 1, 2, 3].map((i) => (i * CAGE_HALF_X) / 3);
 const CAGE_Y = [0, 0.023333, 0.046667, 0.07, 0.093333, 0.116667, 0.14] as const;
 
+/** Front face of the box. Outside the face the cage has nothing to mount on. */
 function shellFrontZ(x: number, y: number) {
-  const nx = x / HELMET_RX;
-  const ny = (y - HELMET_POS_Y) / HELMET_RY;
-  const inside = 1 - nx * nx - ny * ny;
-  if (inside <= 0) return 0;
-  return HELMET_RZ * Math.sqrt(inside);
+  if (Math.abs(x) > HELMET_RX || Math.abs(y - HELMET_POS_Y) > HELMET_RY) return 0;
+  return HELMET_RZ;
 }
 
 /** Outer grid points sit on the shell. Interior points bow forward. */
 function cageZ(x: number, y: number) {
-  const edge = Math.min(1, Math.max(Math.abs(x / 0.09), Math.abs((y - 0.07) / 0.07)));
+  const edge = Math.min(1, Math.max(Math.abs(x / CAGE_HALF_X), Math.abs((y - 0.07) / 0.07)));
   return shellFrontZ(x, y) + 0.05 * (1 - edge * edge);
 }
 
@@ -520,11 +531,7 @@ const SKATER_SOLE_SAMPLES: ReadonlyArray<readonly [number, number, number]> = [0
 );
 const knobGeo = new THREE.BoxGeometry(0.036, 0.026, 0.036);
 /** Wide lower paddle, half the old unit height. The shaft group still scales it. */
-const goaliePaddleGeo = new THREE.BoxGeometry(0.1, 0.5, 0.04);
-/** Ice blade: a few centimeters tall, long axis along local +Z. Half again as long as the old 0.26. */
-const goalieIceGeo = new THREE.BoxGeometry(0.09, 0.032, 0.39);
-// Pose still places this mesh at z=0.13. The shift keeps the heel under the paddle and sends the extra length forward.
-goalieIceGeo.translate(0, 0, 0.065);
+const goaliePaddleGeo = new THREE.BoxGeometry(GOALIE_PADDLE_W, 0.5, GOALIE_PADDLE_T);
 const numPlane = new THREE.PlaneGeometry(0.28, 0.28);
 const shadowGeo = new THREE.CircleGeometry(0.42, 16);
 const puckDiscGeo = new THREE.CircleGeometry(PUCK_MARK_INNER, 28);
@@ -789,6 +796,9 @@ type KitMats = {
   sleeves: THREE.MeshStandardMaterial;
   pants: THREE.MeshStandardMaterial;
   stripe: THREE.MeshStandardMaterial;
+  sockBand: THREE.MeshStandardMaterial;
+  sockBandLow: THREE.MeshStandardMaterial;
+  armStripe: THREE.MeshStandardMaterial | null;
   socks: THREE.MeshStandardMaterial;
   gloves: THREE.MeshStandardMaterial;
   skates: THREE.MeshStandardMaterial;
@@ -843,32 +853,16 @@ function goaliePadColor(kit: UniformKit): string {
   return pants === kit.jersey.toLowerCase() ? kit.yoke : kit.jersey;
 }
 
-function colorDist2(a: string, b: string): number {
-  let sum = 0;
-  for (let i = 0; i < 3; i++) {
-    const d = hexChannel(a, i) - hexChannel(b, i);
-    sum += d * d;
-  }
-  return sum;
-}
-
-/** Goalie shell uses the jersey. The cage takes the other of primary and secondary. */
-function goalieCageColor(kit: UniformKit): string {
-  const toPrimary = colorDist2(kit.jersey, kit.crowdPri);
-  const toSecondary = colorDist2(kit.jersey, kit.crowdSec);
-  return toPrimary <= toSecondary ? kit.crowdSec : kit.crowdPri;
-}
-
 function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
   const numberMap = createNumberTexture(num, kit.number, kit.numberOutline);
   const pad = kit.jersey;
   const legPad = goalie ? goaliePadColor(kit) : pad;
   return {
-    helmet: mat(goalie ? pad : kit.helmet, {
+    helmet: mat(kit.helmet, {
       roughness: 0.26,
       metalness: 0.14,
       envMapIntensity: 0.3,
-      emissive: goalie ? pad : kit.helmet,
+      emissive: kit.helmet,
       emissiveIntensity: 0.18,
     }),
     visor: new THREE.MeshStandardMaterial({
@@ -907,12 +901,32 @@ function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
       polygonOffsetFactor: -2,
       polygonOffsetUnits: -2,
     }),
-    stripe: mat(kit.stripe, {
+    stripe: mat(kit.pantStripe ?? kit.stripe, {
       roughness: 0.48,
       envMapIntensity: 1.4,
-      emissive: kit.stripe,
+      emissive: kit.pantStripe ?? kit.stripe,
       emissiveIntensity: 0.3,
     }),
+    sockBand: mat(kit.sockBand ?? kit.stripe, {
+      roughness: 0.48,
+      envMapIntensity: 1.4,
+      emissive: kit.sockBand ?? kit.stripe,
+      emissiveIntensity: 0.3,
+    }),
+    sockBandLow: mat(kit.sockBandLow ?? kit.stripe, {
+      roughness: 0.48,
+      envMapIntensity: 1.4,
+      emissive: kit.sockBandLow ?? kit.stripe,
+      emissiveIntensity: 0.3,
+    }),
+    armStripe: kit.armStripe
+      ? mat(kit.armStripe, {
+          roughness: 0.48,
+          envMapIntensity: 1.4,
+          emissive: kit.armStripe,
+          emissiveIntensity: 0.3,
+        })
+      : null,
     socks: mat(kit.socks, {
       roughness: 0.5,
       envMapIntensity: 1.3,
@@ -981,10 +995,10 @@ function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
       emissive: legPad,
       emissiveIntensity: 0.22,
     }),
-    cage: mat(goalieCageColor(kit), {
+    cage: mat(pad, {
       roughness: 0.4,
       metalness: 0.2,
-      emissive: goalieCageColor(kit),
+      emissive: pad,
       emissiveIntensity: 0.22,
     }),
     mask: mat("#121212", { roughness: 0.42, metalness: 0.18 }),
@@ -1000,6 +1014,9 @@ function disposeKit(m: KitMats) {
   m.sleeves.dispose();
   m.pants.dispose();
   m.stripe.dispose();
+  m.sockBand.dispose();
+  m.sockBandLow.dispose();
+  m.armStripe?.dispose();
   m.socks.dispose();
   m.gloves.dispose();
   m.skates.dispose();
@@ -3628,7 +3645,7 @@ function carryGoalieStick(stick: THREE.Group, cover: number) {
     layoutGoalieStick(shaft, knob, blade);
     blade.quaternion.copy(_goalieCarryQ);
     const ice = blade.getObjectByName("goalieIce");
-    if (ice) ice.position.set(0, 0.016, 0.13);
+    if (ice) placeGoalieIceMesh(ice);
   }
   pivotGoalieStickOnKnob(stick);
 }
@@ -3689,10 +3706,10 @@ function poseGoalieStick(stick: THREE.Group, cover: number, s: Skater, gloveArm:
     carryGoalieStick(stick, cover);
     return;
   }
-  // Shaft rises back at 45° so the flat ice blade meets it at 135°. Paddle corners
-  // sit below that centerline; the heel lifts and the blade mesh drops onto the ice.
-  // The Z stances keep the heel on the grip's lateral and lead the pad face so the
-  // blade sits on the ice in front of the pads. The ice mesh center is 0.13 ahead of the heel.
+  // Shaft rises back at 45° so the flat ice blade meets it at 135°. The blade is
+  // centered on that shaft, so the sole is the low point and the heel lift keeps it
+  // on the ice. The Z stances keep the heel on the grip's lateral and lead the pad
+  // face. The ice mesh origin is the blade center, GOALIE_ICE_CENTER_Z ahead of the heel.
   const plantY = STICK_ICE_Y + 0.002;
   let heelLat = gripLat;
   let midHeelFwd: number | null = null;
@@ -3700,7 +3717,7 @@ function poseGoalieStick(stick: THREE.Group, cover: number, s: Skater, gloveArm:
   if (zKind) {
     const lane = goaliePadLane(root);
     if (lane) {
-      midHeelFwd = lane.front + GOALIE_Z_BLADE_LEAD[zKind] - 0.13;
+      midHeelFwd = lane.front + GOALIE_Z_BLADE_LEAD[zKind] - GOALIE_ICE_CENTER_Z;
       // Compact butterfly keeps the blade on the stick pad. The hands sit on the chest,
       // so the grip's own lateral would plant the blade in the five-hole.
       if (zKind === "butterfly") heelLat = lane.stick;
@@ -3710,7 +3727,7 @@ function poseGoalieStick(stick: THREE.Group, cover: number, s: Skater, gloveArm:
     const lane = goaliePadLane(root);
     if (lane) {
       heelLat = lane.stick;
-      midHeelFwd = lane.front + GOALIE_BUTTERFLY_BLADE_LEAD - 0.13;
+      midHeelFwd = lane.front + GOALIE_BUTTERFLY_BLADE_LEAD - GOALIE_ICE_CENTER_Z;
     }
   }
   const place = (heelY: number) => {
@@ -3750,7 +3767,7 @@ function poseGoalieStick(stick: THREE.Group, cover: number, s: Skater, gloveArm:
     stick.updateWorldMatrix(true, false);
     stick.getWorldQuaternion(_parentQ).invert();
     blade.quaternion.copy(_parentQ).multiply(_stickQ);
-    ice.position.set(0, 0.016 - (heelY - plantY), 0.13);
+    placeGoalieIceMesh(ice);
     return GOALIE_STICK_LEN;
   };
   let heelY = STICK_ICE_Y;
@@ -5633,7 +5650,7 @@ export function PlayerMesh({
         <group ref={shoulders} name="shoulders" position={[0, 1.45 - torsoDrop - torsoShift, 0]}>
         <group name="shoulderFrame" position={[0, -1.45, 0]}>
         <group ref={head} position={[0, 1.54, 0.02]}>
-          <mesh geometry={helmetGeo} material={mats.helmet} position={[0, 0.08, 0]} scale={[1.05, 0.92, 1.12]} castShadow />
+          <mesh geometry={helmetGeo} material={mats.helmet} position={[0, HELMET_POS_Y, 0]} castShadow />
           {goalie ? <GoalieMask material={mats.cage} /> : null}
         </group>
         <mesh geometry={yokeTopGeo} material={mats.yoke} position={[0, 1.45, 0]} scale={goalie ? [1.12, 1.04, 1] : 1} castShadow />
@@ -5646,15 +5663,7 @@ export function PlayerMesh({
           ) : (
             <mesh geometry={upperArmGeo} material={mats.sleeves} position={[0, -0.14, 0.02]} castShadow />
           )}
-          {kit.id === 1 ? (
-            <>
-              <mesh geometry={armStripeGeo} material={mats.pants} position={[0, -0.08, 0.02]} />
-              <mesh geometry={armSideStripeGeo} material={mats.pants} position={[-0.065, -0.0325, 0.02]} />
-              <mesh geometry={armSideStripeGeo} material={mats.pants} position={[0.065, -0.0325, 0.02]} />
-              <mesh geometry={armEndStripeGeo} material={mats.pants} position={[0, -0.0325, -0.055]} />
-              <mesh geometry={armEndStripeGeo} material={mats.pants} position={[0, -0.0325, 0.095]} />
-            </>
-          ) : null}
+          <SleeveStripes kit={kit} mats={mats} />
           <group ref={lFore} position={[0, -0.28, 0.02]}>
             {kit.id === 0 ? (
               <>
@@ -5678,7 +5687,7 @@ export function PlayerMesh({
                     <mesh geometry={goaliePaddleGeo} material={mats.tape} position={[0, -0.355, 0]} scale={[1, 0.58, 1]} castShadow />
                   </group>
                   <group name="goalieBlade" ref={bladeGrp} position={[0, -layout.len, 0]}>
-                    <mesh name="goalieIce" geometry={goalieIceGeo} material={mats.tape} position={[0, 0.016, 0.13]} castShadow />
+                    <mesh name="goalieIce" geometry={goalieIceGeo} material={mats.tape} position={[0, 0, GOALIE_ICE_CENTER_Z]} castShadow />
                   </group>
                 </group>
               </>
@@ -5697,15 +5706,7 @@ export function PlayerMesh({
             ) : (
               <mesh geometry={upperArmGeo} material={mats.sleeves} position={[0, -0.14, 0.02]} castShadow />
             )}
-            {kit.id === 1 ? (
-            <>
-              <mesh geometry={armStripeGeo} material={mats.pants} position={[0, -0.08, 0.02]} />
-              <mesh geometry={armSideStripeGeo} material={mats.pants} position={[-0.065, -0.0325, 0.02]} />
-              <mesh geometry={armSideStripeGeo} material={mats.pants} position={[0.065, -0.0325, 0.02]} />
-              <mesh geometry={armEndStripeGeo} material={mats.pants} position={[0, -0.0325, -0.055]} />
-              <mesh geometry={armEndStripeGeo} material={mats.pants} position={[0, -0.0325, 0.095]} />
-            </>
-          ) : null}
+            <SleeveStripes kit={kit} mats={mats} />
           </group>
           <group ref={rFore} position={[0, -0.28, 0.02]}>
             <group ref={rForeSleeve}>
@@ -5742,8 +5743,7 @@ export function PlayerMesh({
               <GoalieThigh side={-1} mats={mats} />
               <group ref={lShin} name="goalieStickPad" position={[0, -0.36, 0]}>
                 <mesh geometry={shinGeo} material={mats.socks} position={[0, -0.15, -0.04]} />
-                <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.1, -0.04]} />
-                <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, -0.04]} />
+                <SockBands mats={mats} z={-0.04} />
                 <mesh geometry={goaliePadThighGeo} material={mats.pads} position={[0, 0.14, GOALIE_PAD_FACE_Z]} scale={[1.42 * 0.8, 0.48 * 1.2, 0.3]} castShadow />
                 <mesh geometry={goaliePadKneeGeo} material={mats.pads} position={[0, 0.02, GOALIE_PAD_FACE_Z]} scale={[1.42 * 0.8, 1.25 * 1.2, 0.276923]} />
                 <mesh name="goalieShinPad" geometry={goaliePadShinGeo} material={mats.pads} position={[-GOALIE_SHIN_LIFT, -GOALIE_SHIN_HALF_L, GOALIE_SHIN_MESH_Z]} castShadow />
@@ -5760,8 +5760,7 @@ export function PlayerMesh({
               <mesh geometry={thighStripeGeo} material={mats.stripe} position={[-0.082, -0.16, 0]} />
               <group ref={lShin} position={[0, -0.32, 0]}>
                 <mesh geometry={shinGeo} material={mats.socks} position={[0, -0.15, 0]} />
-                <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.1, 0]} />
-                <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, 0]} />
+                <SockBands mats={mats} z={0} />
                 <group ref={lBoot} position={[0, -0.3, 0.04]}>
                   <mesh geometry={bootGeo} material={mats.skates} position={[0, -0.05, 0.02]} />
                   <SkateSole mats={mats} position={[0, -0.12, 0.02]} />
@@ -5776,8 +5775,7 @@ export function PlayerMesh({
               <GoalieThigh side={1} mats={mats} />
               <group ref={rShin} name="goalieGlovePad" position={[0, -0.36, 0]}>
                 <mesh geometry={shinGeo} material={mats.socks} position={[0, -0.15, -0.04]} />
-                <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.1, -0.04]} />
-                <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, -0.04]} />
+                <SockBands mats={mats} z={-0.04} />
                 <mesh geometry={goaliePadThighGeo} material={mats.pads} position={[0, 0.14, GOALIE_PAD_FACE_Z]} scale={[1.42 * 0.8, 0.48 * 1.2, 0.3]} castShadow />
                 <mesh geometry={goaliePadKneeGeo} material={mats.pads} position={[0, 0.02, GOALIE_PAD_FACE_Z]} scale={[1.42 * 0.8, 1.25 * 1.2, 0.276923]} />
                 <mesh name="goalieShinPad" geometry={goaliePadShinGeo} material={mats.pads} position={[GOALIE_SHIN_LIFT, -GOALIE_SHIN_HALF_L, GOALIE_SHIN_MESH_Z]} castShadow />
@@ -5794,8 +5792,7 @@ export function PlayerMesh({
               <mesh geometry={thighStripeGeo} material={mats.stripe} position={[0.082, -0.16, 0]} />
               <group ref={rShin} position={[0, -0.32, 0]}>
                 <mesh geometry={shinGeo} material={mats.socks} position={[0, -0.15, 0]} />
-                <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.1, 0]} />
-                <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, 0]} />
+                <SockBands mats={mats} z={0} />
                 <group ref={rBoot} position={[0, -0.3, 0.04]}>
                   <mesh geometry={bootGeo} material={mats.skates} position={[0, -0.05, 0.02]} />
                   <SkateSole mats={mats} position={[0, -0.12, 0.02]} />
@@ -5835,6 +5832,30 @@ export function PlayerMesh({
   );
 }
 
+/** Kit 2 paints this layout with the pants cloth. Other kits use armStripe. */
+function SleeveStripes({ kit, mats }: { kit: UniformKit; mats: KitMats }) {
+  const material = kit.id === 1 ? mats.pants : mats.armStripe;
+  if (!material) return null;
+  return (
+    <>
+      <mesh geometry={armStripeGeo} material={material} position={[0, -0.08, 0.02]} />
+      <mesh geometry={armSideStripeGeo} material={material} position={[-0.065, -0.0325, 0.02]} />
+      <mesh geometry={armSideStripeGeo} material={material} position={[0.065, -0.0325, 0.02]} />
+      <mesh geometry={armEndStripeGeo} material={material} position={[0, -0.0325, -0.055]} />
+      <mesh geometry={armEndStripeGeo} material={material} position={[0, -0.0325, 0.095]} />
+    </>
+  );
+}
+
+function SockBands({ mats, z }: { mats: Pick<KitMats, "sockBand" | "sockBandLow">; z: number }) {
+  return (
+    <>
+      <mesh geometry={sockStripeGeo} material={mats.sockBand} position={[0, -0.1, z]} />
+      <mesh geometry={sockStripeGeo} material={mats.sockBandLow} position={[0, -0.18, z]} />
+    </>
+  );
+}
+
 function GoalieThigh({ side, mats }: { side: -1 | 1; mats: Pick<KitMats, "pants" | "stripe"> }) {
   return (
     <>
@@ -5865,8 +5886,7 @@ function SeatedLeg({
         <GoalieThigh side={side} mats={mats} />
         <group ref={shinRef} position={[0, -0.36, 0]} rotation={[Math.PI / 2, 0, 0]}>
           <mesh geometry={shinGeo} material={mats.socks} position={[0, -0.15, -0.04]} />
-          <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.1, -0.04]} />
-          <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, -0.04]} />
+          <SockBands mats={mats} z={-0.04} />
           <mesh geometry={goaliePadThighGeo} material={mats.pads} position={[0, 0.14, GOALIE_PAD_FACE_Z]} scale={[1.42 * 0.8, 0.48 * 1.2, 0.3]} castShadow />
           <mesh geometry={goaliePadKneeGeo} material={mats.pads} position={[0, 0.02, GOALIE_PAD_FACE_Z]} scale={[1.42 * 0.8, 1.25 * 1.2, 0.276923]} />
           <mesh geometry={goaliePadShinGeo} material={mats.pads} position={[0, -GOALIE_SHIN_HALF_L, GOALIE_SHIN_MESH_Z]} castShadow />
@@ -5885,8 +5905,7 @@ function SeatedLeg({
       <mesh geometry={thighStripeGeo} material={mats.stripe} position={[side * 0.082, -0.17, 0]} />
       <group ref={shinRef} position={[0, -0.36, 0]} rotation={[Math.PI / 2, 0, 0]}>
         <mesh geometry={shinGeo} material={mats.socks} position={[0, -0.15, 0]} />
-        <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.1, 0]} />
-        <mesh geometry={sockStripeGeo} material={mats.stripe} position={[0, -0.18, 0]} />
+        <SockBands mats={mats} z={0} />
         <group ref={bootRef} position={[0, -0.3, 0.05]}>
           <mesh geometry={bootGeo} material={mats.skates} position={[0, -0.05, 0.02]} />
           <SkateSole mats={mats} position={[0, -0.12, 0.02]} />
@@ -6063,7 +6082,7 @@ export function SeatedPlayer({
         <group ref={shoulders} name="shoulders" position={[0, 0.8 - torsoDrop - torsoShift, 0.02]}>
         <group name="shoulderFrame" position={[0, -0.8, -0.02]}>
         <group ref={head} position={[0, 0.88, 0.04]}>
-          <mesh geometry={helmetGeo} material={mats.helmet} position={[0, 0.08, 0]} scale={[1.05, 0.92, 1.12]} castShadow />
+          <mesh geometry={helmetGeo} material={mats.helmet} position={[0, HELMET_POS_Y, 0]} castShadow />
           {goalie ? <GoalieMask material={mats.cage} /> : null}
         </group>
         <mesh geometry={yokeTopGeo} material={mats.yoke} position={[0, 0.8, 0]} scale={goalie ? [0.53 / 0.61, 1, 1] : 1} castShadow />
@@ -6076,15 +6095,7 @@ export function SeatedPlayer({
           ) : (
             <mesh geometry={upperArmGeo} material={mats.sleeves} position={[0, -0.14, 0.02]} castShadow />
           )}
-          {kit.id === 1 ? (
-            <>
-              <mesh geometry={armStripeGeo} material={mats.pants} position={[0, -0.08, 0.02]} />
-              <mesh geometry={armSideStripeGeo} material={mats.pants} position={[-0.065, -0.0325, 0.02]} />
-              <mesh geometry={armSideStripeGeo} material={mats.pants} position={[0.065, -0.0325, 0.02]} />
-              <mesh geometry={armEndStripeGeo} material={mats.pants} position={[0, -0.0325, -0.055]} />
-              <mesh geometry={armEndStripeGeo} material={mats.pants} position={[0, -0.0325, 0.095]} />
-            </>
-          ) : null}
+          <SleeveStripes kit={kit} mats={mats} />
           <group ref={lFore} position={[0, -0.28, 0.02]} rotation={[-1, 0.2, 0.4]}>
             {kit.id === 0 ? (
               <>
@@ -6116,15 +6127,7 @@ export function SeatedPlayer({
           ) : (
             <mesh geometry={upperArmGeo} material={mats.sleeves} position={[0, -0.14, 0.02]} castShadow />
           )}
-          {kit.id === 1 ? (
-            <>
-              <mesh geometry={armStripeGeo} material={mats.pants} position={[0, -0.08, 0.02]} />
-              <mesh geometry={armSideStripeGeo} material={mats.pants} position={[-0.065, -0.0325, 0.02]} />
-              <mesh geometry={armSideStripeGeo} material={mats.pants} position={[0.065, -0.0325, 0.02]} />
-              <mesh geometry={armEndStripeGeo} material={mats.pants} position={[0, -0.0325, -0.055]} />
-              <mesh geometry={armEndStripeGeo} material={mats.pants} position={[0, -0.0325, 0.095]} />
-            </>
-          ) : null}
+          <SleeveStripes kit={kit} mats={mats} />
           <group ref={rFore} position={[0, -0.28, 0.02]} rotation={[-1, -0.2, -0.4]}>
             {kit.id === 0 ? (
               <>
@@ -6152,7 +6155,7 @@ export function SeatedPlayer({
           <mesh geometry={stickShaftGeo} material={mats.stick} position={[0, SEATED_SHAFT_Y - SEATED_GOALIE_KNOB_Y, 0]} scale={[1, SEATED_SHAFT_SY, 1]} />
           <mesh geometry={goaliePaddleGeo} material={mats.tape} position={[0, SEATED_PADDLE_Y - SEATED_GOALIE_KNOB_Y, 0]} scale={[1, SEATED_PADDLE_SY, 1]} />
           <group ref={bladeGrp} position={[0, -SEATED_GOALIE_KNOB_Y, 0]}>
-            <mesh geometry={goalieIceGeo} material={mats.tape} position={[0, 0.016, 0.13]} />
+            <mesh geometry={goalieIceGeo} material={mats.tape} position={[0, 0, GOALIE_ICE_CENTER_Z]} />
           </group>
         </group>
       ) : (
@@ -6182,7 +6185,6 @@ export function SeatedPlayer({
   );
 }
 
-const refHelmet = new THREE.SphereGeometry(0.132, 14, 12);
 const refNeck = new THREE.CylinderGeometry(0.07, 0.085, 0.14, 8);
 const refTorso = new THREE.BoxGeometry(0.4, 0.62, 0.28);
 const REF_BAND = 0.4 / 10;
@@ -6482,7 +6484,7 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
       </mesh>
       <group ref={body}>
           <mesh geometry={refNeck} material={mats.white} position={[0, 1.52, 0.02]} />
-          <mesh geometry={refHelmet} material={mats.helm} position={[0, 1.62, 0.02]} scale={[1.05, 0.92, 1.12]} />
+          <mesh geometry={refHelmet} material={mats.helm} position={[0, 1.62, 0.02]} />
           <mesh geometry={refTorso} material={mats.white} position={[0, 1.18, 0]} />
           {[1, 3, 5, 7, 9].map((i) => {
             const x = -0.2 + (i + 0.5) * REF_BAND;

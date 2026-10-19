@@ -6,6 +6,7 @@ import {
   defendDir,
   goalieButterflyPose,
   goaliePlaysPuck,
+  goalieDiveSavePose,
   goalieShotSave,
   goalieZKind,
   rageDraw,
@@ -106,7 +107,15 @@ function faceoffStill(s: Skater): boolean {
 export function inferNamedPose(s: Skater, index: number): string | null {
   const goalie = s.kind === "goalie";
   if (brawlLive(s.id)) return "fight";
-  if (goalie && !tumbling(s) && s.smashKind > 0 && s.smashHit > 0 && s.dive <= 0.04) return "goalieRage";
+  if (
+    goalie &&
+    !tumbling(s) &&
+    s.smashKind > 0 &&
+    s.smashHit > 0 &&
+    s.dive <= 0.04 &&
+    !checkedCyclePose(s.struck, s.tumble)
+  )
+    return "goalieRage";
   if (!goalie && s.celebrate > 0.05 && s.hit <= 0 && !tumbling(s) && s.struck <= 0.2 && !brawlLive(s.id) && !rageDraw(s.id) && s.dive <= 0.04) {
     return "celebrate";
   }
@@ -116,13 +125,14 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   if (faceoffStill(s) && (faceoffDot(s) || world.faceoffPhase !== "live")) {
     return faceoffDot(s) ? "faceoff" : "coast";
   }
-  if (!goalie && rageDraw(s.id)) return "rage";
-  if (goalie && tumbling(s)) return "goalieGetUp";
-  if (!goalie && s.dive > 0.04) return "dive";
   if (!goalie) {
     const checked = checkedCyclePose(s.struck, s.tumble);
     if (checked) return checked;
   }
+  if (goalie && tumbling(s)) return "goalieGetUp";
+  if (!goalie && rageDraw(s.id)) return "rage";
+  if (goalie && s.dive > 0.04) return goalieDiveSavePose(s);
+  if (!goalie && s.dive > 0.04) return "dive";
   if (!goalie && forehandFollowHold(s)) return "shot-follow-through";
   if (!goalie && s.follow <= 0.02 && s.windup > 0.5) return "slap";
   if (!goalie && s.follow <= 0.02 && s.windup > 0.04 && s.windup <= 0.5 && world.lastShotBackhand) return "backhandShot";
@@ -170,7 +180,8 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   }
 
   const speed = Math.hypot(s.vx, s.vz);
-  if (!goalie && !owns && speed >= READY_SKATE) return Math.sin(s.stride * Math.PI) > 0 ? "strideLeft" : "strideRight";
+  // s.stride grows with distance. sin(s.stride) holds each foot for one stride.
+  if (!goalie && !owns && speed >= READY_SKATE) return Math.sin(s.stride) > 0 ? "strideLeft" : "strideRight";
   if (!goalie && !owns && speed <= READY_COAST && s.dive <= 0.04 && !tumbling(s) && s.hit <= 0 && s.struck <= 0.2 && s.poke <= 0.04 && s.celebrate <= 0.05) {
     return "ready";
   }

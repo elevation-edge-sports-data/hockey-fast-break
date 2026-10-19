@@ -28,7 +28,7 @@ import {
 } from "./rink";
 import { goalieRaisedHandCovers } from "./goalieStance";
 import { readActions, setInjectedKeys, type Actions } from "./input";
-import { burstCarryLocal, dekePuckLocal, neutralCarryBlend, neutralCarryLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal } from "./stickSide";
+import { burstCarryLocal, dekePuckLocal, neutralCarryBlend, neutralCarryLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal, SKATER_STICK_LEN } from "./stickSide";
 import {
   CHAOS_CAP,
   GAME_CLOCK_DISPLAY_MINUTES,
@@ -37,6 +37,7 @@ import {
   ROLLER_CLOCK_DISPLAY_MINUTES,
   ROLLER_PERIODS,
   gameClockScale,
+  gameSpeedRate,
   rollerClockScale,
   lineupTotal,
   modeLineupCap,
@@ -355,7 +356,22 @@ const DEFENSE_SPEED = 8.4;
 const DEFENSE_BURST = 9.8;
 const DEFENSE_ACCEL = 13.6;
 const ICE_DRAG = 0.85;
-const PUCK_DRAG = 0.15;
+/** Live puck ice drag. Pass coast, shot flight, and a loose puck share this. */
+const PUCK_DRAG = 0.2;
+/** Skater shot band. The wrist and slap curve stays inside it. Backhands stay 58–68. */
+const SKATER_SHOT_LO_MPH = 73;
+const SKATER_SHOT_HI_MPH = 105;
+/** Goalie shot band, from a tap to a full 1.5s hold. */
+const GOALIE_SHOT_LO_MPH = 55;
+const GOALIE_SHOT_HI_MPH = 87;
+/** Pass band. Skaters and goalies use the same 1.5s hold, different ends. */
+const SKATER_PASS_LO_MPH = 55;
+const SKATER_PASS_HI_MPH = 95;
+const GOALIE_PASS_LO_MPH = 45;
+const GOALIE_PASS_HI_MPH = 85;
+/** Shot-plant speed kept. Classic and Wings drop half. Skill Stick keeps a fifth. */
+const PLANT_KEEP_SKATE = 0.5;
+const PLANT_KEEP_STICK = 0.2;
 const TURN = 8.0;
 const PUCK_Y = 0.042;
 
@@ -387,7 +403,11 @@ const LOWER_T = 0.28;
 const FAKE_T = 0.32;
 const DROP_FLY_T = 0.18;
 const COVER_HOLD = 2.0;
+/** Pass or shot held during the first COVER_HOLD seconds adds this long to release. */
+const GOALIE_RELEASE_EXTRA = 2.0;
 const GOALIE_HOLD = 0.5;
+/** Home goalie whose current pass or shot hold began before COVER_HOLD. */
+let goalieReleaseId = -1;
 const playLooseMem = new Map<number, { key: string; yes: boolean }>();
 /** Goalie is out for a loose puck that stops at the end-zone circle tops. */
 const goalieCircleChase = new Set<number>();
@@ -836,9 +856,10 @@ function parkFaceoffWingers(skaters: Skater[], homeDot: number, awayDot: number)
 function placeFaceoff(skaters: Skater[]): { userId: number; homeDot: number; awayDot: number } {
   const homeSkate = skaters.filter((s) => s.side === "home" && s.kind !== "goalie");
   const awaySkate = skaters.filter((s) => s.side === "away" && s.kind !== "goalie");
-  const taker = homeSkate.find((s) => s.kind === "winger") ?? homeSkate[0];
-  // A lone goalie is still the user. They are not the dot taker and stay on the crease spawn.
-  const user = taker ?? skaters.find((s) => s.side === "home");
+  // Only a forward takes the dot. With no forwards, defenders stay on the
+  // defense line and the goalie stays in the crease.
+  const taker = homeSkate.find((s) => s.kind === "winger");
+  const user = taker ?? homeSkate[0] ?? skaters.find((s) => s.side === "home");
   const userId = user?.id ?? -1;
   const ox = world.faceX;
   const oz = world.faceZ;
@@ -849,7 +870,7 @@ function placeFaceoff(skaters: Skater[]): { userId: number; homeDot: number; awa
     taker.vx = 0;
     taker.vz = 0;
   }
-  const foe = awaySkate.find((s) => s.kind === "winger") ?? awaySkate[0];
+  const foe = awaySkate.find((s) => s.kind === "winger");
   if (foe) {
     foe.x = ox + defendDir("away") * FACEOFF_DOT_X;
     foe.z = oz;
@@ -925,6 +946,8 @@ function resetSkaters(): void {
   world.stoppage = false;
   world.stoppageT = 0;
   world.coverT = 0;
+  goalieReleaseId = -1;
+  goalieDiveSave.clear();
   world.whistle = null;
   world.lastShotSlap = false;
   world.lastShotBackhand = false;
@@ -1039,10 +1062,17 @@ let boardBank: {
 let passMeet: { x: number; z: number } | null = null;
 let userWinding = false;
 let skillStickLoading = false;
+/** 1 while skating. Shot windup sets the profile's plant keep. */
+let shotPlantKeep = 1;
 
-/** Shot windup plants the user skater on Skill Stick only. */
+/** Shot windup slows the user skater. Skill Stick also drops stick push so the left stick aims. */
 function markShotPlant(): void {
-  if (useGame.getState().controlProfile === "stick") userWinding = true;
+  if (useGame.getState().controlProfile === "stick") {
+    userWinding = true;
+    shotPlantKeep = PLANT_KEEP_STICK;
+  } else {
+    shotPlantKeep = PLANT_KEEP_SKATE;
+  }
 }
 /** This frame is a left/right aimed deke, so the 3s X shield must not arm. */
 let skillStickSideHold = false;
@@ -2316,12 +2346,14 @@ function skateStats(s: Skater, burst: boolean): { cap: number; accel: number } {
       s.kind === "goalie" ? userMul("g") : s.kind === "defense" ? userMul("def") : userMul("off");
   }
   if (s.kind === "goalie") {
+    // Loose goalies keep 75% of the skate cap. Carrying the puck keeps 50%.
+    const pace = goaliePace(s);
     if (user && burst) {
-      // Same B burst as a user winger: cap, accel, and the offense slider.
+      // Same B burst shape as a user winger, then the goalie pace above.
       const carrying = world.puck.owner === s.id;
       const offPuck = carrying ? 1 : 0.9;
       const skate = s.side === "home" ? userMul("off") : cpuMul("off");
-      const burstCap = WINGER_BURST * offPuck * 1.14 * skate;
+      const burstCap = WINGER_BURST * offPuck * 1.14 * skate * pace;
       const burstAccel = WINGER_ACCEL * (carrying ? 1 : 0.92) * 1.16 * skate;
       if (!goalieOutOfCrease(s)) return { cap: burstCap, accel: burstAccel };
       return {
@@ -2330,8 +2362,8 @@ function skateStats(s: Skater, burst: boolean): { cap: number; accel: number } {
       };
     }
     if (goalieOutOfCrease(s)) return { cap: goalieSkateCap(s), accel: WINGER_ACCEL };
-    if (user) return { cap: 6.2 * cpu, accel: 12.4 * cpu };
-    return { cap: 5.2 * cpu, accel: 9 * cpu };
+    if (user) return { cap: 6.2 * cpu * pace, accel: 12.4 * cpu };
+    return { cap: 5.2 * cpu * pace, accel: 9 * cpu };
   }
   if (s.kind === "defense") {
     const cap = burst ? DEFENSE_BURST : DEFENSE_SPEED;
@@ -2356,6 +2388,43 @@ function skateStats(s: Skater, burst: boolean): { cap: number; accel: number } {
  */
 function lockBackskateYaw(s: Skater): void {
   s.yaw = faceYaw(s.side);
+}
+
+/**
+ * Loose puck running up to a skater who would skate past it.
+ * Returns the pace to ease toward, or null when this is not a reception.
+ */
+function incomingPuckPace(s: Skater, wx: number, wz: number, mag: number, burst: boolean): number | null {
+  if (burst || s.kind === "goalie") return null;
+  if (s.dive > 0.04 || s.stun > 0.08 || s.windup > 0.04 || s.follow > 0.02) return null;
+  if (s.tumble !== 0 && s.struck > 0.15) return null;
+  if (world.faceoff || world.stoppage || world.whistle) return null;
+  const puck = world.puck;
+  if (puck.owner !== null || puck.y > 0.45 || Math.abs(puck.vy) > 0.8) return null;
+  if (world.lastPasser === s.id && world.time - world.lastPass < 0.4) return null;
+  if (
+    world.lastShooter === s.id &&
+    world.lastShoot >= world.lastPass &&
+    world.time - world.lastShoot < 0.4
+  )
+    return null;
+  const dx = s.x - puck.x;
+  const dz = s.z - puck.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist < 0.45 || dist > 7.5) return null;
+  const pspd = Math.hypot(puck.vx, puck.vz);
+  if (pspd < 2.4 || pspd > 16) return null;
+  const px = puck.vx / pspd;
+  const pz = puck.vz / pspd;
+  const along = dx * px + dz * pz;
+  const perp = Math.abs(-dx * pz + dz * px);
+  if (along < 0.45 || along > 6.5 || perp > 1.45) return null;
+  const eta = along / pspd;
+  if (eta < 0.06 || eta > 0.9) return null;
+  if (mag > 0.5 && wx * px + wz * pz < -0.12) return null;
+  const skateAlong = s.vx * px + s.vz * pz;
+  if (skateAlong < pspd * 0.92) return null;
+  return Math.max(2.4, pspd * 0.94);
 }
 
 function integrateSkater(
@@ -2434,7 +2503,10 @@ function integrateSkater(
     keepHomeDefenseInOz(s);
     s.lean += (0.04 - s.lean) * Math.min(1, 10 * dt);
     s.bank += (0 - s.bank) * Math.min(1, 10 * dt);
-    if (s.dive <= 0) s.stun = Math.max(s.stun, 0.16);
+    if (s.dive <= 0) {
+      s.stun = Math.max(s.stun, 0.16);
+      if (s.kind === "goalie") goalieDiveSave.delete(s.id);
+    }
     return;
   }
   if (s.celebrate > 0 && !world.stoppage) s.celebrate = Math.max(0, s.celebrate - dt);
@@ -2452,20 +2524,21 @@ function integrateSkater(
   const stance = s.backskate;
   const skatingBurst = burst && !stance;
   const stats = skateStats(s, skatingBurst || s.deke > 0);
+  const planting = s.id === world.userId && s.kind !== "goalie" && shotPlantKeep < 1;
+  const skillPlant = planting && userWinding;
   let cap = stats.cap;
   if (stance) cap *= 0.62;
-  const planting = s.id === world.userId && s.kind !== "goalie" && userWinding;
+  if (planting) cap *= shotPlantKeep;
   const speed = Math.hypot(s.vx, s.vz);
 
-  if (planting) {
-    s.vx *= Math.exp(-16 * dt);
-    s.vz *= Math.exp(-16 * dt);
-  } else if (mag <= 0.1) {
+  if (!skillPlant && mag <= 0.1) {
     s.vx *= Math.exp(-10 * dt);
     s.vz *= Math.exp(-10 * dt);
   }
 
-  if (!planting && mag > 0.12) {
+  const catchPace = incomingPuckPace(s, wx, wz, mag, skatingBurst);
+  if (catchPace !== null) cap = Math.min(cap, Math.max(cap * 0.94, catchPace));
+  if (!skillPlant && mag > 0.12) {
     const inv = 1 / mag;
     const dx = wx * inv;
     const dz = wz * inv;
@@ -2473,7 +2546,7 @@ function integrateSkater(
     const turnMul = user ? 1.22 : 0.55;
     const turnSpd = 0.8 + Math.min(1, speed / 7);
     if (!stance) s.yaw = turnToward(s.yaw, dx, dz, TURN * turnMul * turnSpd, dt);
-    const a = stats.accel * (skatingBurst ? 1.35 : 1) * mag;
+    const a = stats.accel * (skatingBurst ? 1.35 : 1) * mag * (catchPace !== null ? 0.7 : 1);
     s.vx += dx * a * dt;
     s.vz += dz * a * dt;
     if (speed > 0.8) {
@@ -2495,6 +2568,25 @@ function integrateSkater(
     s.vx *= m;
     s.vz *= m;
   }
+  // Skill Stick plant ignores the left stick. Hold the glide at the reduced cap
+  // instead of damping it to a stop.
+  if (skillPlant && sp > 0.2) {
+    const glide = Math.hypot(s.vx, s.vz);
+    if (glide > 0.2) {
+      const m = cap / glide;
+      s.vx *= m;
+      s.vz *= m;
+    }
+  }
+  if (catchPace !== null) {
+    const glide = Math.hypot(s.vx, s.vz);
+    if (glide > catchPace) {
+      const next = glide + (catchPace - glide) * Math.min(1, 1.35 * dt);
+      const m = next / glide;
+      s.vx *= m;
+      s.vz *= m;
+    }
+  }
 
   resistAttackingBlue(s, dt, cap, skatingBurst, wx, mag);
 
@@ -2512,7 +2604,7 @@ function integrateSkater(
   const now = Math.hypot(s.vx, s.vz);
   s.stride += now * 2.35 * dt;
   s.lean += ((now / WINGER_SPEED) * 0.22 - s.lean) * Math.min(1, 8 * dt);
-  const lat = !planting && mag > 0.12 ? wx * world.camRx + wz * world.camRz : 0;
+  const lat = !skillPlant && mag > 0.12 ? wx * world.camRx + wz * world.camRz : 0;
   s.bank += (-lat * 0.5 - s.bank) * Math.min(1, 10 * dt);
   if (s.deke > 0) {
     s.bank += (0 - s.bank) * Math.min(1, 12 * dt);
@@ -3951,6 +4043,26 @@ function nearestHomePassChaser(): number {
 }
 
 /** Point on the pass he can skate onto. Coast uses the puck's ice drag. */
+/**
+ * User pass in the offensive zone running along a side board.
+ * 0 when this is not that pass. Otherwise the board's z sign.
+ */
+function userOzBoardPass(): 1 | -1 | 0 {
+  if (world.puck.owner !== null || world.faceoff || world.stoppage) return 0;
+  if (world.lastPasser !== world.userId) return 0;
+  if (world.time - world.lastPass > 2.2 || world.lastShoot >= world.lastPass) return 0;
+  const attack = attackDir("home");
+  const released = world.lastPassX * attack;
+  const now = world.puck.x * attack;
+  if (released < BLUE_X - 1.2 && now < BLUE_X - 1.2) return 0;
+  const spd = Math.hypot(world.puck.vx, world.puck.vz);
+  if (spd < 3.5) return 0;
+  if (Math.abs(world.puck.vx) < Math.abs(world.puck.vz) * 1.15) return 0;
+  const zLine = Math.abs(world.puck.z) >= Math.abs(world.lastPassZ) ? world.puck.z : world.lastPassZ;
+  if (Math.abs(zLine) < RINK_W / 2 - 7.5) return 0;
+  return zLine >= 0 ? 1 : -1;
+}
+
 function ontoPassPuck(s: Skater): { x: number; z: number } {
   const puck = world.puck;
   const spd = Math.hypot(puck.vx, puck.vz);
@@ -4501,8 +4613,9 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
       tz = Math.max(-7.2, Math.min(7.2, slotAmong(s, "winger", 5.2)));
     }
   } else if (!wrapDeep && rank === 0 && s.kind !== "defense") {
-    tx = puck.x;
-    tz = puck.z;
+    const meet = ontoPassPuck(s);
+    tx = meet.x;
+    tz = meet.z;
   } else if (!wrapDeep && s.kind === "defense") {
     if (s.side === "home") {
       const dMates = world.skaters.filter((p) => p.side === s.side && p.kind === "defense");
@@ -4555,8 +4668,9 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
     const dPuck = Math.hypot(s.x - puck.x, s.z - puck.z);
     const loose = puck.y < 0.72 && Math.hypot(puck.vx, puck.vz) < 9;
     if (loose && (dPuck < 5.2 || (rank === 0 && dPuck < 10))) {
-      tx = puck.x + puck.vx * 0.1;
-      tz = puck.z + puck.vz * 0.1;
+      const meet = ontoPassPuck(s);
+      tx = meet.x;
+      tz = meet.z;
     }
   }
 
@@ -4568,8 +4682,9 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
       s.id !== world.userId &&
       (s.id === stickLooseBy || rank === 0)
     ) {
-      tx = puck.x + puck.vx * 0.18;
-      tz = puck.z + puck.vz * 0.18;
+      const meet = ontoPassPuck(s);
+      tx = meet.x;
+      tz = meet.z;
       stickChase = true;
       rushJoin = false;
     }
@@ -4586,8 +4701,9 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
   ) {
     const dPuck = Math.hypot(s.x - puck.x, s.z - puck.z);
     if (dPuck <= 6) {
-      tx = puck.x + puck.vx * 0.16;
-      tz = puck.z + puck.vz * 0.16;
+      const meet = ontoPassPuck(s);
+      tx = meet.x;
+      tz = meet.z;
       ozHoldSkate = false;
       matePuckChase = true;
       rushJoin = false;
@@ -4705,6 +4821,29 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
       // Red line is not their side. Park just past center, toward the CPU net.
       c.tx = ownSide * 1.2;
       if (userPress === "on" || userPress === "peel") userPress = "hold";
+    }
+  }
+  const boardSide = openEnd === 0 && !wrapDeep ? userOzBoardPass() : 0;
+  if (boardSide !== 0 && s.side === "home" && s.id !== world.userId && s.kind !== "goalie") {
+    const attack = attackDir("home");
+    const wall = boardSide * (RINK_W / 2 - 1.7);
+    if (s.kind === "defense") {
+      const defs = world.skaters.filter((p) => p.side === s.side && p.kind === "defense");
+      const di = Math.max(0, defs.findIndex((p) => p.id === s.id));
+      c.tx = attack * (BLUE_X + 0.35 + di * 0.85);
+      c.tz = wall * (di === 0 ? 1 : 0.7);
+    } else {
+      const wings = world.skaters.filter((p) => p.side === s.side && p.kind === "winger");
+      const fi = Math.max(0, wings.findIndex((p) => p.id === s.id));
+      const dot = attack * FACEOFF_EZ_X;
+      const low = attack * (GOAL_LINE_X - 2.8);
+      const meet = ontoPassPuck(s);
+      let x = meet.x;
+      if ((dot - x) * attack > 0) x = dot;
+      x += attack * Math.min(fi, 2) * 1.5;
+      if ((x - low) * attack > 0) x = low;
+      c.tx = x;
+      c.tz = wall;
     }
   }
   const dx = c.tx - s.x;
@@ -5409,9 +5548,42 @@ function goalieFar(s: Skater): boolean {
   return goalieOutOfCrease(s);
 }
 
+/** Loose 0.75, carrying 0.5. Applied once on every goalie skate cap. */
+function goaliePace(s: Skater): number {
+  return world.puck.owner === s.id ? 0.5 : 0.75;
+}
+
 function goalieSkateCap(s: Skater): number {
   const mul = s.side === "home" ? userMul("off") : cpuMul("off");
-  return WINGER_BURST * (s.id === world.userId ? 1.14 : 0.9) * mul;
+  return WINGER_BURST * (s.id === world.userId ? 1.14 : 0.9) * mul * goaliePace(s);
+}
+
+/**
+ * Latched at the dive press so the slide can turn yaw without flipping the pose.
+ * skaterLocal +X is the goalie's left. Facing +X (yaw −π/2), world +Z is lx −1,
+ * the blocker side. goalieDivingStickSave leans left (body x > 0).
+ * goalieDivingGloveSave leans right, onto the blocker.
+ */
+const goalieDiveSave = new Map<number, "goalieDivingStickSave" | "goalieDivingGloveSave">();
+
+function goalieDivePoseFor(s: Skater, dx: number, dz: number): "goalieDivingStickSave" | "goalieDivingGloveSave" {
+  let lx = 0;
+  if (Math.hypot(dx, dz) > 0.05) lx = skaterLocal(s, s.x + dx, s.z + dz).lx;
+  if (Math.abs(lx) < 0.08) lx = skaterLocal(s, world.puck.x, world.puck.z).lx;
+  return lx >= 0 ? "goalieDivingStickSave" : "goalieDivingGloveSave";
+}
+
+function noteGoalieDiveSide(s: Skater, dx: number, dz: number): void {
+  goalieDiveSave.set(s.id, goalieDivePoseFor(s, dx, dz));
+}
+
+/** Pose for a goalie whose dive is already running. */
+export function goalieDiveSavePose(s: Skater): "goalieDivingStickSave" | "goalieDivingGloveSave" {
+  const held = goalieDiveSave.get(s.id);
+  if (held) return held;
+  const posed = goalieDivePoseFor(s, s.vx, s.vz);
+  goalieDiveSave.set(s.id, posed);
+  return posed;
 }
 
 function decayGoalieDown(s: Skater, dt: number): void {
@@ -5691,6 +5863,13 @@ function slideGoalieToBar(s: Skater, zBar: number, dt: number): void {
 }
 
 function thinkGoalie(s: Skater, dt: number): void {
+  if (s.dive > 0) {
+    const sp = Math.hypot(s.vx, s.vz);
+    const dx = sp > 0.2 ? s.vx / sp : 0;
+    const dz = sp > 0.2 ? s.vz / sp : 0;
+    integrateSkater(s, dx, dz, sp > 0.2 ? 1 : 0, false, dt);
+    return;
+  }
   if (s.id !== world.userId) goalieLooseSkate.delete(s.id);
   const netX = defendDir(s.side) * (GOAL_LINE_X - 0.85);
   const puck = world.puck;
@@ -7218,9 +7397,9 @@ const PASS_CHECK_BEFORE = 0.32;
 const PASS_CHECK_START = 0.2;
 const PASS_CHECK_CUT = 0.5;
 // Pass speed stays this curve. It is not the sauce-height clock below.
-// Linear from a tap (60 mph) to 1.5s (90 mph), then clamped. Release is still A up.
-const PASS_TAP_MPH = 60;
-const PASS_FULL_MPH = 90;
+// Skaters: tap 55 mph, 1.5s 95 mph. Goalies: tap 45 mph, 1.5s 85 mph. Then clamped.
+const PASS_TAP_MPH = SKATER_PASS_LO_MPH;
+const PASS_FULL_MPH = SKATER_PASS_HI_MPH;
 const PASS_FULL_HOLD = 1.5;
 // Sauce height is Start's hold, not A's. Empty when Start goes down, full at 1s, then clamped.
 // It used to copy aHoldFor, so it could not start before A and jumped to full if the pass was already full.
@@ -7239,17 +7418,25 @@ let chargedSauce: number | null = null;
 // B during an A hold. The release must not launch. Cleared once A is up.
 let passChargeCancel = false;
 
-function passChargeMps(holdS: number): number {
+function passChargeMps(holdS: number, goalie = false): number {
   const t = Math.min(1, Math.max(0, holdS / PASS_FULL_HOLD));
-  return (PASS_TAP_MPH + (PASS_FULL_MPH - PASS_TAP_MPH) * t) / 2.23694;
+  const tap = goalie ? GOALIE_PASS_LO_MPH : PASS_TAP_MPH;
+  const full = goalie ? GOALIE_PASS_HI_MPH : PASS_FULL_MPH;
+  return (tap + (full - tap) * t) / 2.23694;
 }
 
 function sauceCharge01(holdS: number): number {
   return Math.min(1, Math.max(0, holdS / SAUCE_FULL_HOLD));
 }
 
-function withChargedPass(holdS: number, saucer: boolean, sauceHoldS: number, fire: () => void): void {
-  chargedPassPower = passChargeMps(holdS);
+function withChargedPass(
+  holdS: number,
+  saucer: boolean,
+  sauceHoldS: number,
+  fire: () => void,
+  goalie = false,
+): void {
+  chargedPassPower = passChargeMps(holdS, goalie);
   chargedSauce = saucer ? sauceCharge01(sauceHoldS) : null;
   try {
     fire();
@@ -7452,32 +7639,36 @@ function tapePass(s: Skater, mate: Skater, saucer: boolean): void {
   world.oneTimerSaucer = false;
 }
 
-function freeAimToLane(s: Skater, ax: number, az: number, saucer: boolean): void {
+function freeAimToLane(s: Skater, ax: number, az: number, saucer: boolean, keepLane = true): void {
   const from = passOrigin(s);
+  // Pass lock off still names the lane mate. Only the puck's direction stays on the aim.
   const lane = nearestLaneMate(s, ax, az);
   const power = chargedPassPower ?? (saucer ? 17.6 : 16.4);
-  if (!lane) {
+  const spot = lane ? laneLanding(from.x, from.z, ax, az, power, lane) : null;
+  if (keepLane && lane && spot) {
+    const laneDist = Math.hypot(spot.x - from.x, spot.z - from.z);
+    launchPass(
+      s,
+      ax * power,
+      az * power,
+      saucer ? 3.4 : 0.06,
+      saucer,
+      saucer ? { dist: laneDist, over: false, bank: false } : undefined,
+    );
+  } else {
     launchPass(s, ax * power, az * power, saucer ? 3.4 : 0.06, saucer);
-    world.lastPassTo = null;
-    return;
   }
-  const spot = laneLanding(from.x, from.z, ax, az, power, lane);
-  const laneDist = Math.hypot(spot.x - from.x, spot.z - from.z);
-  launchPass(
-    s,
-    ax * power,
-    az * power,
-    saucer ? 3.4 : 0.06,
-    saucer,
-    saucer ? { dist: laneDist, over: false, bank: false } : undefined,
-  );
-  passMeet = spot;
-  world.lastPassTo = lane.id;
-  world.oneTimerUntil = world.time + 2.2;
   world.oneTimerArmed = false;
   world.oneTimerSlap = false;
   world.oneTimerPass = false;
   world.oneTimerSaucer = false;
+  if (lane && spot) {
+    passMeet = spot;
+    world.lastPassTo = lane.id;
+    world.oneTimerUntil = world.time + 2.2;
+  } else {
+    world.lastPassTo = null;
+  }
 }
 
 function launchPuck(s: Skater, vx: number, vz: number, vy = 0): void {
@@ -7745,7 +7936,7 @@ function etaToNet(x: number, z: number, vx: number, vz: number, netX: number): n
 
 /**
  * Where this lob meets the far goal line. Same symplectic step as the puck
- * (y += vy*dt, vy -= 12*dt, ice drag 0.15), so a crossbar shot is still above
+ * (y += vy*dt, vy -= 12*dt, ice drag PUCK_DRAG), so a crossbar shot is still above
  * the bar there. A closed form that uses 6*t*t calls that shot an ice shot.
  * attack > 0 means the far net is +X.
  */
@@ -8033,19 +8224,35 @@ function goalieMustHoldCover(s: Skater): boolean {
   return goalieDefendZone(s.side, world.puck.x) && world.coverT < GOALIE_HOLD;
 }
 
-function doGoalieOutlet(s: Skater, mx: number, my: number, saucer: boolean): void {
+function passFindLocked(directed: boolean): { skipFind: boolean; lock: boolean } {
+  if (!directed) return { skipFind: false, lock: true };
+  const ui = useGame.getState();
+  // Pause Pass Lock ON is ignoreAutoFind off, so a teammate can be found.
+  const skipFind = ui.ignoreAutoFind;
+  return { skipFind, lock: ui.passLock && !skipFind };
+}
+
+function doGoalieOutlet(s: Skater, mx: number, my: number, saucer: boolean, fromUser = false): void {
   if (goalieMustHoldCover(s)) return;
   s.coverPose = 0;
   world.coverT = 0;
   const { ax, az } = aimDir(s, mx, my);
   const aimed = Math.hypot(mx, my) > (s.side === "home" ? 0.22 : 0.16);
-  const mate = clearPassTarget(s, ax, az, aimed);
-  if (mate) {
-    tapePass(s, mate, saucer);
-  } else if (s.side === "home") {
-    goalieLengthPlay(s, farPlayFromStick(mx, my, saucer));
+  const directed = fromUser || s.id === world.userId;
+  const { skipFind, lock } = passFindLocked(directed);
+  let mate: Skater | null = null;
+  if (skipFind || (directed && !lock && aimed)) {
+    freeAimToLane(s, ax, az, saucer, !skipFind);
+    mate = world.lastPassTo === null ? null : (world.skaters[world.lastPassTo] ?? null);
   } else {
-    goalieLengthPlay(s, cpuFarPlay());
+    mate = clearPassTarget(s, ax, az, aimed);
+    if (mate) {
+      tapePass(s, mate, saucer);
+    } else if (s.side === "home") {
+      goalieLengthPlay(s, farPlayFromStick(mx, my, saucer));
+    } else {
+      goalieLengthPlay(s, cpuFarPlay());
+    }
   }
   world.lastPass = world.time;
   world.lastPasser = s.id;
@@ -8368,7 +8575,8 @@ function flightEntersMouth(x: number, z: number, vx: number, vz: number): boolea
   return false;
 }
 
-function userBoardPass(s: Skater, ax: number, az: number, saucer = false): boolean {
+function userBoardPass(s: Skater, ax: number, az: number, saucer = false, lock = true): boolean {
+  const steerMate = (hit: BoardHit): Skater | null => (lock ? bankTarget(hit, ax, az, s) : null);
   const from = passOrigin(s);
   const hit = rayBoard(from.x, from.z, ax, az, 46);
   if (hit && boardReflectsIntoNet(hit.x, hit.z, ax, az, hit.nx, hit.nz)) {
@@ -8387,7 +8595,7 @@ function userBoardPass(s: Skater, ax: number, az: number, saucer = false): boole
   const intoNear = !!hit && hit.dist < 9 && ax * hit.nx + az * hit.nz > 0.42;
   if (saucer) {
     if (!hit || (!atWall && !along)) return false;
-    const bankMate = bankTarget(hit, ax, az, s);
+    const bankMate = steerMate(hit);
     if (bankMate && (atWall || hit.dist < 14)) {
       launchBank(s, ax, az, hit, bankMate, true);
       return true;
@@ -8397,7 +8605,7 @@ function userBoardPass(s: Skater, ax: number, az: number, saucer = false): boole
   }
   if (along && !intoNear && !intoBoard(ax, az, 0, along)) {
     if (atWall && hit && hit.dist < 14) {
-      const bankMate = bankTarget(hit, ax, az, s);
+      const bankMate = steerMate(hit);
       if (bankMate) {
         launchBank(s, ax, az, hit, bankMate);
         return true;
@@ -8407,7 +8615,7 @@ function userBoardPass(s: Skater, ax: number, az: number, saucer = false): boole
     return true;
   }
   if (!atWall || !hit) return false;
-  const bankMate = bankTarget(hit, ax, az, s);
+  const bankMate = steerMate(hit);
   if (bankMate) {
     launchBank(s, ax, az, hit, bankMate);
     return true;
@@ -8489,14 +8697,16 @@ function settleBoardPass(): void {
 function doPass(s: Skater, mx: number, my: number, saucer: boolean): void {
   if (s.kind === "goalie") {
     passMeet = null;
-    doGoalieOutlet(s, mx, my, saucer);
+    doGoalieOutlet(s, mx, my, saucer, s.id === world.userId);
     return;
   }
   pausePassChainHold(s.id);
   passMeet = null;
   const { ax, az } = aimDir(s, mx, my);
   const aimed = Math.hypot(mx, my) > 0.22;
-  if (s.id === world.userId && aimed && userBoardPass(s, ax, az, saucer)) {
+  const directed = s.id === world.userId;
+  const { skipFind, lock } = passFindLocked(directed);
+  if (directed && aimed && !skipFind && userBoardPass(s, ax, az, saucer, lock)) {
     world.lastPass = world.time;
     world.lastPasser = s.id;
     world.lastPassX = s.x;
@@ -8504,15 +8714,19 @@ function doPass(s: Skater, mx: number, my: number, saucer: boolean): void {
     noteDrillUserPass(s);
     return;
   }
-  const mate = bestPassTarget(s, ax, az, aimed);
-  if (mate) {
-    tapePass(s, mate, saucer);
-  } else if (aimed) {
-    freeAimToLane(s, ax, az, saucer);
+  if (skipFind || (directed && !lock && aimed)) {
+    freeAimToLane(s, ax, az, saucer, !skipFind);
   } else {
-    const power = chargedPassPower ?? (saucer ? 17.6 : 16.4);
-    launchPass(s, ax * power, az * power, saucer ? 3.4 : 0.06, saucer);
-    world.lastPassTo = null;
+    const mate = bestPassTarget(s, ax, az, aimed);
+    if (mate) {
+      tapePass(s, mate, saucer);
+    } else if (aimed) {
+      freeAimToLane(s, ax, az, saucer);
+    } else {
+      const power = chargedPassPower ?? (saucer ? 17.6 : 16.4);
+      launchPass(s, ax * power, az * power, saucer ? 3.4 : 0.06, saucer);
+      world.lastPassTo = null;
+    }
   }
   world.lastPass = world.time;
   world.lastPasser = s.id;
@@ -8892,7 +9106,7 @@ function launchBelowLineShot(s: Skater, attack: number, power: number): number {
   meshAbsorbShot = absorb;
   belowLineDeflectId = deflect;
   if (roll >= 0.2 && roll < 0.7) shotIron = { kind: "post", z: near * hw, y: PUCK_Y + 0.1 };
-  clampHorizMph(105);
+  clampHorizMph(SKATER_SHOT_HI_MPH);
   return dist;
 }
 
@@ -9061,7 +9275,7 @@ function launchShotAtNet(
   shotAttack = attack >= 0 ? 1 : -1;
   shotIron = aimedIron;
   if (ironKind) shotIron = { kind: ironKind, z: tZ, y: wantY };
-  clampHorizMph(105);
+  clampHorizMph(SKATER_SHOT_HI_MPH);
   if (world.time - world.goalieSaveT > 1.35 || dist > 12) {
     world.reboundN = 0;
     world.reboundSoft = false;
@@ -9326,18 +9540,18 @@ function shotFromHold(holdT: number, spd: number): { power: number; slap: boolea
   const t = Math.max(0, holdT);
   let mph: number;
   let slap = false;
-  if (t < 0.28) mph = 73 + t * 14;
+  if (t < 0.28) mph = SKATER_SHOT_LO_MPH + t * 14;
   else if (t < 0.5) mph = 80 + ((t - 0.28) / 0.22) * 6;
   else if (t < 1) {
     slap = true;
     mph = 90 + ((t - 0.5) / 0.5) * 14;
   } else {
     slap = true;
-    mph = 105;
+    mph = SKATER_SHOT_HI_MPH;
   }
-  if (!slap) mph = Math.max(73, mph);
-  mph = Math.min(105, mph + Math.min(1.6, spd * 0.08));
-  if (!slap) mph = Math.max(73, mph);
+  if (!slap) mph = Math.max(SKATER_SHOT_LO_MPH, mph);
+  mph = Math.min(SKATER_SHOT_HI_MPH, mph + Math.min(1.6, spd * 0.08));
+  if (!slap) mph = Math.max(SKATER_SHOT_LO_MPH, mph);
   return { power: mph / MPH, slap };
 }
 
@@ -9466,8 +9680,8 @@ function shotReach(s: Skater): number {
 
 function wristMph(roll: number, spd: number): number {
   const t = Math.max(0, Math.min(1, roll));
-  const mph = 73 + t * 13 + Math.min(1.6, spd * 0.08);
-  return Math.max(73, Math.min(86, mph));
+  const mph = SKATER_SHOT_LO_MPH + t * 13 + Math.min(1.6, spd * 0.08);
+  return Math.max(SKATER_SHOT_LO_MPH, Math.min(86, mph));
 }
 
 function snapMph(spd: number): number {
@@ -9521,6 +9735,12 @@ function shotSpray(kind: ShotKind, s: Skater, oneTimer: boolean, backhandBand: b
   return 0.01;
 }
 
+/** Goalie clear, linear from a tap to a full hold. Skater shots stay on shotFromHold. */
+function goalieShotChargeMps(holdS: number): number {
+  const t = Math.min(1, Math.max(0, holdS / SHOT_FULL_HOLD));
+  return (GOALIE_SHOT_LO_MPH + (GOALIE_SHOT_HI_MPH - GOALIE_SHOT_LO_MPH) * t) / MPH;
+}
+
 /** Seconds the shot follow-through pose stays up. Slap longest, snap shortest. */
 export function shotFollowTime(kind: ShotKind | null, slap = false): number {
   if (slap || kind === "slap") return 0.75;
@@ -9568,7 +9788,13 @@ function doShot(
   }
   if (s.kind === "goalie") {
     if (goalieMustHoldCover(s)) return;
-    goalieLengthPlay(s, farPlayFromStick(mx, my, slap));
+    const prevCharge = chargedPassPower;
+    chargedPassPower = goalieShotChargeMps(holdT ?? 0);
+    try {
+      goalieLengthPlay(s, farPlayFromStick(mx, my, slap));
+    } finally {
+      chargedPassPower = prevCharge;
+    }
     world.shotWindupT = 0;
     if (useGame.getState().clockMode === "drill") armDrillShot();
     s.windup = 0;
@@ -9714,6 +9940,123 @@ function nearestHomeSkater(exceptId: number): Skater | null {
   return best;
 }
 
+const SWITCH_PASS_WINDOW = 1.6;
+
+function passAxes(puck: Puck): { ax: number; az: number; spd: number } {
+  const spd = Math.hypot(puck.vx, puck.vz);
+  if (spd < 0.35) return { ax: 0, az: 0, spd };
+  return { ax: puck.vx / spd, az: puck.vz / spd, spd };
+}
+
+/** Named receiver who can actually play this pass, not a far off-lane name. */
+function passReceiverUseful(s: Skater, puck: Puck): boolean {
+  if (passMeet && Math.hypot(s.x - passMeet.x, s.z - passMeet.z) < 6.5) return true;
+  const { ax, az } = passAxes(puck);
+  const dx = s.x - puck.x;
+  const dz = s.z - puck.z;
+  const along = dx * ax + dz * az;
+  const perp = Math.hypot(dx - ax * along, dz - az * along);
+  return along > -0.5 && perp < 5.5 && Math.hypot(dx, dz) < 18;
+}
+
+/** Teammate nearest the pass line or the spot the pass is aimed at. */
+function bestAlongPass(mates: Skater[], puck: Puck): Skater | null {
+  const { ax, az, spd } = passAxes(puck);
+  if (spd < 0.8 && !passMeet) return null;
+  let best: Skater | null = null;
+  let bestScore = 4;
+  for (const s of mates) {
+    const dx = s.x - puck.x;
+    const dz = s.z - puck.z;
+    const along = dx * ax + dz * az;
+    const perp = Math.hypot(dx - ax * along, dz - az * along);
+    const d = Math.hypot(dx, dz);
+    if (along < -1.5 && d > 3) continue;
+    let score = 12 + Math.min(Math.max(along, 0), 16) * 0.9 - perp * 2.1;
+    score -= Math.max(0, d - 14) * 0.7;
+    if (passMeet) {
+      const dm = Math.hypot(s.x - passMeet.x, s.z - passMeet.z);
+      score -= dm * 1.15;
+      if (dm < 2.8) score += 5;
+    }
+    if (s.id === world.lastPassTo) score += 3;
+    if (s.struck > 0.35 || s.tumble !== 0) score -= 14;
+    if (score > bestScore) {
+      bestScore = score;
+      best = s;
+    }
+  }
+  return best;
+}
+
+/**
+ * Opponent carrying on our half, or anyone coming back toward our net.
+ * A puck sitting in their zone is a forecheck, not this.
+ */
+function defensiveRush(user: Skater): { x: number; z: number; vx: number; vz: number } | null {
+  const defend = defendDir(user.side);
+  const puck = world.puck;
+  const holder = puck.owner !== null ? world.skaters[puck.owner] : undefined;
+  if (holder && holder.side !== user.side && holder.kind !== "goalie") {
+    const toward = holder.vx * defend;
+    const onOurHalf = holder.x * defend > -6;
+    if (toward > 0.65 || onOurHalf) return { x: holder.x, z: holder.z, vx: holder.vx, vz: holder.vz };
+    return null;
+  }
+  if (puck.owner !== null) return null;
+  const spd = Math.hypot(puck.vx, puck.vz);
+  if (spd < 3.5 || puck.vx * defend < 2.6) return null;
+  if (world.lastShooter !== null && world.lastShoot >= world.lastPass && world.time - world.lastShoot < 0.9) {
+    const sh = world.skaters[world.lastShooter];
+    if (sh && sh.side === user.side) return null;
+  }
+  return { x: puck.x, z: puck.z, vx: puck.vx, vz: puck.vz };
+}
+
+/** Skater who can step into the lane, not the one parked deepest at our net. */
+function pickDefender(
+  user: Skater,
+  mates: Skater[],
+  rush: { x: number; z: number; vx: number; vz: number },
+): Skater {
+  const defend = defendDir(user.side);
+  const netX = defend * GOAL_LINE_X;
+  const gx = netX - rush.x;
+  const gz = -rush.z * 0.85;
+  const glen = Math.hypot(gx, gz) || 1;
+  const nx = gx / glen;
+  const nz = gz / glen;
+  const spd = Math.hypot(rush.vx, rush.vz);
+  const lead = Math.min(7.5, 2.1 + Math.min(spd, 12) * 0.22);
+  let ix = rush.x + nx * lead + rush.vx * 0.2;
+  let iz = rush.z + nz * lead * 0.45 + rush.vz * 0.2;
+  if ((netX - ix) * defend < 0.8) ix = netX - defend * 0.8;
+  let best = mates[0]!;
+  let bestScore = -Infinity;
+  for (const s of mates) {
+    const dx = s.x - rush.x;
+    const dz = s.z - rush.z;
+    const dPuck = Math.hypot(dx, dz) || 1;
+    const goalSide = dx * nx + dz * nz;
+    const lat = Math.abs(-dx * nz + dz * nx);
+    const dCut = Math.hypot(s.x - ix, s.z - iz);
+    let score = -dCut * 2.5 + Math.min(Math.max(goalSide, 0), 8) * 1.1;
+    if (goalSide > 0.2 && goalSide < 11 && lat < 4.2) score += 6.5;
+    if (goalSide < -1) score -= 11;
+    if (lat < 2.8 && goalSide > 0) score += 2;
+    if (s.kind === "defense" && rush.x * defend > -BLUE_X) score += 1.5;
+    score -= Math.max(0, dPuck - 11) * 0.5;
+    const closing = ((rush.x - s.x) * s.vx + (rush.z - s.z) * s.vz) / dPuck;
+    if (closing > 0.4) score += Math.min(2.2, closing * 0.35);
+    if (s.struck > 0.35 || s.tumble !== 0) score -= 18;
+    if (score > bestScore) {
+      bestScore = score;
+      best = s;
+    }
+  }
+  return best;
+}
+
 function changePlayer(): void {
   const user = world.skaters[world.userId];
   if (!user) return;
@@ -9729,9 +10072,18 @@ function changePlayer(): void {
     return;
   }
   const puck = world.puck;
-  if (puck.owner === null && world.lastPassTo !== null && world.time - world.lastPass < 1.6) {
+  const sincePass = world.time - world.lastPass;
+  const passLive =
+    puck.owner === null && sincePass >= 0 && sincePass < SWITCH_PASS_WINDOW && world.lastShoot <= world.lastPass;
+  if (passLive && world.lastPassTo !== null) {
     const t = world.skaters[world.lastPassTo];
-    if (t && t.side === user.side && t.kind !== "goalie" && t.id !== user.id) {
+    if (
+      t &&
+      t.side === user.side &&
+      t.kind !== "goalie" &&
+      t.id !== user.id &&
+      passReceiverUseful(t, puck)
+    ) {
       world.userId = t.id;
       return;
     }
@@ -9742,36 +10094,18 @@ function changePlayer(): void {
       world.userId = holder.id;
       return;
     }
-    if (holder && holder.side !== user.side && holder.kind !== "goalie") {
-      const ownNet = defendDir(user.side) * GOAL_LINE_X;
-      const towardNetX = Math.sign(ownNet - holder.x) || defendDir(user.side);
-      const hvx = holder.vx;
-      const hvz = holder.vz;
-      let best = mates[0]!;
-      let bestScore = -Infinity;
-      for (const s of mates) {
-        const dPuck = Math.hypot(s.x - holder.x, s.z - holder.z);
-        const along = (s.x - holder.x) * towardNetX;
-        const ix = holder.x + towardNetX * 2.4 + hvx * 0.28;
-        const iz = holder.z + hvz * 0.22;
-        const dCut = Math.hypot(s.x - ix, s.z - iz);
-        const lat = Math.abs(s.z - holder.z);
-        const trailing = along < -0.35;
-        const inLane = along > 0.25 && along < 14;
-        let score = -dCut * 1.2 + Math.max(0, along) * 3.6;
-        if (inLane) score += 9.5;
-        if (trailing) score -= 16;
-        if (lat < 2.6 && along > 0) score += 3.4;
-        if (s.kind === "defense") score += 1.4;
-        score -= Math.max(0, dPuck - 7.5) * 0.4;
-        if (score > bestScore) {
-          bestScore = score;
-          best = s;
-        }
-      }
-      world.userId = best.id;
+  }
+  if (passLive && (world.lastPasser === user.id || world.lastPassTo !== null)) {
+    const next = bestAlongPass(mates, puck);
+    if (next) {
+      world.userId = next.id;
       return;
     }
+  }
+  const rush = defensiveRush(user);
+  if (rush) {
+    world.userId = pickDefender(user, mates, rush).id;
+    return;
   }
   let best = mates[0]!;
   let bestD = Infinity;
@@ -10678,12 +11012,21 @@ function userCheckMetrics(user: Skater): { reach: number; lateral: number; ahead
   };
 }
 
-/** Celebrating opponent in the first CELEB_CHECK_WINDOW of a goal whistle. */
-function goalWhistleCeleb(s: Skater): boolean {
-  if (world.whistle !== "goal" || world.stoppageT >= CELEB_CHECK_WINDOW) return false;
-  if (s.celebrate <= 0.05 || s.id === world.userId) return false;
+/**
+ * Wider user-check reach.
+ * A goal whistle uses it on a celebrating opponent for CELEB_CHECK_WINDOW, and on
+ * anyone who has raged for the rest of that whistle. Rage used to clear celebrate,
+ * which dropped them out of the reach, and the stoppage skip then froze struck.
+ * An offside whistle uses the same reach on every opposing skater.
+ */
+function wideCheckTarget(s: Skater): boolean {
+  if (s.id === world.userId) return false;
   const user = world.skaters[world.userId];
-  return !!user && s.side !== user.side;
+  if (!user || s.side === user.side) return false;
+  if (world.whistle === "offside") return true;
+  if (world.whistle !== "goal") return false;
+  if (s.smashKind > 0 || goalRageBusy(s.id)) return true;
+  return world.stoppageT < CELEB_CHECK_WINDOW && s.celebrate > 0.05;
 }
 
 function checkLane(
@@ -11436,7 +11779,7 @@ function applyUserHit(user: Skater): boolean {
     if (checkRecoverImmune(s.struck, s.tumble, s.kind === "goalie", false)) continue;
     const dx = s.x - user.x;
     const dz = s.z - user.z;
-    const celeb = goalWhistleCeleb(s);
+    const celeb = wideCheckTarget(s);
     const reach = celeb ? CELEB_CHECK_REACH : Math.min(band.reach, USER_CHECK_CAP);
     const lateral = celeb ? CELEB_CHECK_LAT : band.lateral;
     const aheadMin = celeb ? CELEB_CHECK_AHEAD : band.aheadMin;
@@ -13059,6 +13402,8 @@ function chooseCoverFaceoff(coverer: Skater | undefined): void {
 }
 
 function startStoppage(kind: "goal" | "cover" | "offside" | "crowd", net?: 1 | -1): void {
+  // The period-end skate keeps moving. A whistle here would reset the period.
+  if (periodEndLive()) return;
   clearDelayedOffside();
   if (world.stoppage) return;
   rimRide = null;
@@ -13937,17 +14282,31 @@ function checkCover(dt: number, act: Actions): void {
       world.coverT += dt;
       if (holder.gloveFlash > 0.12) return;
       if (holder.side === "away") {
+        goalieReleaseId = -1;
         const crash = creaseCrash(holder);
         const open = !Number.isFinite(crash) || crash > 2.15;
         if (open) return;
       }
-      if (holder.side === "home" && ((!world.faceoffA && act.aDown) || act.xDown)) return;
+      // No pass or shot: whistle after 2 seconds of possession.
+      // A or X held during that window adds 2 seconds to release.
+      const playingPuck =
+        holder.side === "home" && ((!world.faceoffA && act.aDown) || act.xDown);
+      if (playingPuck && goalieReleaseId !== holder.id && world.coverT - dt < COVER_HOLD) {
+        goalieReleaseId = holder.id;
+      }
+      if (playingPuck && goalieReleaseId === holder.id) {
+        if (world.coverT >= COVER_HOLD + GOALIE_RELEASE_EXTRA) startStoppage("cover");
+        return;
+      }
+      if (!playingPuck) goalieReleaseId = -1;
       if (world.coverT >= COVER_HOLD) startStoppage("cover");
       return;
     }
+    goalieReleaseId = -1;
     world.coverT = Math.max(0, world.coverT - dt * 2);
     return;
   }
+  goalieReleaseId = -1;
   const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : undefined;
   const sincePass = world.time - world.lastPass;
   if (passer?.kind === "goalie" && sincePass < 1.65) {
@@ -14160,6 +14519,12 @@ function interceptGoalieFlight(puck: Puck, prevX: number, prevY: number, prevZ: 
 
 const DEAD_PUCK = 2.5;
 const SKATE_REACH = 0.22;
+/** How far the tape sits, plus a short pad, and never past the shaft length. */
+function stickClaimRadius(s: Skater): number {
+  const blade = stickBlade(s);
+  const toBlade = Math.hypot(blade.x - s.x, blade.z - s.z);
+  return Math.min(SKATER_STICK_LEN, toBlade + SKATER_STICK_LEN * 0.16);
+}
 const MATE_LOOSE_REACH = 1.3;
 const MATE_LOOSE_SLOW = 4;
 
@@ -14167,7 +14532,29 @@ function loosePuckDead(puck: Puck): boolean {
   return Math.hypot(puck.vx, puck.vz) < DEAD_PUCK && puck.y < 0.38 && Math.abs(puck.vy) < 0.45;
 }
 
-function tryPickup(puck: Puck): void {
+/**
+ * Puck in the skate circle around the body.
+ * A stopped puck counts, and so does one moving with the skater.
+ */
+function puckSettledInSkates(s: Skater, puck: Puck): boolean {
+  if (puck.y >= 0.38 || Math.abs(puck.vy) >= 0.45) return false;
+  if (Math.hypot(s.x - puck.x, s.z - puck.z) > s.radius + SKATE_REACH) return false;
+  if (Math.hypot(puck.vx, puck.vz) < DEAD_PUCK) return true;
+  return Math.hypot(puck.vx - s.vx, puck.vz - s.vz) < DEAD_PUCK;
+}
+
+function segmentPointDist(x0: number, z0: number, x1: number, z1: number, px: number, pz: number): number {
+  const abx = x1 - x0;
+  const abz = z1 - z0;
+  const ab2 = abx * abx + abz * abz;
+  if (ab2 < 1e-8) return Math.hypot(px - x1, pz - z1);
+  let u = ((px - x0) * abx + (pz - z0) * abz) / ab2;
+  if (u < 0) u = 0;
+  else if (u > 1) u = 1;
+  return Math.hypot(px - (x0 + abx * u), pz - (z0 + abz * u));
+}
+
+function tryPickup(puck: Puck, prevX = puck.x, prevZ = puck.z): void {
   if (world.time < stickLooseUntil) return;
   const intended = world.lastPassTo;
   const passer = world.lastPasser;
@@ -14194,7 +14581,17 @@ function tryPickup(puck: Puck): void {
         const blade = stickBlade(t);
         const dx = blade.x + t.vx * 0.06 - puck.x;
         const dz = blade.z + t.vz * 0.06 - puck.z;
-        const dist = Math.hypot(dx, dz);
+        const distBlade = Math.hypot(dx, dz);
+        const distPath = Math.min(
+          distBlade,
+          segmentPointDist(prevX, prevZ, puck.x, puck.z, blade.x, blade.z),
+        );
+        const bodyPath = Math.min(
+          Math.hypot(t.x - puck.x, t.z - puck.z),
+          segmentPointDist(prevX, prevZ, puck.x, puck.z, t.x, t.z),
+        );
+        const throughStick = bodyPath <= stickClaimRadius(t);
+        const dist = throughStick ? Math.min(distPath, bodyPath) : distPath;
         const spd = Math.hypot(puck.vx, puck.vz);
         const passerSk = passer !== null ? world.skaters[passer] : undefined;
         const passerIsGoalie = !!passerSk && passerSk.kind === "goalie";
@@ -14291,13 +14688,14 @@ function tryPickup(puck: Puck): void {
   let bestD = 99;
   let userLooseWin = false;
   let feetWin = false;
+  let stickWin = false;
   let mateLooseWin = false;
   const dead = loosePuckDead(puck);
   const justReleased = userJustReleasedPuck();
   for (const s of world.skaters) {
     if (dekeCommitBlocks(s.id)) continue;
     if (justReleased && s.side === "away") continue;
-    if (s.kind === "goalie") {
+    if (s.kind === "goalie" && s.id !== world.userId) {
       if (!goalieDefendZone(s.side, puck.x)) continue;
       if (s.stun > 0.2 || s.struck > 0.3 || s.tumble !== 0) continue;
       const behind = puck.x * defendDir(s.side) > GOAL_LINE_X - 0.2;
@@ -14314,6 +14712,7 @@ function tryPickup(puck: Puck): void {
       }
       continue;
     }
+    if (s.kind === "goalie" && s.tumble !== 0) continue;
     if (s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) continue;
     if (passMeantForUser() && s.side === "home" && s.id !== world.userId) continue;
     const bodyD = Math.hypot(s.x - puck.x, s.z - puck.z);
@@ -14326,7 +14725,10 @@ function tryPickup(puck: Puck): void {
       Math.abs(puck.vy) < 1.2 &&
       !passMeantForUser() &&
       !livePassForOther(s);
-    const atSkates = dead && bodyD <= s.radius + SKATE_REACH;
+    const atSkates = puckSettledInSkates(s, puck);
+    const stickR = stickClaimRadius(s);
+    const bodyPath = Math.min(bodyD, segmentPointDist(prevX, prevZ, puck.x, puck.z, s.x, s.z));
+    const onStick = puck.y <= 0.55 && Math.abs(puck.vy) <= 1.1 && bodyPath <= stickR;
     if (passer === s.id && !dead && (sincePass < 0.62 || (bodyD < 2.8 && sincePass < 0.95)))
       continue;
     if (world.lastHitter === s.id && world.time - world.lastHitTime < 0.5) continue;
@@ -14346,6 +14748,7 @@ function tryPickup(puck: Puck): void {
       ahead < -0.08 &&
       bodyD > s.radius &&
       !atSkates &&
+      !onStick &&
       !mateSettle &&
       !(intended === s.id && sincePass < 2.2) &&
       s.id !== world.userId
@@ -14396,6 +14799,14 @@ function tryPickup(puck: Puck): void {
       reach = Math.max(reach, s.radius + SKATE_REACH);
       feetClaim = true;
     }
+    const hostile =
+      shotInFlight || (!!passLive && !!passerSide && s.side !== passerSide);
+    let stickClaim = false;
+    if (!hostile && onStick) {
+      d = Math.min(d, bodyPath);
+      reach = Math.max(reach, stickR);
+      stickClaim = true;
+    }
     let mateLoose = false;
     if (mateSettle) {
       d = Math.min(d, bodyD);
@@ -14407,12 +14818,13 @@ function tryPickup(puck: Puck): void {
       best = s.id;
       userLooseWin = userLoose;
       feetWin = feetClaim;
+      stickWin = stickClaim;
       mateLooseWin = mateLoose;
     }
   }
   if (best >= 0) {
     const s = world.skaters[best]!;
-    if (s.kind === "goalie") {
+    if (s.kind === "goalie" && s.id !== world.userId) {
       if (!goalieDefendZone(s.side, puck.x)) return;
       if (Math.hypot(s.x - puck.x, s.z - puck.z) > 1.45) return;
       const hold = goaliePuckHold(s);
@@ -14435,10 +14847,35 @@ function tryPickup(puck: Puck): void {
     const blade = stickBlade(s);
     const intendedPickup = intended === best && sincePass < 2.2;
     let snapCap = sinceSave < 1.2 ? 0.55 : intendedPickup ? 2.6 : 1.28;
-    if (feetWin) snapCap = Math.max(snapCap, 1.8);
+    if (feetWin || stickWin) snapCap = Math.max(snapCap, Math.max(1.8, SKATER_STICK_LEN));
     else if (userLooseWin) snapCap = Math.max(snapCap, 1.72);
     if (mateLooseWin) snapCap = Math.max(snapCap, 1.45);
-    if (Math.hypot(blade.x - puck.x, blade.z - puck.z) > snapCap) return;
+    const bladeD = Math.hypot(blade.x - puck.x, blade.z - puck.z);
+    if (s.kind === "goalie") {
+      const bodyD = Math.hypot(s.x - puck.x, s.z - puck.z);
+      const d = feetWin || stickWin || userLooseWin ? Math.min(bladeD, bodyD) : bladeD;
+      if (d > snapCap) return;
+      const hold = goaliePuckHold(s);
+      if (segmentHitsCage(puck.x, puck.z, hold.x, hold.z)) return;
+      puck.owner = s.id;
+      puck.x = hold.x;
+      puck.z = hold.z;
+      puck.y = PUCK_Y;
+      puck.vx = s.vx;
+      puck.vz = s.vz;
+      puck.vy = 0;
+      noteControl(s, "play");
+      noteChainReception(s);
+      world.coverT = 0;
+      world.goalieShot = null;
+      s.follow = 0;
+      s.windup = 0;
+      return;
+    }
+    // Skate and stick claims measure the body. The blade sits off to one side.
+    const nearBody = feetWin || stickWin;
+    const claimD = nearBody ? Math.min(bladeD, Math.hypot(s.x - puck.x, s.z - puck.z)) : bladeD;
+    if (claimD > snapCap) return;
     puck.owner = best;
     puck.x = blade.x;
     puck.z = blade.z;
@@ -14497,7 +14934,7 @@ function stepWhistlePuck(dt: number): void {
   holdMeshRest();
   if (puck.y > 1.2) return;
   const since = world.time - world.lastShoot;
-  if (loosePuckDead(puck) && world.time >= stickLooseUntil) {
+  if (puck.y < 0.38 && Math.abs(puck.vy) < 0.45 && world.time >= stickLooseUntil) {
     let claim: Skater | null = null;
     let claimD = 99;
     const shooter = world.lastShooter !== null ? world.skaters[world.lastShooter] : undefined;
@@ -14515,7 +14952,11 @@ function stepWhistlePuck(dt: number): void {
       if (shooter && s.side === shooter.side && since < 0.55) continue;
       if (world.oneTimerArmed && world.time - world.lastPass < 2.2 && s.side === "home") continue;
       const dist = Math.hypot(s.x - puck.x, s.z - puck.z);
-      if (dist > s.radius + SKATE_REACH || dist >= claimD) continue;
+      const settled =
+        Math.hypot(puck.vx, puck.vz) < DEAD_PUCK ||
+        Math.hypot(puck.vx - s.vx, puck.vz - s.vz) < DEAD_PUCK;
+      if (!puckSettledInSkates(s, puck) && !(settled && dist <= stickClaimRadius(s))) continue;
+      if (dist >= claimD) continue;
       claim = s;
       claimD = dist;
     }
@@ -14824,7 +15265,7 @@ function stepPuck(dt: number): void {
     }
     releaseDrillNetPuck(puck);
     if (puck.owner === null && !(world.drillWon && !drillWinKicked) && !drillEncoreLive)
-      tryPickup(puck);
+      tryPickup(puck, prevX, prevZ);
     return;
   }
 
@@ -14867,7 +15308,7 @@ function stepPuck(dt: number): void {
   }
   ejectFromCage(puck, prevX);
   if (maybeCrowdStoppage(prevX, prevY, prevZ, dt)) return;
-  tryPickup(puck);
+  tryPickup(puck, prevX, prevZ);
   checkOffside();
 }
 
@@ -14903,8 +15344,9 @@ function lockDot(s: Skater | undefined, x: number, z: number, yaw: number): void
 
 function tickFreeCam(dt: number, act: Actions): void {
   const fc = world.freeCam;
+  // Current sample only. A stick that has sprung back near center is not a hold.
   const mag = Math.hypot(act.moveX, act.moveY);
-  if (mag > 0.04) {
+  if (mag > 0.2) {
     fc.theta -= act.moveX * dt * 2.15;
     fc.phi = Math.max(0.12, Math.min(1.45, fc.phi - act.moveY * dt * 1.35));
     world.pauseDirty = true;
@@ -15128,15 +15570,25 @@ function stepPause(dt: number, act: Actions): boolean {
   }
 
   if (world.periodOver) {
-    dropWingClaims();
-    world.stoppageT += dt;
-    if (ui.homeScore !== ui.awayScore) stepGoalCelebrate(dt);
+    const keepSkating = ui.clockMode === "game" || ui.clockMode === "roller";
+    if (!keepSkating) {
+      dropWingClaims();
+      world.stoppageT += dt;
+      if (ui.homeScore !== ui.awayScore) stepGoalCelebrate(dt);
+      if (act.aEdge || act.aTap) {
+        applyArmedCpuKitCycle();
+        resetWorld();
+        world.faceoffA = true;
+      }
+      return true;
+    }
     if (act.aEdge || act.aTap) {
+      dropWingClaims();
       applyArmedCpuKitCycle();
       resetWorld();
       world.faceoffA = true;
+      return true;
     }
-    return true;
   }
 
   if (world.replay && act.r3Edge) {
@@ -15261,9 +15713,16 @@ function stepFaceoff(dt: number, act: Actions, user: Skater): void {
   world.puck.owner = null;
   world.puckOz = puckOzSide(world.puck);
 
-  if (act.aEdge || act.aDown || act.aTap) {
-    const foe = away ?? world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
-    if (foe && Math.random() < 0.18) winFaceoff(foe);
+  // One side has nobody on the dot. The player who is there takes the puck.
+  // Do not hand it to a defenseman, goalie, or anyone else off the draw.
+  const lone = home && !away ? home : away && !home ? away : null;
+  if (lone) {
+    winFaceoff(lone);
+    return;
+  }
+
+  if ((act.aEdge || act.aDown || act.aTap) && home && away) {
+    if (Math.random() < 0.18) winFaceoff(away);
     else winFaceoff(user, { mx: world.faceoffAimX, my: world.faceoffAimY });
     world.faceoffA = true;
     return;
@@ -15312,8 +15771,9 @@ function stepFaceoff(dt: number, act: Actions, user: Skater): void {
     return;
   }
   if (world.faceoffT > 0.5) {
-    const foe = away ?? world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
-    if (foe) winFaceoff(foe);
+    if (home && away) winFaceoff(away);
+    else if (home) winFaceoff(home);
+    else if (away) winFaceoff(away);
     else {
       world.faceoff = false;
       markPuckDrop();
@@ -15788,6 +16248,28 @@ export function stopPauseReplay(): void {
 }
 
 const REPLAY_STICK_GATE = 0.12;
+const REPLAY_PHI_MIN = 0.12;
+const REPLAY_PHI_MAX = 1.45;
+const REPLAY_RADIUS_MIN = 4.2;
+const REPLAY_RADIUS_MAX = 120;
+
+/**
+ * Mouse orbit during pause replay. Gains match PauseOrbit on freeCam.
+ * Replay theta 0 sits on +X (pause theta 0 sits on +Z), so drag-right
+ * increases theta and the camera still moves toward screen-left.
+ * Drag-down (dy > 0) decreases phi, so the camera rises.
+ */
+export function orbitReplayPointer(dx: number, dy: number): void {
+  const cam = world.replayCam;
+  cam.theta += dx * 0.008;
+  cam.phi = Math.max(REPLAY_PHI_MIN, Math.min(REPLAY_PHI_MAX, cam.phi - dy * 0.006));
+}
+
+/** Wheel zoom during pause replay. deltaY sign and gain match PauseOrbit. */
+export function zoomReplayPointer(deltaY: number): void {
+  const cam = world.replayCam;
+  cam.radius = Math.max(REPLAY_RADIUS_MIN, Math.min(REPLAY_RADIUS_MAX, cam.radius + deltaY * 0.02));
+}
 
 function tickPauseReplayCam(dt: number, act: Actions): void {
   const cam = world.replayCam;
@@ -15796,7 +16278,7 @@ function tickPauseReplayCam(dt: number, act: Actions): void {
     if (mag > REPLAY_STICK_GATE) replayYMoved = true;
     if (replayYMoved) {
       cam.theta += act.moveX * 1.85 * dt;
-      cam.phi = Math.max(0.12, Math.min(1.48, cam.phi - act.moveY * 1.25 * dt));
+      cam.phi = Math.max(REPLAY_PHI_MIN, Math.min(REPLAY_PHI_MAX, cam.phi - act.moveY * 1.25 * dt));
     }
   } else {
     if (replayYHeld && !replayYMoved) cycleReplayLock();
@@ -15814,8 +16296,8 @@ function tickPauseReplayCam(dt: number, act: Actions): void {
     }
   }
   replayYHeld = act.yDown;
-  if (act.zoomIn || act.xDown) cam.radius = Math.max(3.6, cam.radius - 18 * dt);
-  if (act.zoomOut || act.bDown) cam.radius = Math.min(96, cam.radius + 18 * dt);
+  if (act.zoomIn || act.xDown) cam.radius = Math.max(REPLAY_RADIUS_MIN, cam.radius - 18 * dt);
+  if (act.zoomOut || act.bDown) cam.radius = Math.min(REPLAY_RADIUS_MAX, cam.radius + 18 * dt);
 }
 
 function replayScrubNow(act: Actions): ReplayScrub | null {
@@ -16621,6 +17103,21 @@ function stepRagePiece(p: RagePiece, dt: number): void {
 }
 
 function stepRageApproach(s: Skater, dt: number): void {
+  // A check has to play out. The rage steer used to keep running, and the
+  // stoppage loop skips these bodies, so struck never fell and the next check missed.
+  if (checkedCyclePose(s.struck, s.tumble)) {
+    if (s.kind === "goalie") decayGoalieDown(s, dt);
+    else {
+      if (s.stun > 0) s.stun = Math.max(0, s.stun - dt);
+      if (s.struck > 0) s.struck = Math.max(0, s.struck - dt);
+      syncCheckCycle(s);
+    }
+    s.vx *= Math.exp(-3 * dt);
+    s.vz *= Math.exp(-3 * dt);
+    s.x += s.vx * dt;
+    s.z += s.vz * dt;
+    return;
+  }
   s.smash += dt;
   s.poke = 0;
   s.windup = 0;
@@ -17055,13 +17552,34 @@ function stepSkillStick(user: Skater, act: Actions, allowShot: boolean): { loadi
   return { loading: true };
 }
 
+/** Game and roller keep skating between periods and after the final buzzer. */
+export function periodEndLive(): boolean {
+  const mode = useGame.getState().clockMode;
+  if (mode !== "game" && mode !== "roller") return false;
+  return world.periodEndT > 0 || world.periodOver;
+}
+
+/** Chest-height look point on the user while a period end is live. */
+export function periodEndLook(): { x: number; y: number; z: number } | null {
+  if (!periodEndLive()) return null;
+  const s = world.userId >= 0 ? world.skaters[world.userId] : undefined;
+  if (!s) return null;
+  return { x: s.x, y: 1.05, z: s.z };
+}
+
+/** Goal and offside whistles keep the camera on the user, not the puck. */
+export function whistleUserLook(): { x: number; y: number; z: number } | null {
+  if (world.whistle !== "goal" && world.whistle !== "offside") return null;
+  if (world.replay) return null;
+  const s = world.userId >= 0 ? world.skaters[world.userId] : undefined;
+  if (!s) return null;
+  return { x: s.x, y: 1.05, z: s.z };
+}
+
 function beginPeriodBreak(): void {
   world.periodEndT = PERIOD_END_HOLD;
   world.periodClock = 0;
   world.whistle = null;
-  world.puck.vx = 0;
-  world.puck.vz = 0;
-  world.puck.vy = 0;
   clearDelayedOffside();
   const ui = useGame.getState();
   ui.setPeriodClock(0);
@@ -17130,6 +17648,7 @@ function stepOpenIce(dt: number, act: Actions): void {
 function stepPlay(dt: number, act: Actions): void {
   latchPrecede();
   userWinding = false;
+  shotPlantKeep = 1;
   skillStickLoading = false;
   skillStickSideHold = false;
   userStickCommit = false;
@@ -17144,16 +17663,23 @@ function stepPlay(dt: number, act: Actions): void {
   }
 
   if (world.periodOver) {
-    dropWingClaims();
-    if (ui.clockMode === "drill") releaseDrillNetPuck(world.puck);
-    return;
+    if (ui.clockMode === "drill") {
+      dropWingClaims();
+      releaseDrillNetPuck(world.puck);
+      return;
+    }
+    if (ui.clockMode !== "game" && ui.clockMode !== "roller") {
+      dropWingClaims();
+      return;
+    }
   }
 
   if (world.periodEndT > 0) {
-    dropWingClaims();
     world.periodEndT = Math.max(0, world.periodEndT - dt);
-    if (world.periodEndT <= 0) startNextPeriod();
-    return;
+    if (world.periodEndT <= 0) {
+      startNextPeriod();
+      return;
+    }
   }
 
   syncPassChainHold();
@@ -17167,7 +17693,7 @@ function stepPlay(dt: number, act: Actions): void {
   }
 
   if (ui.clockMode === "drill" && !world.stoppage && !world.drillWon && !drillDropLive()) {
-    world.periodClock = Math.max(0, world.periodClock - dt);
+    world.periodClock = Math.max(0, world.periodClock - clockDt(dt));
     const shown = Math.floor(world.periodClock);
     if (shown !== ui.periodClock) ui.setPeriodClock(shown);
     if (world.periodClock <= 0) {
@@ -17189,11 +17715,18 @@ function stepPlay(dt: number, act: Actions): void {
     }
   }
 
-  if ((ui.clockMode === "game" || ui.clockMode === "roller") && !world.stoppage && !world.faceoff) {
+  if (
+    world.periodEndT <= 0 &&
+    !world.periodOver &&
+    (ui.clockMode === "game" || ui.clockMode === "roller") &&
+    !world.stoppage &&
+    !world.faceoff
+  ) {
     const roller = ui.clockMode === "roller";
     const scale = roller ? rollerClockScale(ui.rollerMinutes) : gameClockScale(ui.gameMinutes);
     const periods = roller ? ROLLER_PERIODS : GAME_PERIODS;
-    world.periodClock = Math.max(0, world.periodClock - dt * scale);
+    // Game speed adds or skips sim steps. Divide it out so the countdown stays on real time.
+    world.periodClock = Math.max(0, world.periodClock - clockDt(dt) * scale);
     const shown = Math.floor(world.periodClock);
     if (shown !== ui.periodClock) ui.setPeriodClock(shown);
     if (world.periodClock <= 0) {
@@ -17201,36 +17734,17 @@ function stepPlay(dt: number, act: Actions): void {
         beginPeriodBreak();
         return;
       }
-      world.periodOver = true;
-      world.stoppage = true;
-      world.stoppageT = 0;
-      world.whistle = null;
-      clearDelayedOffside();
-      world.puck.owner = null;
-      world.puck.vx = 0;
-      world.puck.vz = 0;
-      world.puck.vy = 0;
-      ui.setPeriodOver(true);
-      ui.setPeriodClock(0);
-      ui.setWhistle(null);
-      ui.setHasPuck(false);
-      const winner: "home" | "away" | null =
-        ui.homeScore > ui.awayScore ? "home" : ui.awayScore > ui.homeScore ? "away" : null;
-      if (winner === "home") armCpuKitCycle();
-      if (winner) {
-        let lead: Skater | undefined;
-        for (const s of world.skaters) {
-          if (s.side !== winner || s.kind === "goalie") continue;
-          s.celebrate = 8;
-          if (!lead || s.kind === "winger") lead = s;
-        }
-        if (lead) {
-          world.lastShooter = lead.id;
-          assignGoalCheer(winner, lead.id);
-        }
+      if (!world.periodOver) {
+        world.periodOver = true;
+        world.whistle = null;
+        clearDelayedOffside();
+        ui.setPeriodOver(true);
+        ui.setPeriodClock(0);
+        ui.setWhistle(null);
+        const winner: "home" | "away" | null =
+          ui.homeScore > ui.awayScore ? "home" : ui.awayScore > ui.homeScore ? "away" : null;
+        if (winner === "home") armCpuKitCycle();
       }
-      dropWingClaims();
-      return;
     }
   }
 
@@ -17279,20 +17793,33 @@ function stepPlay(dt: number, act: Actions): void {
       world.offsideCarrier = null;
     }
     const offsideCarry =
-      world.whistle === "offside" &&
-      world.offsideCarrier !== null &&
-      user?.id === world.offsideCarrier &&
-      world.puck.owner === user.id;
+      world.whistle === "offside" && !!user && user.kind !== "goalie" && world.puck.owner === user.id;
     if (user && user.kind !== "goalie") {
       const wx = world.camRx * act.moveX + world.camFx * act.moveY;
       const wz = world.camRz * act.moveX + world.camFz * act.moveY;
       const mag = Math.hypot(act.moveX, act.moveY);
       if (offsideCarry) {
+        if (world.faceoffA && !act.aDown && !act.aTap && !act.aHoldRel && !act.aEdge) world.faceoffA = false;
+        const aReady = !world.faceoffA;
+        if (aReady && act.bEdge && (act.aDown || act.aHoldRel || act.aTap)) passChargeCancel = true;
         const aim = shotAim(act);
-        if (!world.windupCancel && act.xTap && world.time - world.lastShoot > 0.25) {
+        let passedThis = false;
+        if (
+          aReady &&
+          !passChargeCancel &&
+          (act.aTap || act.aHoldRel) &&
+          world.time - world.lastPass > 0.2
+        ) {
+          withChargedPass(act.aHoldFor, act.startDown, act.startHoldFor, () => {
+            doPass(user, aim.mx, aim.my, act.startDown);
+          });
+          passedThis = true;
+        }
+        if (!act.aDown) passChargeCancel = false;
+        if (!passedThis && !world.windupCancel && act.xTap && world.time - world.lastShoot > 0.25) {
           doShot(user, aim.mx, aim.my, false, world.shotWindupT);
         }
-        if (!world.windupCancel && act.xHoldRel && world.time - world.lastShoot > 0.25) {
+        if (!passedThis && !world.windupCancel && act.xHoldRel && world.time - world.lastShoot > 0.25) {
           doShot(user, aim.mx, aim.my, true, world.shotWindupT);
         }
         if (act.yEdge) {
@@ -17341,7 +17868,7 @@ function stepPlay(dt: number, act: Actions): void {
       keepSkillHitFacing(user);
       if (user.hit > 0) applyHit(user);
       const raging = stepGoalWhistleRage(user, act, dt);
-      if (world.whistle === "goal" && !raging) stepGoalWhistleDive(user, act);
+      if ((world.whistle === "goal" || world.whistle === "offside") && !raging) stepGoalWhistleDive(user, act);
       if (!raging) {
         integrateSkater(user, wx, wz, mag, act.burst && !user.backskate, dt);
       }
@@ -17397,7 +17924,7 @@ function stepPlay(dt: number, act: Actions): void {
         keepInBowl(s);
       }
     } else {
-      if (user && user.kind === "goalie" && world.whistle === "goal") {
+      if (user && user.kind === "goalie" && (world.whistle === "goal" || world.whistle === "offside")) {
         const wx = world.camRx * act.moveX + world.camFx * act.moveY;
         const wz = world.camRz * act.moveX + world.camFz * act.moveY;
         const mag = Math.hypot(act.moveX, act.moveY);
@@ -17441,10 +17968,38 @@ function stepPlay(dt: number, act: Actions): void {
     }
     separateSkaters();
     for (const s of world.skaters) keepInBowl(s);
-    if (world.whistle === "offside" && world.offsideCarrier !== null) {
+    if (world.whistle === "offside") {
       stepWhistlePuck(dt);
       const mine = world.puck.owner === world.userId;
       if (ui.hasPuck !== mine) ui.setHasPuck(mine);
+      const carrier = user && user.kind !== "goalie" && world.puck.owner === user.id;
+      let charge = 0;
+      let kind: "pass" | "saucer" | null = null;
+      let sauce = 0;
+      let wind: string | null = null;
+      if (carrier && act.aDown && !passChargeCancel) {
+        charge = Math.min(1, Math.max(0, act.aHoldFor) / PASS_FULL_HOLD);
+        if (act.startDown) {
+          kind = "saucer";
+          sauce = sauceCharge01(act.startHoldFor);
+          wind = "Saucer";
+        } else {
+          kind = "pass";
+          wind = "Pass";
+        }
+      } else if (carrier && act.startDown && !passChargeCancel) {
+        sauce = sauceCharge01(act.startHoldFor);
+        wind = "Saucer";
+      }
+      if (
+        ui.charge !== charge ||
+        ui.chargeKind !== kind ||
+        ui.sauce !== sauce ||
+        ui.chargeWind !== wind ||
+        ui.chargeMark !== null
+      ) {
+        ui.setCharge(charge, kind, sauce, wind, null);
+      }
     }
     if (world.whistle === "crowd") stepCrowdPuck(dt);
     stepRef(dt);
@@ -17561,7 +18116,7 @@ function stepPlay(dt: number, act: Actions): void {
       ) {
         withChargedPass(act.aHoldFor, act.startDown, act.startHoldFor, () => {
           doGoalieOutlet(user, aim.mx, aim.my, act.startDown);
-        });
+        }, true);
       }
       if ((act.xTap || act.xHoldRel) && world.time - world.lastShoot > 0.25) {
         doShot(user, act.moveX, act.moveY, act.xHoldRel, world.shotWindupT);
@@ -17660,8 +18215,8 @@ function stepPlay(dt: number, act: Actions): void {
     ) {
       const aim = shotAim(act);
       withChargedPass(act.aHoldFor, act.startDown, act.startHoldFor, () => {
-        doGoalieOutlet(g, aim.mx, aim.my, act.startDown);
-      });
+        doGoalieOutlet(g, aim.mx, aim.my, act.startDown, true);
+      }, true);
     } else if (
       goalieHas &&
       g &&
@@ -17670,7 +18225,7 @@ function stepPlay(dt: number, act: Actions): void {
     ) {
       const aim = shotAim(act);
       doShot(g, aim.mx, aim.my, act.xHoldRel, world.shotWindupT);
-    } else if (aReady && act.aEdge && !goalieHas && !userPassInFlight()) {
+    } else if (aReady && act.aEdge && !goalieHas) {
       changePlayer();
     }
     const shotArm = xGo;
@@ -17693,13 +18248,29 @@ function stepPlay(dt: number, act: Actions): void {
     }
     finishSkillStickHit(user, yHit);
     // Wings dives on RB. Classic and Skill Stick stay on RT, so Skill Stick RB can poke.
-    // A skater without the puck can start a dive through stun, a hit, a pass, or a one-timer.
+    // A skater or goalie without the puck can start a dive through stun, a hit, a pass, or a one-timer.
     // A dive already in progress is left to decay. Releasing during the lunge still drops to recovery.
+    // The goalie pose is latched from this stick, left versus right in the goalie's frame.
     const diveDown = wings ? act.rbDown : act.rtDown;
-    if (diveDown && user.kind !== "goalie" && world.puck.owner !== user.id && user.dive <= 0) {
-      user.poke = 0.52;
+    if (diveDown && world.puck.owner !== user.id && user.dive <= 0) {
+      if (user.kind !== "goalie") user.poke = 0.52;
       user.dive = 1.5;
-    } else if (user.dive > 1 && !(diveDown && user.kind !== "goalie")) {
+      if (user.kind === "goalie") {
+        let dx = 0;
+        let dz = 0;
+        if (mag > 0.12) {
+          dx = wx / mag;
+          dz = wz / mag;
+        } else {
+          const sp = Math.hypot(user.vx, user.vz);
+          if (sp > 0.2) {
+            dx = user.vx / sp;
+            dz = user.vz / sp;
+          }
+        }
+        noteGoalieDiveSide(user, dx, dz);
+      }
+    } else if (user.dive > 1 && !diveDown) {
       user.dive = 0.95;
     }
     if (!world.oneTimerArmed && user.kind !== "goalie" && !goalieHas) {
@@ -17817,18 +18388,23 @@ function stepPlay(dt: number, act: Actions): void {
   applyWingClaims(user, act, wings);
 
   const userGoalie = user.kind === "goalie";
+  const userDiving = user.dive > 0;
   const userStickIdle = mag < 0.16 && !act.xDown && !act.aDown;
-  const userLoose = userGoalie && !hasPuck && userStickIdle && goaliePlayLoose(user);
-  const userEscape = userGoalie && keepGoalieOffNet(user, userStickIdle && !hasPuck);
+  const userLoose = userGoalie && !hasPuck && userStickIdle && !userDiving && goaliePlayLoose(user);
+  const userEscape = userGoalie && !userDiving && keepGoalieOffNet(user, userStickIdle && !hasPuck);
   const userNet =
     userGoalie &&
     !hasPuck &&
     userStickIdle &&
+    !userDiving &&
     !userLoose &&
     (goalieLineDepth(user) > 0.05 || goalieAgainstCage(user));
   if (userGoalie && userLoose && !userEscape) goalieLooseSkate.add(user.id);
   else goalieLooseSkate.delete(user.id);
-  if (userEscape || userNet) {
+  if (userDiving) {
+    goalieCircleChase.delete(user.id);
+    integrateSkater(user, wx, wz, mag, false, dt);
+  } else if (userEscape || userNet) {
     skateGoalieBack(user, dt);
   } else if (userLoose) {
     if (puckAtGoalieCircleTop(user.side)) goalieCircleChase.add(user.id);
@@ -17926,6 +18502,30 @@ function stepPlay(dt: number, act: Actions): void {
   recordReplay();
 }
 
+/** Period countdown uses real time. Sim steps are scaled by the game-speed slider. */
+function clockDt(dt: number): number {
+  return dt / gameSpeedRate(useGame.getState().gameSpeed);
+}
+
+const SIM_STEP = 1 / 60;
+let playAcc = 0;
+
+/** One rendered frame. Game speed scales how many sim steps run, not the period clock. */
+export function stepPlayFrame(realDt: number): void {
+  const d = Math.min(realDt, 0.1);
+  playAcc += d * gameSpeedRate(useGame.getState().gameSpeed);
+  let n = 0;
+  while (playAcc >= SIM_STEP && n < 8) {
+    stepSim(SIM_STEP);
+    playAcc -= SIM_STEP;
+    n++;
+  }
+}
+
+export function resetPlayFrame(): void {
+  playAcc = 0;
+}
+
 export function stepSim(dt: number): void {
   const act = readActions();
   trackSkillStick(act);
@@ -17952,6 +18552,9 @@ export function installControlsProbe(): void {
       lx: world.replayCam.lx,
       ly: world.replayCam.ly,
       lz: world.replayCam.lz,
+      theta: world.replayCam.theta,
+      phi: world.replayCam.phi,
+      radius: world.replayCam.radius,
       px: world.puck.x,
       py: world.puck.y,
       pz: world.puck.z,

@@ -192,6 +192,94 @@ test("user goal: a CPU skater checks the referee through absorb, tumble, and rec
   }
 });
 
+test("a raging CPU skater stays checkable during and after the swing", () => {
+  sheet("game");
+  score(world.homeAttack);
+  const foe = stickRagers("away")[0];
+  assert.ok(foe);
+  const user = world.skaters[world.userId];
+  for (const s of world.skaters) {
+    if (s.id === user.id || s.id === foe.id) continue;
+    s.x = 40;
+    s.z = 18;
+    s.vx = 0;
+    s.vz = 0;
+  }
+  world.ref.x = 36;
+  world.ref.z = 8;
+  world.ref2.x = 36;
+  world.ref2.z = -8;
+  user.yaw = -Math.PI / 2;
+  user.vx = 0;
+  user.vz = 0;
+  user.hit = 0;
+  user.x = foe.x - 2.6;
+  user.z = foe.z;
+  foe.celebrate = 0;
+  foe.vx = 0;
+  foe.vz = 0;
+  foe.struck = 0;
+  foe.tumble = 0;
+  world.puck.owner = null;
+  world.camFx = 1;
+  world.camFz = 0;
+  world.camRx = 0;
+  world.camRz = 1;
+  world.lastHitTime = -10;
+  setInjectedKeys([]);
+  stepSim(DT);
+  setInjectedKeys(["KeyQ"]);
+  stepSim(DT);
+  setInjectedKeys([]);
+  assert.ok(foe.struck > 1.1, `during rage struck ${foe.struck}`);
+  const pose = inferNamedPose(foe, foe.id);
+  assert.ok(pose === "absorb" || pose === "knockout" || pose === "recover", `pose ${pose}`);
+
+  sheet("game");
+  score(world.homeAttack);
+  const later = stickRagers("away")[0];
+  assert.ok(later);
+  seconds(0.9);
+  assert.ok(later.smash > later.smashHit, `swing ${later.smash}`);
+  const u2 = world.skaters[world.userId];
+  for (const s of world.skaters) {
+    if (s.id === u2.id || s.id === later.id) continue;
+    s.x = 40;
+    s.z = 18;
+  }
+  world.ref.x = 36;
+  world.ref2.x = 36;
+  u2.x = 0;
+  u2.z = 0;
+  u2.yaw = -Math.PI / 2;
+  u2.vx = 0;
+  u2.vz = 0;
+  u2.hit = 0;
+  later.x = 2.6;
+  later.z = 0;
+  later.vx = 0;
+  later.vz = 0;
+  later.celebrate = 0;
+  later.struck = 0;
+  later.tumble = 0;
+  later.stun = 0;
+  world.puck.owner = null;
+  world.camFx = 1;
+  world.camFz = 0;
+  world.camRx = 0;
+  world.camRz = 1;
+  world.lastHitTime = -10;
+  setInjectedKeys([]);
+  stepSim(DT);
+  setInjectedKeys(["KeyQ"]);
+  stepSim(DT);
+  setInjectedKeys([]);
+  assert.ok(later.smashKind > 0);
+  assert.ok(later.struck > 1.1, `after the swing struck ${later.struck}`);
+  const after = inferNamedPose(later, later.id);
+  assert.notEqual(after, "rage");
+});
+
 test("CPU goal: home teammates rage and the user does not", () => {
   sheet("game");
   const user = world.skaters[world.userId];

@@ -6,7 +6,7 @@ import { Arena } from "./Arena";
 import { Rink } from "./Rink.tsx";
 import { PlayerMesh, PUCK_MARK_INNER, PuckMesh, RefereeMesh, USER_MARK_INNER } from "./PlayerMesh";
 import { attachInput } from "./input";
-import { installControlsProbe, replayLockKind, stepSim, world } from "./sim";
+import { installControlsProbe, periodEndLook, replayLockKind, stepPlayFrame, whistleUserLook, world } from "./sim";
 import { useGame, type CamMode } from "./store";
 import { BOARD_H, BLUE_X, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
 
@@ -71,18 +71,8 @@ function ReplayIceMark() {
 }
 
 function SimLoop() {
-  const acc = useRef(0);
   useFrame((_, dt) => {
-    const d = Math.min(dt, 0.1);
-    const rate = Math.max(0.45, Math.min(1.6, useGame.getState().gameSpeed));
-    acc.current += d * rate;
-    const step = 1 / 60;
-    let n = 0;
-    while (acc.current >= step && n < 8) {
-      stepSim(step);
-      acc.current -= step;
-      n++;
-    }
+    stepPlayFrame(dt);
   });
   return null;
 }
@@ -320,9 +310,11 @@ function seedFreestyleCam(camera: THREE.PerspectiveCamera) {
   const playing = useGame.getState().playing;
   const puck = world.puck;
   const drillCam = playing ? drillFollow() : null;
-  const px = drillCam ? drillCam.x : playing ? puck.x : 0;
-  const pz = drillCam ? drillCam.z : playing ? puck.z : 0;
-  const py = drillCam ? drillCam.y : 0.55;
+  const endCam = playing && !drillCam ? periodEndLook() : null;
+  const whistleCam = playing && !drillCam && !endCam ? whistleUserLook() : null;
+  const px = drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : playing ? puck.x : 0;
+  const pz = drillCam ? drillCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : playing ? puck.z : 0;
+  const py = drillCam ? drillCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
   camera.up.set(0, 1, 0);
   camera.position.set(px - 12, 9.2, pz + 14);
   camera.lookAt(px, py, pz);
@@ -349,9 +341,11 @@ function captureFreeCam(camera: THREE.Camera) {
   const puck = world.puck;
   const playing = useGame.getState().playing;
   const drillCam = playing ? drillFollow() : null;
-  fc.tx = drillCam ? drillCam.x : playing ? puck.x : 0;
-  fc.ty = drillCam ? drillCam.y : 0.55;
-  fc.tz = drillCam ? drillCam.z : playing ? puck.z : 0;
+  const endCam = playing && !drillCam ? periodEndLook() : null;
+  const whistleCam = playing && !drillCam && !endCam ? whistleUserLook() : null;
+  fc.tx = drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : playing ? puck.x : 0;
+  fc.ty = drillCam ? drillCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
+  fc.tz = drillCam ? drillCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : playing ? puck.z : 0;
   const dx = camera.position.x - fc.tx;
   const dy = camera.position.y - fc.ty;
   const dz = camera.position.z - fc.tz;
@@ -712,11 +706,11 @@ function CameraRig() {
       const fc = world.freeCam;
       const puck = world.puck;
       const drillCam = drillFollow();
-      const goalUser =
-        world.whistle === "goal" && world.userId >= 0 ? world.skaters[world.userId] : undefined;
-      const tx = drillCam ? drillCam.x : goalUser ? goalUser.x : puck.x;
-      const tz = drillCam ? drillCam.z : goalUser ? goalUser.z : puck.z;
-      const ty = drillCam ? drillCam.y : goalUser ? 1.05 : Math.max(0.45, puck.y);
+      const endCam = drillCam ? null : periodEndLook();
+      const whistleCam = endCam ? null : whistleUserLook();
+      const tx = drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : puck.x;
+      const tz = drillCam ? drillCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : puck.z;
+      const ty = drillCam ? drillCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : Math.max(0.45, puck.y);
       const k = 1 - Math.exp(-3.4 * Math.min(dt, 0.1));
       fc.tx += (tx - fc.tx) * k;
       fc.tz += (tz - fc.tz) * k;
@@ -743,12 +737,20 @@ function CameraRig() {
     const puck = world.puck;
     const idle = !playing || pausedNow;
     const drillCam = drillFollow();
-    const scoring =
-      !idle && world.whistle === "goal" && (world.goalSide === "home" || world.goalSide === "away");
-    const controlled = scoring && world.userId >= 0 ? world.skaters[world.userId] : undefined;
+    const endCam = !idle && !drillCam ? periodEndLook() : null;
+    const whistleCam = !idle && !endCam ? whistleUserLook() : null;
+    const controlled = endCam || whistleCam ? world.skaters[world.userId] : undefined;
     const px = idle ? 0 : drillCam ? drillCam.x : controlled ? controlled.x : puck.x;
     const pz = idle ? 0 : drillCam ? drillCam.z : controlled ? controlled.z : puck.z;
-    const py = idle ? 0.45 : drillCam ? drillCam.y : controlled ? 1.05 : Math.max(0.35, puck.y);
+    const py = idle
+      ? 0.45
+      : drillCam
+        ? drillCam.y
+        : endCam
+          ? endCam.y
+          : whistleCam
+            ? whistleCam.y
+            : Math.max(0.35, puck.y);
     if (periodSnap) seenPeriod.current = world.periodView;
     const switched = prevMode.current !== mode || fromTitle || drillSnap || periodSnap;
     prevMode.current = mode;
@@ -782,7 +784,9 @@ function CameraRig() {
       const zLimit = RINK_W / 2 - 4.8;
       const fzCam = Math.max(-zLimit, Math.min(zLimit, fzP));
       const lookX =
-        fxP + atk * (1.15 - zoom * 3.4) + (!drillCam && puck.vx * atk > 0.8 ? atk * lead * 0.3 : 0);
+        fxP +
+        atk * (1.15 - zoom * 3.4) +
+        (!drillCam && !endCam && !whistleCam && puck.vx * atk > 0.8 ? atk * lead * 0.3 : 0);
       _desired.set(camX, camY, fzCam);
       _look.set(lookX, fyP + 0.16 + zoom * 0.18, fzCam);
       state.camera.up.set(atk, 0, 0);
@@ -799,12 +803,12 @@ function CameraRig() {
     } else {
       let fx = _chaseFwd.x;
       let fz = _chaseFwd.z;
-      if (holder) {
-        fx = -Math.sin(holder.yaw);
-        fz = -Math.cos(holder.yaw);
-      } else if (skater) {
+      if (skater && (endCam || whistleCam || !holder)) {
         fx = -Math.sin(skater.yaw);
         fz = -Math.cos(skater.yaw);
+      } else if (holder) {
+        fx = -Math.sin(holder.yaw);
+        fz = -Math.cos(holder.yaw);
       } else {
         const spd = Math.hypot(puck.vx, puck.vz);
         if (spd > 0.55) {
@@ -830,7 +834,7 @@ function CameraRig() {
     let zoneFov: number | null = null;
     let zoneUrgent = false;
     const zoneRecv =
-      !drillCam && !scoring && (mode === "classic" || mode === "chase") ? ourZonePassReceiver() : null;
+      !drillCam && !endCam && !whistleCam && (mode === "classic" || mode === "chase") ? ourZonePassReceiver() : null;
     if (zoneRecv && cam.aspect > 0.2) {
       const puckY = Math.max(0.12, py);
       const fitFov =
@@ -932,13 +936,15 @@ function FreestyleControls() {
       return;
     }
     c.enabled = true;
-    c.enableDamping = true;
+    c.enableDamping = false;
     if (playing) {
       const drillCam = drillFollow();
+      const endCam = drillCam ? null : periodEndLook();
+      const whistleCam = endCam ? null : whistleUserLook();
       const p = world.puck;
-      const tx = drillCam ? drillCam.x : p.x;
-      const tz = drillCam ? drillCam.z : p.z;
-      const ty = drillCam ? drillCam.y : Math.max(0.45, p.y);
+      const tx = drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : p.x;
+      const tz = drillCam ? drillCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : p.z;
+      const ty = drillCam ? drillCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : Math.max(0.45, p.y);
       const snap = drillCam !== null && world.drillView !== seenDrill.current;
       if (snap) seenDrill.current = world.drillView;
       const cut = _crowdCut;
@@ -953,17 +959,18 @@ function FreestyleControls() {
   if (!live) return null;
 
   const drillCam = drillFollow();
+  const endCam = playing && !drillCam ? periodEndLook() : null;
+  const whistleCam = playing && !drillCam && !endCam ? whistleUserLook() : null;
   const puck = world.puck;
-  const tx = !playing ? 0 : drillCam ? drillCam.x : puck.x;
-  const tz = !playing ? 0 : drillCam ? drillCam.z : puck.z;
-  const ty = !playing ? 0.55 : drillCam ? drillCam.y : 0.55;
+  const tx = !playing ? 0 : drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : puck.x;
+  const tz = !playing ? 0 : drillCam ? drillCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : puck.z;
+  const ty = !playing ? 0.55 : drillCam ? drillCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
 
   return (
     <OrbitControls
       ref={ref}
       autoRotate={false}
-      enableDamping
-      dampingFactor={0.08}
+      enableDamping={false}
       minDistance={3.2}
       maxDistance={130}
       maxPolarAngle={Math.PI / 2 - 0.08}

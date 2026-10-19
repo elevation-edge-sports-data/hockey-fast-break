@@ -125,12 +125,14 @@ function settleUser() {
   }
 }
 
-function fresh(profile) {
+function fresh(profile, mode = "practice") {
   clearPad();
   step(2);
   const ui = useGame.getState();
-  ui.setClockMode("practice");
+  ui.setClockMode(mode);
   ui.setOffsides(false);
+  ui.setIgnoreAutoFind(false);
+  ui.setPassLock(true);
   ui.setPlaying(true);
   ui.setPaused(false);
   ui.setControlProfile(profile);
@@ -233,6 +235,87 @@ test("the pass uses the right stick at release, not the press", () => {
   step(1);
   clearPad();
   assertAlong("x");
+});
+
+function homeMate() {
+  const mate = world.skaters.find(
+    (s) => s.side === "home" && s.id !== world.userId && s.kind !== "goalie",
+  );
+  assert.ok(mate);
+  return mate;
+}
+
+function releaseAt(axes, beforeRelease) {
+  clearPad();
+  setInjectedKeys(["KeyE"]);
+  step(1);
+  beforeRelease();
+  setPad(axes);
+  setInjectedKeys([]);
+  step(1);
+  clearPad();
+}
+
+test("pass lock bends an aimed pass onto a teammate in the cone", () => {
+  fresh("classic", "roller");
+  let mate;
+  releaseAt([0, 0, 1, 0], () => {
+    mate = homeMate();
+    mate.x = 6;
+    mate.z = 8;
+    mate.vx = 0;
+    mate.vz = 0;
+  });
+  const t = travel();
+  assert.ok(t.x > 0.25, `locked (${t.x.toFixed(3)}, ${t.z.toFixed(3)})`);
+  assert.equal(world.lastPassTo, mate.id);
+});
+
+test("pass lock off keeps the aimed angle", () => {
+  fresh("classic", "roller");
+  useGame.getState().setPassLock(false);
+  let mate;
+  releaseAt([0, 0, 1, 0], () => {
+    mate = homeMate();
+    mate.x = 6;
+    mate.z = 8;
+    mate.vx = 0;
+    mate.vz = 0;
+  });
+  assertAlong("z");
+  assert.equal(world.lastPassTo, mate.id);
+});
+
+test("pass lock off keeps the aim and still names the lane mate", () => {
+  fresh("classic", "roller");
+  useGame.getState().setIgnoreAutoFind(true);
+  let mate;
+  releaseAt([0, 0, 1, 0], () => {
+    mate = homeMate();
+    mate.x = 6;
+    mate.z = 8;
+    mate.vx = 0;
+    mate.vz = 0;
+  });
+  assertAlong("z");
+  assert.equal(world.lastPassTo, mate.id);
+  assert.ok(world.oneTimerUntil >= world.time);
+});
+
+test("pass lock off sends an unaimed pass along facing and still names the lane mate", () => {
+  fresh("classic", "roller");
+  useGame.getState().setIgnoreAutoFind(true);
+  let mate;
+  releaseAt([0, 0, 0, 0], () => {
+    mate = homeMate();
+    mate.x = 4;
+    mate.z = 8;
+    mate.vx = 0;
+    mate.vz = 0;
+  });
+  assertAlong("x");
+  assert.equal(world.lastPassTo, mate.id);
+  assert.ok(world.oneTimerUntil >= world.time);
 });
 
 test("skill stick pass ignores the right stick", () => {

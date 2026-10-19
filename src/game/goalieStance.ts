@@ -137,6 +137,126 @@ const PLAY_HAND_GAP = 0.12;
  */
 export const GOALIE_STICK_LEN = 1.326;
 
+/**
+ * Paddle cross-section at the heel. This is the thick part of the shaft
+ * (the handle cylinder is only 0.028 across). The blade matches both axes
+ * and stays centered on them, so the lie turns around the middle of the blade.
+ */
+export const GOALIE_PADDLE_W = 0.1;
+export const GOALIE_PADDLE_T = 0.04;
+/** Exposed ice blade from the shaft end to the toe, along blade-local +Z. */
+export const GOALIE_BLADE_LEN = 0.39;
+/** Mesh origin. Halfway along the exposed blade, on the thickness center. */
+export const GOALIE_ICE_CENTER_Z = GOALIE_BLADE_LEN / 2;
+
+type BladeZY = { z: number; y: number };
+
+/** Quadratic with a horizontal end tangent. The start tangent is `dir`. */
+function bladeQuad(start: BladeZY, endZ: number, endY: number, dirZ: number, dirY: number, n: number): BladeZY[] {
+  const k = (endY - start.y) / dirY;
+  const ctl = { z: start.z + k * dirZ, y: endY };
+  const end = { z: Math.max(endZ, ctl.z + 0.016), y: endY };
+  const out: BladeZY[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const u = 1 - t;
+    out.push({
+      z: u * u * start.z + 2 * u * t * ctl.z + t * t * end.z,
+      y: u * u * start.y + 2 * u * t * ctl.y + t * t * end.y,
+    });
+  }
+  return out;
+}
+
+function appendBlade(out: BladeZY[], pts: BladeZY[]) {
+  for (const p of pts) {
+    const prev = out[out.length - 1];
+    if (prev && Math.hypot(p.z - prev.z, p.y - prev.y) < 1e-5) continue;
+    out.push(p);
+  }
+}
+
+/**
+ * Ice blade in the flat frame, then stored so the mesh origin is the center.
+ * Blade-local +Z runs to the toe and +Y is up. X is the paddle's wide face.
+ * The heel neck follows the shaft at the 135° lie (shaft up and back at 45°)
+ * and eases onto the ice. The top leaves that shaft before the sole does.
+ * The group origin stays the heel, so the mesh sits forward by GOALIE_ICE_CENTER_Z.
+ */
+export function makeGoalieIceGeometry(): THREE.BufferGeometry {
+  const halfT = GOALIE_PADDLE_T / 2;
+  const halfW = GOALIE_PADDLE_W / 2;
+  const toeZ = GOALIE_BLADE_LEN - halfT;
+  // Shaft from the heel toward the knob, in the flat blade frame, at 135°.
+  const axisZ = -Math.SQRT1_2;
+  const axisY = Math.SQRT1_2;
+  const outZ = -axisZ;
+  const outY = -axisY;
+  const nz = -outY;
+  const ny = outZ;
+  // Straight neck on the paddle surface, then a tangent curve onto the flat blade.
+  // The top reaches the flat edge first. The sole follows the shaft longer.
+  const bury = 0.02;
+  const edgeAt = (t: number, side: 1 | -1): BladeZY => ({
+    z: t * axisZ + side * nz * halfT,
+    y: t * axisY + side * ny * halfT,
+  });
+  const top0 = edgeAt(0, 1);
+  const sole0 = edgeAt(0, -1);
+  const top = [edgeAt(bury, 1)];
+  appendBlade(top, [top0]);
+  appendBlade(top, bladeQuad(top0, 0.05, halfT, outZ, outY, 8));
+  appendBlade(top, [{ z: toeZ, y: halfT }]);
+  const sole = [edgeAt(bury, -1)];
+  appendBlade(sole, [sole0]);
+  appendBlade(sole, bladeQuad(sole0, 0.11, -halfT, outZ, outY, 12));
+  appendBlade(sole, [{ z: toeZ, y: -halfT }]);
+  const poly: BladeZY[] = [...top];
+  for (let i = 1; i < 8; i++) {
+    const a = Math.PI / 2 - (i / 8) * Math.PI;
+    poly.push({ z: toeZ + Math.cos(a) * halfT, y: Math.sin(a) * halfT });
+  }
+  for (let i = sole.length - 1; i >= 0; i--) poly.push(sole[i]!);
+  const verts: number[] = [];
+  const idx: number[] = [];
+  const add = (x: number, y: number, z: number) => {
+    const i = verts.length / 3;
+    verts.push(x, y, z - GOALIE_ICE_CENTER_Z);
+    return i;
+  };
+  const right: number[] = [];
+  const left: number[] = [];
+  for (const p of poly) {
+    right.push(add(halfW, p.y, p.z));
+    left.push(add(-halfW, p.y, p.z));
+  }
+  const faces = THREE.ShapeUtils.triangulateShape(
+    poly.map((p) => new THREE.Vector2(p.z, p.y)),
+    [],
+  );
+  const n = poly.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    idx.push(right[i]!, left[i]!, right[j]!, left[i]!, left[j]!, right[j]!);
+  }
+  for (const [a, b, c] of faces) {
+    idx.push(right[a]!, right[c]!, right[b]!);
+    idx.push(left[a]!, left[b]!, left[c]!);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+export const goalieIceGeo = makeGoalieIceGeometry();
+
+/** Ice mesh origin on the blade center. The group origin stays the heel. */
+export function placeGoalieIceMesh(ice: THREE.Object3D): void {
+  ice.position.set(0, 0, GOALIE_ICE_CENTER_Z);
+}
+
 /** Grip-frame layout. Stick local +Y runs from the heel, through the grip, to the knob. */
 export function layoutGoalieStick(shaft: THREE.Object3D, knob: THREE.Object3D, blade: THREE.Object3D): void {
   const len = GOALIE_STICK_LEN;
@@ -397,7 +517,7 @@ export const GOALIE_CORNER_Y1 = 1.4;
 export const GOALIE_CORNER_LAT0 = 0.76;
 export const GOALIE_CORNER_LAT1 = 1.06;
 
-/** Ice-blade center leads the stick-pad face. The heel sits 0.13 behind that. */
+/** Ice-blade center leads the stick-pad face. The heel sits GOALIE_ICE_CENTER_Z behind that. */
 export const GOALIE_BUTTERFLY_BLADE_LEAD = 0.26;
 
 /** Raised blocker or glove, not the pads. `towardBlocker` > 0 is the stick side. */
@@ -1101,7 +1221,7 @@ function playStickLow(stick: THREE.Object3D): number {
 
 /**
  * Aim the stick from the blocker anchor toward a heel on the ice.
- * Stick local +Y runs back up the shaft. The ice mesh sits 0.13 ahead of the heel.
+ * Stick local +Y runs back up the shaft. The ice mesh origin is the blade center.
  * The shaft stays GOALIE_STICK_LEN; the heel is not pulled out to the aim point.
  * Returns that length, or 0 when the anchor and the heel are the same point.
  */
@@ -1178,7 +1298,7 @@ function plantPlayStick(
   stick.updateWorldMatrix(true, false);
   stick.getWorldQuaternion(_q);
   blade.quaternion.copy(_q.invert()).multiply(_rootQ);
-  ice.position.set(0, 0.016 - (heelY - (PLAY_ICE_Y + 0.002)), 0.13);
+  placeGoalieIceMesh(ice);
   return GOALIE_STICK_LEN;
 }
 
@@ -1309,8 +1429,8 @@ export function poseGoaliePlay(
   const score = (top: PlayTop, along: number, side: number) => {
     if (!playBlockerReaches(top)) return;
     posePlayBlocker(body, l, lf, top, boardAxis, fx, fy, fz);
-    const heelX = ox + fx * (along - 0.13) + cx * side;
-    const heelZ = oz + fz * (along - 0.13) + cz * side;
+    const heelX = ox + fx * (along - GOALIE_ICE_CENTER_Z) + cx * side;
+    const heelZ = oz + fz * (along - GOALIE_ICE_CENTER_Z) + cz * side;
     if (plantPlayStick(stick, heelX, PLAY_ICE_Y, heelZ, cx, cy, cz, fx, fy, fz) < 0.2) return;
     const gap = gloveOnPlayShaft(body, stick, _playBot);
     if (gap < 0) return;
@@ -1342,8 +1462,8 @@ export function poseGoaliePlay(
   posePlayBlocker(body, l, lf, winTop, boardAxis, fx, fy, fz);
   let heelY = PLAY_ICE_Y;
   const heelAt = (y: number) => {
-    const heelX = ox + fx * (winFwd - 0.13) + cx * winLat;
-    const heelZ = oz + fz * (winFwd - 0.13) + cz * winLat;
+    const heelX = ox + fx * (winFwd - GOALIE_ICE_CENTER_Z) + cx * winLat;
+    const heelZ = oz + fz * (winFwd - GOALIE_ICE_CENTER_Z) + cz * winLat;
     return plantPlayStick(stick, heelX, y, heelZ, cx, cy, cz, fx, fy, fz);
   };
   if (heelAt(heelY) >= 0.2) {

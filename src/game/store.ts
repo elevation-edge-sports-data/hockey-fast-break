@@ -131,6 +131,13 @@ type GameUi = {
   checkRefs: boolean;
   checkGoalies: boolean;
   lineBrawl: boolean;
+  /**
+   * Old Ignore Auto-Find. True skips teammate search.
+   * The pause button shows the opposite and is labeled Pass Lock.
+   */
+  ignoreAutoFind: boolean;
+  /** Aimed passes snap onto a teammate in the cone. The pause button is Snap Pass. */
+  passLock: boolean;
   offsides: boolean;
   gameSpeed: number;
   cpuOffense: number;
@@ -191,6 +198,8 @@ type GameUi = {
   setCheckRefs: (v: boolean) => void;
   setCheckGoalies: (v: boolean) => void;
   setLineBrawl: (v: boolean) => void;
+  setIgnoreAutoFind: (v: boolean) => void;
+  setPassLock: (v: boolean) => void;
   setOffsides: (v: boolean) => void;
   setGameSpeed: (n: number) => void;
   setCpuOffense: (n: number) => void;
@@ -332,6 +341,14 @@ export function gameClockScale(minutes: number): number {
   return GAME_CLOCK_DISPLAY_MINUTES / clampGameMinutes(minutes);
 }
 
+/**
+ * Sim steps per real second, relative to 60 Hz.
+ * World multiplies the frame delta by this. The period clock divides it back out.
+ */
+export function gameSpeedRate(speed: number): number {
+  return Math.max(0.45, Math.min(1.6, Number.isFinite(speed) ? speed : 1));
+}
+
 /** A 1-minute roller period runs the 18:00 clock at 18×. A 3-minute period runs it at 6×. */
 export function rollerClockScale(minutes: number): number {
   return ROLLER_CLOCK_DISPLAY_MINUTES / clampRollerMinutes(minutes);
@@ -349,8 +366,8 @@ export function periodOrdinal(period: number): string {
 
 export function periodEndCopy(period: number, homeScore: number, awayScore: number): { title: string; score: string } {
   return {
-    title: `end ${periodOrdinal(period)}`,
-    score: `You ${homeScore} - ${awayScore} CPU`,
+    title: `END ${periodOrdinal(period).toUpperCase()}`,
+    score: `YOU ${homeScore}-${awayScore} CPU`,
   };
 }
 
@@ -499,6 +516,8 @@ export const useGame = create<GameUi>((set, get) => ({
   checkRefs: loadFlag("hfb-check-refs", true),
   checkGoalies: loadFlag("hfb-check-goalies", true),
   lineBrawl: loadFlag("hfb-line-brawl", false),
+  ignoreAutoFind: loadFlag("hfb-ignore-auto-find", false),
+  passLock: loadFlag("hfb-pass-lock", true),
   offsides: INITIAL_MODE === "game",
   gameSpeed: 1,
   cpuOffense: 1,
@@ -646,6 +665,14 @@ export const useGame = create<GameUi>((set, get) => ({
   setLineBrawl: (v) => {
     saveFlag("hfb-line-brawl", v);
     set({ lineBrawl: v });
+  },
+  setIgnoreAutoFind: (v) => {
+    saveFlag("hfb-ignore-auto-find", v);
+    set({ ignoreAutoFind: v });
+  },
+  setPassLock: (v) => {
+    saveFlag("hfb-pass-lock", v);
+    set({ passLock: v });
   },
   setOffsides: (v) => {
     saveFlag("hfb-offsides", v);

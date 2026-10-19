@@ -6,7 +6,19 @@ export type UniformKit = {
   yoke: string;
   sleeves: string;
   pants: string;
+  /** Sock bands, and the pants stripe when pantStripe is omitted. */
   stripe: string;
+  /** Side and thigh stripe. Omitted kits use stripe. */
+  pantStripe?: string;
+  /** Upper sock band. Omitted kits use stripe. */
+  sockBand?: string;
+  /** Lower sock band. Omitted kits use stripe. */
+  sockBandLow?: string;
+  /**
+   * Sleeve stripes in the kit 2 layout (band plus sides, front, and back).
+   * Kit 2 itself still paints that layout with the pants color.
+   */
+  armStripe?: string;
   socks: string;
   gloves: string;
   skates: string;
@@ -41,6 +53,7 @@ export const UNIFORMS: UniformKit[] = [
     sleeves: AVS_BLUE,
     pants: AVS_BLUE,
     stripe: AVS_BLUE,
+    pantStripe: AVS_BURGUNDY,
     socks: AVS_BURGUNDY,
     gloves: AVS_BLUE,
     skates: "#0d0f12",
@@ -61,6 +74,7 @@ export const UNIFORMS: UniformKit[] = [
     sleeves: "#c49a3e",
     pants: "#3e4c56",
     stripe: "#111111",
+    pantStripe: "#c49a3e",
     socks: "#c49a3e",
     gloves: "#3e4c56",
     skates: "#2a3238",
@@ -81,6 +95,7 @@ export const UNIFORMS: UniformKit[] = [
     sleeves: "#00b85c",
     pants: "#3a3a3a",
     stripe: "#111111",
+    pantStripe: "#00b85c",
     socks: "#1ae070",
     gloves: "#3a3a3a",
     skates: "#2a2a2a",
@@ -115,6 +130,51 @@ export const UNIFORMS: UniformKit[] = [
   {
     id: 4,
     helmet: "#3a3a3a",
+    visor: "#2c2c2c",
+    jersey: "#ce1126",
+    yoke: "#ffffff",
+    sleeves: "#ce1126",
+    pants: "#3a3a3a",
+    stripe: "#ce1126",
+    sockBand: "#111111",
+    sockBandLow: "#111111",
+    socks: "#ce1126",
+    gloves: "#3a3a3a",
+    skates: "#2a2a2a",
+    number: "#ffffff",
+    numberOutline: "#111111",
+    stick: "#1a1c1f",
+    tape: "#f4f1ea",
+    ribbon: "#ce1126",
+    crowdPri: "#ce1126",
+    crowdSec: "#3a3a3a",
+  },
+  {
+    id: 5,
+    helmet: "#a2aaad",
+    visor: "#6e7680",
+    jersey: "#3a3a3a",
+    yoke: "#3a3a3a",
+    sleeves: "#3a3a3a",
+    pants: "#3a3a3a",
+    stripe: "#a2aaad",
+    sockBand: "#111111",
+    sockBandLow: "#111111",
+    armStripe: "#a2aaad",
+    socks: "#a2aaad",
+    gloves: "#3a3a3a",
+    skates: "#2a2a2a",
+    number: "#ffffff",
+    numberOutline: "#111111",
+    stick: "#1a1c1f",
+    tape: "#f4f1ea",
+    ribbon: "#a2aaad",
+    crowdPri: "#3a3a3a",
+    crowdSec: "#a2aaad",
+  },
+  {
+    id: 6,
+    helmet: "#3a3a3a",
     visor: "#3a2218",
     jersey: "#ff5c14",
     yoke: "#3a3a3a",
@@ -133,7 +193,7 @@ export const UNIFORMS: UniformKit[] = [
     crowdSec: "#111111",
   },
   {
-    id: 5,
+    id: 7,
     helmet: "#1a58d4",
     visor: "#163868",
     jersey: "#ffffff",
@@ -153,7 +213,7 @@ export const UNIFORMS: UniformKit[] = [
     crowdSec: "#0033a1",
   },
   {
-    id: 6,
+    id: 8,
     helmet: "#2a6e5c",
     visor: "#1a4038",
     jersey: "#f6eedc",
@@ -173,7 +233,7 @@ export const UNIFORMS: UniformKit[] = [
     crowdSec: "#173f35",
   },
   {
-    id: 7,
+    id: 9,
     helmet: "#ce1126",
     visor: "#4a1822",
     jersey: "#ffffff",

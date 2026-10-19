@@ -47,19 +47,17 @@ const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const { resetWorld, stepSim, world, defendDir, faceYaw } = sim;
 const { inferNamedPose } = poses;
 const { useGame } = store;
-const { FACEOFF_EZ_X, FACEOFF_NZ_X, FACEOFF_R, FACEOFF_SPOT_Z } = rink;
+const { FACEOFF_EZ_X, FACEOFF_NZ_X, FACEOFF_R, FACEOFF_SPOT_Z, GOAL_LINE_X } = rink;
 const { setInjectedKeys } = input;
 
-function drop({ lineup, attack, face } = {}) {
+function drop({ lineup, home, away, attack, face } = {}) {
   setInjectedKeys([]);
   const ui = useGame.getState();
   ui.setClockMode("game");
   ui.setPlaying(true);
   ui.setPaused(false);
-  if (lineup) {
-    ui.setHomeLineup(lineup);
-    ui.setAwayLineup(lineup);
-  }
+  if (lineup || home) ui.setHomeLineup(home ?? lineup);
+  if (lineup || away) ui.setAwayLineup(away ?? lineup);
   resetWorld();
   if (attack || face) {
     if (attack) world.homeAttack = attack;
@@ -304,4 +302,134 @@ test("centers still separate when the user skates through the dot", () => {
   }
   setInjectedKeys([]);
   assert.ok(minLive >= 1.5, `skated centers closed to ${minLive.toFixed(3)} m`);
+});
+
+function assertOffTheDot(s, label) {
+  const onDot =
+    Math.abs(Math.abs(s.x - world.faceX) - 0.393) < 0.05 && Math.abs(s.z - world.faceZ) < 0.05;
+  assert.equal(onDot, false, `${label} is on the faceoff spot`);
+  assert.ok(Math.hypot(s.x - world.faceX, s.z - world.faceZ) > 1.2, `${label} is inside the draw`);
+}
+
+function assertGoalieCrease(side) {
+  const g = world.skaters.find((s) => s.side === side && s.kind === "goalie");
+  assert.ok(g, `${side} goalie`);
+  const mouth = defendDir(side) * GOAL_LINE_X;
+  const fromLine = (g.x - mouth) * -defendDir(side);
+  assert.ok(fromLine > 0.4 && fromLine < 1.6, `${side} crease depth ${fromLine.toFixed(3)}`);
+  assert.ok(Math.abs(g.z) < 0.35, `${side} goalie z ${g.z.toFixed(3)}`);
+  assertOffTheDot(g, `${side} goalie`);
+  assert.notEqual(side === "home" ? world.homeDot : world.awayDot, g.id);
+}
+
+function assertNoForwardDefense(side) {
+  const sign = defendDir(side);
+  const ds = world.skaters.filter((s) => s.side === side && s.kind === "defense");
+  assert.ok(ds.length > 0, `${side} has a defender`);
+  assert.equal(side === "home" ? world.homeDot : world.awayDot, -1, `${side} has no dot taker`);
+  for (const s of ds) {
+    const want = world.faceX + sign * (FACEOFF_R + 1.05);
+    assert.ok(Math.abs(s.x - want) < 1e-6, `${side} D x ${s.x} want ${want}`);
+    assert.equal(s.yaw, faceYaw(side));
+    assertOffTheDot(s, `${side} D ${s.id}`);
+  }
+}
+
+test("a team with no forwards leaves defenders and the goalie off the dot", () => {
+  drop({ lineup: { g: 1, d: 2, o: 0 } });
+  assert.equal(world.homeDot, -1);
+  assert.equal(world.awayDot, -1);
+  assert.equal(world.skaters[world.userId].kind, "defense");
+  assertNoForwardDefense("home");
+  assertNoForwardDefense("away");
+  assertGoalieCrease("home");
+  assertGoalieCrease("away");
+  assert.equal(world.puck.x, world.faceX);
+  assert.equal(world.puck.z, world.faceZ);
+
+  for (let i = 0; i < 20; i++) stepSim(1 / 60);
+  assert.equal(world.faceoff, true);
+  assert.notEqual(world.faceoffPhase, "live");
+  for (const s of world.skaters) {
+    if (s.kind === "goalie") assertGoalieCrease(s.side);
+    else assertOffTheDot(s, `${s.side} ${s.kind}`);
+  }
+
+  drop({ lineup: { g: 0, d: 2, o: 0 }, face: { x: FACEOFF_EZ_X, z: FACEOFF_SPOT_Z } });
+  assert.equal(world.faceX, FACEOFF_EZ_X);
+  assert.equal(world.faceZ, FACEOFF_SPOT_Z);
+  assertNoForwardDefense("home");
+  assertNoForwardDefense("away");
+  assert.equal(world.skaters.some((s) => s.kind === "goalie"), false);
+});
+
+test("one side with no forwards does not lend a defender to the dot", () => {
+  drop({ home: { g: 1, d: 2, o: 3 }, away: { g: 1, d: 2, o: 0 } });
+  const home = world.skaters.find((s) => s.id === world.homeDot);
+  assert.ok(home);
+  assert.equal(home.kind, "winger");
+  assert.ok(Math.abs(Math.abs(home.x - world.faceX) - 0.393) < 1e-9);
+  assert.equal(world.awayDot, -1);
+  assertNoForwardDefense("away");
+  assertGoalieCrease("away");
+  assertDefenseParked();
+
+  drop({ home: { g: 1, d: 0, o: 0 }, away: { g: 1, d: 2, o: 1 } });
+  assert.equal(world.homeDot, -1);
+  assert.equal(world.userId, world.skaters.find((s) => s.side === "home" && s.kind === "goalie").id);
+  assertGoalieCrease("home");
+  const away = world.skaters.find((s) => s.id === world.awayDot);
+  assert.equal(away.kind, "winger");
+  assert.ok(Math.abs(Math.abs(away.x - world.faceX) - 0.393) < 1e-9);
+});
+
+function stepToDrop(max = 90) {
+  for (let i = 0; i < max && world.faceoff && world.faceoffPhase !== "live"; i++) stepSim(1 / 60);
+}
+
+test("the only player on the dot takes the puck", () => {
+  drop({ home: { g: 1, d: 2, o: 1 }, away: { g: 1, d: 2, o: 0 } });
+  const taker = world.skaters.find((s) => s.id === world.homeDot);
+  assert.equal(taker.kind, "winger");
+  const awayIds = new Set(world.skaters.filter((s) => s.side === "away").map((s) => s.id));
+  stepToDrop();
+  assert.equal(world.faceoff, false);
+  assert.equal(world.puck.owner, taker.id);
+  for (let i = 0; i < 20; i++) {
+    stepSim(1 / 60);
+    assert.equal(awayIds.has(world.puck.owner), false, "away was given the puck");
+    assert.equal(world.puck.owner, taker.id);
+  }
+
+  drop({ home: { g: 1, d: 2, o: 0 }, away: { g: 1, d: 2, o: 1 } });
+  const awayTaker = world.skaters.find((s) => s.id === world.awayDot);
+  assert.equal(awayTaker.kind, "winger");
+  const homeIds = new Set(world.skaters.filter((s) => s.side === "home").map((s) => s.id));
+  stepToDrop();
+  assert.equal(world.faceoff, false);
+  assert.equal(world.puck.owner, awayTaker.id);
+  for (let i = 0; i < 20; i++) {
+    stepSim(1 / 60);
+    assert.equal(homeIds.has(world.puck.owner), false, "home was given the puck");
+  }
+
+  drop({ lineup: { g: 1, d: 2, o: 0 } });
+  let owned = false;
+  for (let i = 0; i < 120 && world.faceoff; i++) {
+    stepSim(1 / 60);
+    if (world.puck.owner !== null) owned = true;
+  }
+  assert.equal(world.faceoff, false);
+  assert.equal(owned, false);
+  assert.equal(world.puck.owner, null);
+
+  drop({ lineup: { g: 1, d: 2, o: 3 } });
+  const awayDot = world.skaters.find((s) => s.id === world.awayDot);
+  stepToDrop();
+  assert.equal(world.faceoff, true);
+  assert.equal(world.faceoffPhase, "live");
+  assert.equal(world.puck.owner, null);
+  for (let i = 0; i < 40 && world.faceoff; i++) stepSim(1 / 60);
+  assert.equal(world.faceoff, false);
+  assert.equal(world.puck.owner, awayDot.id);
 });

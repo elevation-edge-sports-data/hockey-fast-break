@@ -1,7 +1,7 @@
 /**
  * Headless Skill Stick: right-stick gestures, left-stick aim, plant deadzone,
- * and the X fallback. Shot plant is Skill Stick only. Classic and Wings stay
- * on their own shot paths.
+ * and the X fallback. A shot windup keeps 50% speed on Classic and Wings
+ * and 20% on Skill Stick.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -300,13 +300,13 @@ test("a side hold does not shoot, and a resting stick does not plant", () => {
   setInjectedAim(0.9, 0);
   step(20);
   const planted = Math.hypot(user().vx, user().vz);
-  assert.ok(planted < 0.5, `plant ${planted}`);
+  assert.ok(planted < still * 0.32 && planted > still * 0.12, `plant ${planted} from ${still}`);
   assert.equal(world.puck.owner, user().id);
   assert.equal(world.lastShoot, -10);
   assert.equal(user().deke, 0);
 });
 
-test("shot plant is skill stick only", () => {
+test("shot plant keeps half speed on classic and wings, and a fifth on skill stick", () => {
   for (const profile of ["classic", "wings"]) {
     fresh(profile);
     setInjectedKeys(["KeyW"]);
@@ -316,7 +316,8 @@ test("shot plant is skill stick only", () => {
     setInjectedKeys(["KeyW", "KeyF"]);
     step(20);
     const moving = Math.hypot(user().vx, user().vz);
-    assert.ok(moving > coast * 0.5, `${profile} still skates ${moving} from ${coast}`);
+    const ratio = moving / coast;
+    assert.ok(ratio > 0.4 && ratio < 0.65, `${profile} plant ${moving} from ${coast}`);
     assert.equal(world.puck.owner, user().id);
     assert.equal(world.lastShoot, -10);
   }
@@ -329,7 +330,8 @@ test("shot plant is skill stick only", () => {
   setInjectedKeys(["KeyW", "KeyF"]);
   step(20);
   const planted = Math.hypot(user().vx, user().vz);
-  assert.ok(planted < 0.5, `stick plant ${planted}`);
+  const ratio = planted / coast;
+  assert.ok(ratio > 0.14 && ratio < 0.3, `stick plant ${planted} from ${coast}`);
   assert.equal(world.puck.owner, user().id);
   assert.equal(world.lastShoot, -10);
 });

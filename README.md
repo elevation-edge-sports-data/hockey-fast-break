@@ -70,7 +70,7 @@ Replay (from pause, last 30 seconds): A play/pause, X / B zoom, stick pan, hold 
 
 ## What you can change
 
-Pick home and away uniforms from eight kits. Home starts in burgundy and blue.
+Pick home and away uniforms from ten kits. Home starts in burgundy and blue.
 
 Light or dark rink. Check goalies, check refs. Line brawl: hit a player without the puck into the benches and a line brawl starts. Offsides. Power play (players come back from the box). Chaos (higher on-ice cap, more bodies after a goal). Game speed. Lineup counts and six sliders for user / CPU offense, defense, and goalie.
 

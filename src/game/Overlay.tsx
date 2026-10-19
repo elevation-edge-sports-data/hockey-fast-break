@@ -9,6 +9,8 @@ import {
   pauseGame,
   beginPauseReplay,
   stopPauseReplay,
+  orbitReplayPointer,
+  zoomReplayPointer,
   replayHasFootage,
   replayFootagePct,
   subscribeReplayPct,
@@ -307,7 +309,7 @@ const periodEndBanner = {
   gap: "0.85em",
   width: "max-content",
   maxWidth: "94vw",
-  textTransform: "none" as const,
+  textTransform: "uppercase" as const,
   whiteSpace: "nowrap" as const,
   fontSize: "clamp(1.2rem, 5vw, 2.2rem)",
 };
@@ -609,6 +611,10 @@ function MainMenus() {
   const setCheckGoalies = useGame((s) => s.setCheckGoalies);
   const lineBrawl = useGame((s) => s.lineBrawl);
   const setLineBrawl = useGame((s) => s.setLineBrawl);
+  const ignoreAutoFind = useGame((s) => s.ignoreAutoFind);
+  const setIgnoreAutoFind = useGame((s) => s.setIgnoreAutoFind);
+  const passLock = useGame((s) => s.passLock);
+  const setPassLock = useGame((s) => s.setPassLock);
   const camMode = useGame((s) => s.camMode);
   const setCamMode = useGame((s) => s.setCamMode);
   const arenaLook = useGame((s) => s.arenaLook);
@@ -741,6 +747,24 @@ function MainMenus() {
               >
                 Line Brawl
               </button>
+              <button
+                type="button"
+                className={!ignoreAutoFind ? "is-on" : ""}
+                title="On sends the pass toward a teammate. Off aims where you point and does not pick one."
+                aria-pressed={!ignoreAutoFind}
+                onClick={() => setIgnoreAutoFind(!ignoreAutoFind)}
+              >
+                Pass Lock
+              </button>
+              <button
+                type="button"
+                className={passLock ? "is-on" : ""}
+                title="Snap a pass onto a teammate near your aim. Off keeps that exact angle."
+                aria-pressed={passLock}
+                onClick={() => setPassLock(!passLock)}
+              >
+                Pass Snap
+              </button>
             </>
           ) : null}
           {menu === "camera" ? (
@@ -825,8 +849,8 @@ function ControlsHelp() {
           <dt>With puck</dt>
           <dd>
             {stick
-              ? "A tap 60 mph, hold 1.5s 90 mph, Start saucer · right stick snap, wrist, backhand, slap · X tap wrist / hold slap · B cancel · Y deke · left stick aims"
-              : "A tap 60 mph, hold 1.5s 90 mph, Start saucer · X wrist / hold slap · B cancel slap · Y deke"}
+              ? "A tap 55 mph, hold 1.5s 95 mph, Start saucer · right stick snap, wrist, backhand, slap · X tap wrist / hold slap · B cancel · Y deke · left stick aims"
+              : "A tap 55 mph, hold 1.5s 95 mph, Start saucer · X wrist / hold slap · B cancel slap · Y deke"}
           </dd>
         </div>
         <div>
@@ -930,10 +954,9 @@ function OffscreenArrow({ kind }: { kind: "user" | "puck" }) {
 
 function PauseOrbit() {
   const paused = useGame((s) => s.paused);
-  const replay = useGame((s) => s.replay);
   const dragging = useRef(false);
   const last = useRef({ x: 0, y: 0 });
-  if (!paused || replay) return null;
+  if (!paused) return null;
   return (
     <div
       className="pause-orbit"
@@ -946,7 +969,7 @@ function PauseOrbit() {
       }}
       onPointerMove={(e) => {
         if (!dragging.current) return;
-        if (e.pointerType === "mouse" && (e.buttons & 1) === 0) {
+        if ((e.buttons & 1) === 0) {
           dragging.current = false;
           return;
         }
@@ -955,9 +978,13 @@ function PauseOrbit() {
         const dy = e.clientY - last.current.y;
         last.current = { x: e.clientX, y: e.clientY };
         if (dx === 0 && dy === 0) return;
+        if (world.replay && world.replayKind === "pause") {
+          orbitReplayPointer(dx, dy);
+          return;
+        }
         const fc = world.freeCam;
         fc.theta -= dx * 0.008;
-        fc.phi = Math.max(0.12, Math.min(1.45, fc.phi + dy * 0.006));
+        fc.phi = Math.max(0.12, Math.min(1.45, fc.phi - dy * 0.006));
         world.pauseDirty = true;
       }}
       onPointerUp={(e) => {
@@ -971,6 +998,10 @@ function PauseOrbit() {
         dragging.current = false;
       }}
       onWheel={(e) => {
+        if (world.replay && world.replayKind === "pause") {
+          zoomReplayPointer(e.deltaY);
+          return;
+        }
         world.freeCam.radius = Math.max(4.2, Math.min(120, world.freeCam.radius + e.deltaY * 0.02));
         world.pauseDirty = true;
       }}
@@ -981,7 +1012,6 @@ function PauseOrbit() {
 export function Overlay() {
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
-  const camMode = useGame((s) => s.camMode);
   const homeKit = useGame((s) => s.homeKit);
   const awayKit = useGame((s) => s.awayKit);
   const homeLineup = useGame((s) => s.homeLineup);
@@ -1246,8 +1276,8 @@ export function Overlay() {
             <p>
               <b>Replay</b>
               <span>
-                A pause/play · tap Y lock · stick pan · hold Y+stick orbit · X/B zoom · LB/RB slow · LT/RT
-                fast · R3 or Select exits
+                Drag to look · wheel zooms · A pause/play · tap Y lock · stick pan · hold Y+stick orbit ·
+                X/B zoom · LB/RB slow · LT/RT fast · R3 or Select exits
               </span>
             </p>
             <ReplayBar />
@@ -1262,11 +1292,6 @@ export function Overlay() {
           <div className="cam-adjust">
             <p>
               <b>Paused</b>
-              <span>
-                {pauseModeChanged
-                  ? "Drag to look · X zoom in · B zoom out · A starts the new game · Y resumes"
-                  : "Drag to look · X zoom in · B zoom out · A resumes this game"}
-              </span>
             </p>
             <div className="btn-row cam-adjust-btns">
               <button type="button" className="btn-primary" onClick={() => resumePausedGame()}>
@@ -1350,40 +1375,12 @@ export function Overlay() {
             <RotateCcw size={16} />
           </button>
         </div>
-        <p className="hint hide-sm">
-          {replay
-            ? paused
-              ? "Replay · A pause/play · tap Y cycles puck then each skater · stick pans · hold Y+stick orbits · RT keeps play · LT/LB/RB release pauses · R3 exits"
-              : "Replay · A / B / X / Y skip"
-            : CAMS.find((c) => c.id === camMode)?.blurb}
-          {replay
-            ? ""
-            : paused
-              ? pauseModeChanged
-                ? " · Drag or stick to look · X / B zoom · A starts the new game · Y resumes"
-                : " · Drag or stick to look · X / B zoom · A resumes this game"
-              : whistle === "goal"
-                ? " · A switch · B skip celebration · stick skates · Y hit"
-                : whistle === "brawl"
-                  ? " · X jab · B uppercut"
-                  : hasPuck
-                ? world.skaters[world.userId]?.kind === "goalie"
-                  ? " · A outlet pass · X dump · stick aims · hold Select / R goalie"
-                  : controlProfile === "wings"
-                    ? " · Stick aims · A pass · X shot · Y deke · B burst · G/LT left · Shift/RT right · LB skate · Select/R goalie"
-                    : controlProfile === "stick"
-                      ? " · Left stick aims · right stick snap, wrist, backhand, slap · A pass · X shot · Y deke · B burst · LB skate · Select/R goalie"
-                      : " · Stick aims · A pass · X shot · Y deke · B burst · LB skate · Select/R goalie"
-                : controlProfile === "wings"
-                  ? " · Stick skates · A switch · X poke · Y hit · B burst · G/LT left · Shift/RT right · LB skate · Select/R goalie · RB/M dive"
-                  : " · Stick skates · A switch · X poke · Y hit · B burst · RT / Shift dive · LB skate · Select/R goalie"}
-        </p>
       </footer>
 
       {replay ? (
         <div className="whistle replay-hint">
           {paused
-            ? "A pause · Y lock · stick pan · LB/RB slow · LT/RT fast · R3 exits"
+            ? "Drag · wheel · A pause · Y lock · stick pan · LB/RB slow · LT/RT fast · R3 exits"
             : "A/B/X/Y skip"}
         </div>
       ) : periodEnd ? (

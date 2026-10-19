@@ -349,3 +349,116 @@ test("a home goalie can still pass a puck held outside the zone", () => {
     stepSim(DT);
   }
 });
+
+function placeHeld(side, attack, where) {
+  const g = sheet(side, attack);
+  const spot = spots(side)[where];
+  const foe = where === "own" || where === "behind" ? parkFoe(g, where) : null;
+  pinGoalie(g, spot);
+  world.puck.owner = g.id;
+  world.puck.x = spot.x;
+  world.puck.z = spot.z;
+  world.puck.y = 0.042;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.coverT = 0;
+  world.faceoffA = false;
+  world.lastPass = -10;
+  world.lastShoot = -10;
+  g.gloveFlash = 0;
+  return { g, spot, foe, where };
+}
+
+/** Re-pin before each step so a skate during the step cannot leave the spot's zone. */
+function stepHeld(placed, frames) {
+  const { g, spot, foe, where } = placed;
+  let whistled = -1;
+  for (let i = 0; i < frames; i++) {
+    pinOthers(g, foe);
+    pinGoalie(g, spot);
+    g.gloveFlash = 0;
+    if (world.puck.owner !== g.id) {
+      return { whistled, stolen: i, coverT: world.coverT };
+    }
+    stepSim(DT);
+    if (world.whistle) {
+      whistled = i;
+      break;
+    }
+  }
+  return { whistled, stolen: -1, coverT: world.coverT, where };
+}
+
+test("no input whistles after 2 seconds, and A or X in that window adds 2 seconds", () => {
+  try {
+    const idle = placeHeld("home", 1, "own");
+    setInjectedKeys([]);
+    const tooSoon = stepHeld(idle, 100);
+    assert.equal(tooSoon.stolen, -1, "idle lost the puck");
+    assert.equal(tooSoon.whistled, -1, `idle whistled at frame ${tooSoon.whistled}`);
+    assert.ok(tooSoon.coverT < 2, `idle coverT ${tooSoon.coverT}`);
+    const idleHit = stepHeld(idle, 40);
+    const idleFrame = 100 + idleHit.whistled;
+    assert.equal(world.whistle, "cover", "idle whistle");
+    assert.ok(idleFrame >= 115 && idleFrame <= 125, `idle frame ${idleFrame}`);
+
+    for (const attack of [1, -1]) {
+      for (const keys of [["KeyJ"], ["KeyF"], ["KeyR", "KeyJ"]]) {
+        const placed = placeHeld("home", attack, "own");
+        setInjectedKeys(keys);
+        const mid = stepHeld(placed, 210);
+        const name = `home ${attack} ${keys.join("+")}`;
+        assert.equal(mid.stolen, -1, `${name} lost the puck`);
+        assert.equal(mid.whistled, -1, `${name} whistled at 3.5s on frame ${mid.whistled}`);
+        assert.ok(mid.coverT > 3, `${name} coverT ${mid.coverT}`);
+        const late = stepHeld(placed, 40);
+        const frame = 210 + late.whistled;
+        assert.equal(world.whistle, "cover", `${name} whistle ${world.whistle}`);
+        assert.equal(useGame.getState().whistle, "cover", name);
+        assert.ok(frame >= 235 && frame <= 245, `${name} whistled at frame ${frame}`);
+      }
+    }
+
+    const lateHold = placeHeld("home", 1, "own");
+    setInjectedKeys([]);
+    const waited = stepHeld(lateHold, 60);
+    assert.equal(waited.whistled, -1, "whistled before the hold");
+    setInjectedKeys(["KeyJ"]);
+    const charging = stepHeld(lateHold, 150);
+    assert.equal(charging.stolen, -1, "late hold lost the puck");
+    assert.equal(charging.whistled, -1, `late hold whistled at coverT ${charging.coverT}`);
+    const finished = stepHeld(lateHold, 40);
+    const lateFrame = 210 + finished.whistled;
+    assert.equal(world.whistle, "cover", "late hold whistle");
+    assert.ok(lateFrame >= 235 && lateFrame <= 245, `late hold frame ${lateFrame}`);
+  } finally {
+    setInjectedKeys([]);
+  }
+});
+
+test("an away goalie does not get the extra release time", () => {
+  try {
+    const placed = placeHeld("away", 1, "own");
+    setInjectedKeys(["KeyJ"]);
+    const hit = stepHeld(placed, 140);
+    assert.equal(hit.stolen, -1, `stolen on frame ${hit.stolen}`);
+    assert.equal(world.whistle, "cover", `whistle ${world.whistle}`);
+    assert.ok(hit.whistled >= 0 && hit.whistled < 130, `away whistled at frame ${hit.whistled}`);
+  } finally {
+    setInjectedKeys([]);
+  }
+});
+
+test("holding pass outside the zone does not whistle", () => {
+  try {
+    const placed = placeHeld("home", 1, "neutral");
+    setInjectedKeys(["KeyJ"]);
+    const hit = stepHeld(placed, 200);
+    assert.equal(hit.whistled, -1, `neutral whistle on frame ${hit.whistled}`);
+    assert.equal(world.whistle, null);
+    assert.ok(world.coverT < 0.05, `neutral coverT ${world.coverT}`);
+  } finally {
+    setInjectedKeys([]);
+  }
+});

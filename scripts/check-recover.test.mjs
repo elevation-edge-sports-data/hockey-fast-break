@@ -367,6 +367,26 @@ test("a celebrating CPU just after a goal is checkable from well outside the nor
   assert.equal(world.lastHitTime, -10);
 });
 
+test("an offside whistle checks a CPU skater from the post-goal reach", () => {
+  sheet();
+  const foe = placeFoe("winger");
+  world.stoppage = true;
+  world.whistle = "offside";
+  world.stoppageT = 0.4;
+  world.faceoff = false;
+  foe.x = 2.8;
+  foe.z = 0;
+  foe.vx = 0;
+  foe.vz = 0;
+  foe.stun = 0;
+  foe.struck = 0;
+  foe.tumble = 0;
+  foe.celebrate = 0;
+  foe.smashKind = 0;
+  pressY();
+  assert.ok(foe.struck > 1.1, `offside struck ${foe.struck}`);
+});
+
 test("a skater checked during knockout or recover restarts at knockout", () => {
   sheet();
   const foe = placeFoe("winger");

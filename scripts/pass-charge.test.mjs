@@ -1,5 +1,6 @@
 /**
- * User pass power follows how long A is held. A tap is 60 mph and 1.5s is 90.
+ * User pass power follows how long A is held. A skater tap is 55 mph and 1.5s is 95.
+ * A goalie tap is 45 mph and 1.5s is 85. A goalie shot tap is 55 mph and a full hold is 87.
  * Start (gamepad button 9) held at release makes that pass a saucer.
  * Sauce height is a second curve on that hold: empty at the tap, full at 1s.
  * The shot meter fills across the 1.5s windup. Slap starts at half of that, not at xHeld.
@@ -71,7 +72,7 @@ function mph() {
 
 function expectedMph(holdS) {
   const t = Math.min(1, Math.max(0, holdS / 1.5));
-  return (60 + 30 * t) * Math.exp(-0.15 * DT);
+  return (55 + 40 * t) * Math.exp(-0.2 * DT);
 }
 
 function padButton(pressed) {
@@ -190,7 +191,7 @@ function assertSpeed(holdS) {
 
 function assertHud(holdS, kind) {
   const t = Math.min(1, Math.max(0, holdS / 1.5));
-  const launch = 60 + 30 * t;
+  const launch = 55 + 40 * t;
   const ui = useGame.getState();
   assert.equal(ui.shotKind, kind);
   assert.equal(hudReleaseName(kind), kind === "saucer" ? "saucer pass" : "pass");
@@ -205,7 +206,7 @@ function assertSaucer() {
   assert.ok(world.puck.vy > 2 && world.puck.y > 0.1, `saucer y ${world.puck.y} vy ${world.puck.vy}`);
 }
 
-test("A hold sets pass speed from 60 mph to 90 mph and does not saucer", () => {
+test("A hold sets pass speed from 55 mph to 95 mph and does not saucer", () => {
   fresh();
   pressPass();
   assert.equal(world.puck.owner, user().id);
@@ -587,4 +588,60 @@ test("shot charge fills continuously and the label previews wrist then slap", ()
   assert.equal(back.chargeWind, "Backhand");
   assert.equal(back.chargeMark, null);
   assert.equal(world.puck.owner, user().id);
+});
+
+function ownGoalie() {
+  fresh();
+  const g = world.skaters.find((s) => s.kind === "goalie");
+  assert.ok(g);
+  world.userId = g.id;
+  g.x = 0;
+  g.z = 0;
+  g.vx = 0;
+  g.vz = 0;
+  g.yaw = -Math.PI / 2;
+  g.stun = 0;
+  g.windup = 0;
+  g.coverPose = 0;
+  world.coverT = 0;
+  world.puck.owner = g.id;
+  world.puck.x = g.x;
+  world.puck.z = g.z;
+  world.puck.y = 0.042;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastPass = -10;
+  world.lastShoot = -10;
+  world.shotWindupT = 0;
+  return g;
+}
+
+test("a goalie pass is 45 to 85 mph and a goalie shot is 55 to 87", () => {
+  ownGoalie();
+  pressPass();
+  releasePass();
+  assert.ok(Math.abs(useGame.getState().speed - 45) < 1, `goalie tap pass ${useGame.getState().speed}`);
+
+  ownGoalie();
+  pressPass();
+  clockMs += 1500;
+  step(1);
+  releasePass();
+  assert.ok(Math.abs(useGame.getState().speed - 85) < 1, `goalie full pass ${useGame.getState().speed}`);
+
+  ownGoalie();
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  setInjectedKeys([]);
+  step(1);
+  const tap = 55 + (87 - 55) * (1 / 60 / 1.5);
+  assert.ok(Math.abs(useGame.getState().speed - tap) < 1.5, `goalie tap shot ${useGame.getState().speed}`);
+
+  ownGoalie();
+  setInjectedKeys(["KeyF"]);
+  step(90);
+  setInjectedKeys([]);
+  step(1);
+  assert.ok(Math.abs(useGame.getState().speed - 87) < 1, `goalie full shot ${useGame.getState().speed}`);
 });
