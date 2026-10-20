@@ -137,13 +137,14 @@ function fresh(profile, mode = "practice") {
   ui.setPaused(false);
   ui.setControlProfile(profile);
   resetWorld();
+  world.homeAttack = 1;
+  resetWorld({ keepScore: true });
   world.faceoff = false;
   world.faceoffPhase = "live";
   world.faceoffA = false;
   world.stoppage = false;
   world.whistle = null;
   world.delayedOffside = 0;
-  world.homeAttack = 1;
   world.periodOver = false;
   world.replay = false;
   settleUser();

@@ -1,7 +1,7 @@
 /**
  * After a goal the scored-on side rages before the faceoff.
- * User goals: CPU skater smash, goalie rage, and a ref check.
- * CPU goals: the same from home teammates, never the user.
+ * Exactly one skater breaks a stick, or the goalie when no skater is up.
+ * A second scored-on skater can check a referee. The scoring side does not rage.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -103,14 +103,14 @@ function goalie(side) {
 }
 
 function downedRefs() {
-  return [world.ref, world.ref2].filter((r) => r.struck > 0.2 || r.tumble !== 0);
+  return [world.ref, world.ref2, world.ref3, world.ref4].filter((r) => r.struck > 0.2 || r.tumble !== 0);
 }
 
 function reactionCount(side) {
   return stickRagers(side).length + (goalie(side)?.smashKind > 0 ? 1 : 0) + downedRefs().length;
 }
 
-test("user goal: CPU smashes, goalie rages after the scoop, then the faceoff returns", () => {
+test("user goal: one CPU skater breaks a stick, and the goalie does not", () => {
   sheet("game");
   const user = world.skaters[world.userId];
   assert.equal(user.side, "home");
@@ -118,27 +118,33 @@ test("user goal: CPU smashes, goalie rages after the scoop, then the faceoff ret
   score(world.homeAttack);
   assert.equal(world.whistle, "goal");
   assert.equal(world.goalSide, "home");
-  const ragers = stickRagers("away");
-  assert.ok(ragers.length >= 1 && ragers.length <= 3);
-  for (const s of ragers) assert.ok(rageDraw(s.id));
-  assert.equal(ragers[0].smashHit, 0.7);
+  assert.equal(stickRagers("away").length, 0);
   for (const s of world.skaters) {
     if (s.side === "home") assert.equal(s.smashKind, 0);
   }
   const cpuGoalie = goalie("away");
   assert.ok(cpuGoalie);
   assert.equal(cpuGoalie.smashKind, 0);
+  seconds(0.45);
+  assert.equal(stickRagers("away").length, 0);
+  assert.equal(cpuGoalie.smashKind, 0);
+  assert.ok(cpuGoalie.coverPose > 0.3);
+  seconds(0.12);
+  const ragers = stickRagers("away");
+  assert.equal(ragers.length, 1);
+  assert.ok(rageDraw(ragers[0].id));
+  assert.equal(ragers[0].smashHit, 0.7);
   const x0 = ragers[0].x;
   const mouth = defendDir("away") * GOAL_LINE_X;
   seconds(0.45);
-  assert.equal(cpuGoalie.smashKind, 0);
-  assert.ok(cpuGoalie.coverPose > 0.3);
   const toward = Math.sign(mouth - x0) || 1;
   assert.ok((ragers[0].x - x0) * toward > 0.4, "raging skater skates toward the net");
   seconds(2.2);
-  assert.ok(cpuGoalie.smashKind > 0);
-  assert.equal(cpuGoalie.smashHit, 0.7);
-  assert.equal(inferNamedPose(cpuGoalie, cpuGoalie.id), "goalieRage");
+  assert.equal(stickRagers("away").length, 1);
+  assert.equal(cpuGoalie.smashKind, 0);
+  for (const s of world.skaters) {
+    if (s.side === "home") assert.equal(s.smashKind, 0);
+  }
   let seen = 0;
   let guard = 0;
   while (world.stoppage && guard < 400) {
@@ -149,7 +155,7 @@ test("user goal: CPU smashes, goalie rages after the scoop, then the faceoff ret
   assert.equal(world.stoppage, false);
   assert.equal(world.faceoff, true);
   assert.equal(world.whistle, null);
-  assert.ok(seen >= 2 && seen <= 4, `reactions ${seen}`);
+  assert.ok(seen >= 1 && seen <= 2, `reactions ${seen}`);
 });
 
 test("user goal: a CPU skater checks the referee through absorb, tumble, and recover", () => {
@@ -158,8 +164,13 @@ test("user goal: a CPU skater checks the referee through absorb, tumble, and rec
   Math.random = () => 0.9;
   try {
     score(world.homeAttack);
-    seconds(0.35);
-    const down = downedRefs();
+    let down = [];
+    let armGuard = 0;
+    while (down.length === 0 && armGuard < 220) {
+      stepSim(DT);
+      armGuard += 1;
+      down = downedRefs();
+    }
     assert.equal(down.length, 1);
     assert.equal(checkedCyclePose(down[0].struck, down[0].tumble), "absorb");
     const checker = world.skaters.find(
@@ -184,18 +195,31 @@ test("user goal: a CPU skater checks the referee through absorb, tumble, and rec
     }
     assert.equal(sawKnockout, true);
     assert.equal(sawRecover, true);
-    assert.ok(upAt > 0 && upAt < 1.7, `ref up at ${upAt}`);
+    assert.ok(upAt > 0 && upAt < 3.5, `ref up at ${upAt}`);
     assert.equal(world.stoppage, true);
-    assert.ok(reactions >= 3 && reactions <= 4, `reactions ${reactions}`);
+    assert.equal(stickRagers("away").length, 1);
+    assert.equal(goalie("away").smashKind, 0);
+    assert.equal(reactions, 2, `reactions ${reactions}`);
   } finally {
     Math.random = orig;
   }
 });
 
+function awaitRagers(side) {
+  let list = stickRagers(side);
+  let guard = 0;
+  while (list.length === 0 && guard < 80) {
+    stepSim(DT);
+    guard += 1;
+    list = stickRagers(side);
+  }
+  return list;
+}
+
 test("a raging CPU skater stays checkable during and after the swing", () => {
   sheet("game");
   score(world.homeAttack);
-  const foe = stickRagers("away")[0];
+  const foe = awaitRagers("away")[0];
   assert.ok(foe);
   const user = world.skaters[world.userId];
   for (const s of world.skaters) {
@@ -209,6 +233,10 @@ test("a raging CPU skater stays checkable during and after the swing", () => {
   world.ref.z = 8;
   world.ref2.x = 36;
   world.ref2.z = -8;
+  world.ref3.x = 36;
+  world.ref3.z = 4;
+  world.ref4.x = 36;
+  world.ref4.z = -4;
   user.yaw = -Math.PI / 2;
   user.vx = 0;
   user.vz = 0;
@@ -237,7 +265,7 @@ test("a raging CPU skater stays checkable during and after the swing", () => {
 
   sheet("game");
   score(world.homeAttack);
-  const later = stickRagers("away")[0];
+  const later = awaitRagers("away")[0];
   assert.ok(later);
   seconds(0.9);
   assert.ok(later.smash > later.smashHit, `swing ${later.smash}`);
@@ -249,6 +277,8 @@ test("a raging CPU skater stays checkable during and after the swing", () => {
   }
   world.ref.x = 36;
   world.ref2.x = 36;
+  world.ref3.x = 36;
+  world.ref4.x = 36;
   u2.x = 0;
   u2.z = 0;
   u2.yaw = -Math.PI / 2;
@@ -280,16 +310,16 @@ test("a raging CPU skater stays checkable during and after the swing", () => {
   assert.notEqual(after, "rage");
 });
 
-test("CPU goal: home teammates rage and the user does not", () => {
+test("CPU goal: one home teammate rages and the user does not", () => {
   sheet("game");
   const user = world.skaters[world.userId];
   score(-world.homeAttack);
   assert.equal(world.goalSide, "away");
-  assert.ok(stickRagers("home").length >= 1);
-  for (const s of stickRagers("home")) {
-    assert.notEqual(s.id, user.id);
-    assert.ok(rageDraw(s.id));
-  }
+  assert.equal(stickRagers("home").length, 0);
+  seconds(0.55);
+  assert.equal(stickRagers("home").length, 1);
+  assert.notEqual(stickRagers("home")[0].id, user.id);
+  assert.ok(rageDraw(stickRagers("home")[0].id));
   for (const s of world.skaters) {
     if (s.side === "away") assert.equal(s.smashKind, 0);
   }
@@ -303,8 +333,8 @@ test("CPU goal: home teammates rage and the user does not", () => {
   const g = goalie("home");
   assert.ok(g);
   assert.notEqual(g.id, user.id);
-  assert.ok(g.smashKind > 0 && g.smashHit > 0);
-  assert.equal(inferNamedPose(g, g.id), "goalieRage");
+  assert.equal(g.smashKind, 0);
+  assert.equal(stickRagers("home").length, 1);
   assert.equal(user.smashKind, 0);
 });
 
@@ -329,7 +359,8 @@ test("check refs off: scored-on skaters still rage and the officials stay up", (
   useGame.getState().setCheckRefs(false);
   score(world.homeAttack);
   seconds(2.4);
-  assert.ok(stickRagers("away").length >= 1);
+  assert.equal(stickRagers("away").length, 1);
+  assert.equal(goalie("away").smashKind, 0);
   assert.equal(downedRefs().length, 0);
   assert.equal(world.ref.tumble, 0);
   assert.equal(world.ref2.tumble, 0);
@@ -343,9 +374,17 @@ test("scrimmage knockdown: the other team rages without a goalie", () => {
     score(world.homeAttack);
     assert.equal(world.whistle, "goal");
     assert.equal(goalie("away"), undefined);
-    assert.ok(stickRagers("away").length >= 1);
-    seconds(0.4);
-    assert.ok(downedRefs().length >= 1);
+    assert.equal(stickRagers("away").length, 0);
+    seconds(0.55);
+    assert.equal(stickRagers("away").length, 1);
+    let knocked = false;
+    let knockGuard = 0;
+    while (!knocked && knockGuard < 180 && world.stoppage) {
+      stepSim(DT);
+      knockGuard += 1;
+      knocked = downedRefs().length >= 1;
+    }
+    assert.equal(knocked, true);
     assert.equal(checkedCyclePose(downedRefs()[0].struck, downedRefs()[0].tumble), "absorb");
     let guard = 0;
     while (world.stoppage && guard < 400) {
@@ -410,4 +449,46 @@ test("rage preview plays the break without skating, then loops", () => {
   world.poseHold = false;
   world.namedPose = null;
   world.namedPoseIndex = null;
+});
+
+test("game officials hold four board quadrants through a goal", () => {
+  sheet("game");
+  world.faceoff = false;
+  world.whistle = null;
+  world.stoppage = false;
+  seconds(1.2);
+  const refs = [world.ref, world.ref2, world.ref3, world.ref4];
+  const quads = new Set(refs.map((r) => `${Math.sign(r.x)}:${Math.sign(r.z)}`));
+  assert.equal(quads.size, 4);
+  for (const r of refs) {
+    assert.ok(Math.abs(r.z) > 9, `board z ${r.z}`);
+    assert.equal(r.pose, "idle");
+  }
+  const before = refs.map((r) => ({ x: r.x, z: r.z }));
+  score(world.homeAttack);
+  seconds(0.8);
+  const netX =
+    world.goalSide === "home" ? world.homeAttack * GOAL_LINE_X : -world.homeAttack * GOAL_LINE_X;
+  const after = new Set(refs.map((r) => `${Math.sign(r.x)}:${Math.sign(r.z)}`));
+  assert.equal(after.size, 4);
+  for (let i = 0; i < refs.length; i++) {
+    const r = refs[i];
+    assert.equal(r.pose, "goal");
+    assert.ok(Math.abs(r.z) > 9, `ref ${i} left the boards at z ${r.z}`);
+    assert.equal(Math.sign(r.x), Math.sign(before[i].x));
+    assert.equal(Math.sign(r.z), Math.sign(before[i].z));
+    assert.ok(
+      Math.abs(r.x - netX) > Math.abs(before[i].x - netX) - 0.35,
+      `ref ${i} skated toward the net ${r.x} from ${before[i].x}`,
+    );
+  }
+});
+
+test("roller keeps the extra officials off the ice", () => {
+  sheet("roller");
+  seconds(0.4);
+  assert.ok(Math.abs(world.ref.z) < 20);
+  assert.ok(Math.abs(world.ref2.z) < 20);
+  assert.ok(Math.abs(world.ref3.z) > 40);
+  assert.ok(Math.abs(world.ref4.z) > 40);
 });

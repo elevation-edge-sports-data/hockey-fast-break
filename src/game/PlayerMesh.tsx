@@ -2670,6 +2670,8 @@ function latchCheckSide(root: THREE.Object3D, s: Skater): 1 | -1 {
   }
   take(world.ref.x, world.ref.z);
   take(world.ref2.x, world.ref2.z);
+  take(world.ref3.x, world.ref3.z);
+  take(world.ref4.x, world.ref4.z);
   return lx >= 0 ? 1 : -1;
 }
 
@@ -4476,6 +4478,7 @@ export function PlayerMesh({
   });
 
   const applyRagePhase = (s: Skater, g: THREE.Group) => {
+    if (s.dive > 0.04 || checkedCyclePose(s.struck, s.tumble)) return;
     if (s.kind === "goalie") {
       if (s.smashKind <= 0 || s.smashHit <= 0 || !stick.current || !lArm.current || !rArm.current) return;
       poseGoalieRage(s, body.current, lArm.current, rArm.current, lFore.current, rFore.current, stick.current);
@@ -6362,7 +6365,7 @@ function poseRefChecked(
   return true;
 }
 
-export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
+export function RefereeMesh({ slot = 0 }: { slot?: 0 | 1 | 2 | 3 }) {
   const root = useRef<THREE.Group>(null);
   const body = useRef<THREE.Group>(null);
   const lLeg = useRef<THREE.Group>(null);
@@ -6401,7 +6404,8 @@ export function RefereeMesh({ lane = 1 }: { lane?: 1 | -1 }) {
   );
 
   useFrame(() => {
-    const r = lane >= 0 ? world.ref : world.ref2;
+    const r =
+      slot === 0 ? world.ref : slot === 1 ? world.ref2 : slot === 2 ? world.ref3 : world.ref4;
     const g = root.current;
     const b = body.current;
     const ll = lLeg.current;

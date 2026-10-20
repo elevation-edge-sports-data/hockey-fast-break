@@ -77,6 +77,8 @@ function bootScrimmage(home = 4, away = 4) {
   ui.setPlaying(true);
   ui.setPaused(false);
   resetWorld();
+  world.homeAttack = 1;
+  resetWorld({ keepScore: true });
   world.faceoff = false;
   world.faceoffPhase = "live";
   world.stoppage = false;
@@ -85,7 +87,6 @@ function bootScrimmage(home = 4, away = 4) {
   world.periodOver = false;
   world.goalSide = null;
   world.puck.owner = null;
-  world.homeAttack = 1;
   world.goalBank = null;
   world.goalieShot = null;
   const now = useGame.getState();
@@ -168,7 +169,7 @@ test("a knockdown schedules a center-ice faceoff", () => {
   assert.equal(world.ref2.pose, "goal");
 
   let faced = false;
-  for (let i = 0; i < 200 && !faced; i++) {
+  for (let i = 0; i < 320 && !faced; i++) {
     stepSim(DT);
     faced = world.faceoff === true;
   }
@@ -212,7 +213,7 @@ test("clearing the last opposing target wins", () => {
 
   let frames = 0;
   let over = false;
-  for (; frames < 260 && !over; frames++) {
+  for (; frames < 400 && !over; frames++) {
     stepSim(DT);
     over = world.periodOver === true;
     assert.equal(world.faceoff, false);

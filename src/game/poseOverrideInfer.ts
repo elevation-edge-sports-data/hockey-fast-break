@@ -130,9 +130,9 @@ export function inferNamedPose(s: Skater, index: number): string | null {
     if (checked) return checked;
   }
   if (goalie && tumbling(s)) return "goalieGetUp";
+  if (!goalie && s.dive > 0.04) return "dive";
   if (!goalie && rageDraw(s.id)) return "rage";
   if (goalie && s.dive > 0.04) return goalieDiveSavePose(s);
-  if (!goalie && s.dive > 0.04) return "dive";
   if (!goalie && forehandFollowHold(s)) return "shot-follow-through";
   if (!goalie && s.follow <= 0.02 && s.windup > 0.5) return "slap";
   if (!goalie && s.follow <= 0.02 && s.windup > 0.04 && s.windup <= 0.5 && world.lastShotBackhand) return "backhandShot";

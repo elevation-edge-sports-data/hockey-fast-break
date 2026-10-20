@@ -1,7 +1,7 @@
 /**
- * Headless check: with the puck deep in the offensive zone, both teams'
- * defensemen hold two point spots instead of trailing the carrier.
- * A high carry stays on a staggered blue. The user skater is not steered.
+ * Headless check: with the puck in the offensive zone, both teams'
+ * defensemen hold the blue-line corners instead of trailing the carrier.
+ * A high carry stays on that blue. The user skater is not steered.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -45,12 +45,11 @@ const input = await server.ssrLoadModule("/src/game/input.ts");
 
 const { resetWorld, stepSim, world } = sim;
 const { useGame } = store;
-const { BLUE_X, BLUE_LINE_W, GOAL_LINE_X, FACEOFF_EZ_X } = rink;
+const { BLUE_X, BLUE_LINE_W, GOAL_LINE_X } = rink;
 const { setInjectedKeys } = input;
 
 const DT = 1 / 60;
 const PUCK_R = 0.04;
-const DOT_DEPTH = GOAL_LINE_X - FACEOFF_EZ_X;
 
 function fresh() {
   setInjectedKeys([]);
@@ -60,12 +59,13 @@ function fresh() {
   ui.setPlaying(true);
   ui.setControlProfile("classic");
   resetWorld();
+  world.homeAttack = 1;
+  resetWorld({ keepScore: true });
   world.faceoff = false;
   world.faceoffPhase = "live";
   world.stoppage = false;
   world.whistle = null;
   world.delayedOffside = 0;
-  world.homeAttack = 1;
 }
 
 function attackOf(side) {
@@ -93,33 +93,6 @@ function zoneOf(x) {
   if (x - PUCK_R > BLUE_X + half) return 1;
   if (x + PUCK_R < -BLUE_X - half) return -1;
   return 0;
-}
-
-/** Same segment test as laneBlocked in sim.ts. */
-function laneBlocked(x0, z0, x1, z1, side) {
-  const dx = x1 - x0;
-  const dz = z1 - z0;
-  const len2 = dx * dx + dz * dz;
-  if (len2 < 6) return false;
-  for (const o of world.skaters) {
-    if (o.side === side || o.kind === "goalie") continue;
-    const t = ((o.x - x0) * dx + (o.z - z0) * dz) / len2;
-    if (t < 0.14 || t > 0.86) continue;
-    const px = x0 + dx * t;
-    const pz = z0 + dz * t;
-    if (Math.hypot(o.x - px, o.z - pz) < 1.22) return true;
-  }
-  return false;
-}
-
-function defenderGap(tx, tz, side) {
-  let best = 28;
-  for (const o of world.skaters) {
-    if (o.side === side || o.kind === "goalie") continue;
-    const d = Math.hypot(o.x - tx, o.z - tz);
-    if (d < best) best = d;
-  }
-  return best;
 }
 
 function pinStill(s, x, z) {
@@ -207,46 +180,23 @@ function stepN(n, before) {
   }
 }
 
-function assertPointPair(side, attack, carrier, backs, label, wall) {
+/** Offense in the zone: defense holds the blue-line corners, not the deep points. */
+function assertBlueCorners(attack, carrier, backs, label) {
   assert.equal(world.whistle, null, `${label} whistled ${world.whistle}`);
   assert.equal(backs.length, 2, `${label} defense count`);
-  const depths = backs.map((s) => ozDepth(s.x, attack));
-  const zs = backs.map((s) => s.z);
   for (const s of backs) {
     const depth = ozDepth(s.x, attack);
-    assert.ok(
-      depth > DOT_DEPTH,
-      `${label} D ${s.id} is below the faceoff dots (depth ${depth.toFixed(2)})`,
-    );
-    assert.ok(
-      depth >= 8.2 && depth <= 13,
-      `${label} D ${s.id} depth ${depth.toFixed(2)} is outside 9–12 m`,
-    );
-    const gap = defenderGap(s.x, s.z, side);
-    assert.ok(gap >= 3, `${label} D ${s.id} defenderGap ${gap.toFixed(2)}`);
-    assert.ok(
-      !laneBlocked(carrier.x, carrier.z, s.x, s.z, side),
-      `${label} D ${s.id} lane blocked at (${s.x.toFixed(2)}, ${s.z.toFixed(2)})`,
-    );
+    assert.ok(depth > 15.2 && depth < 21.2, `${label} D ${s.id} left the blue (depth ${depth.toFixed(2)})`);
+    assert.ok(Math.abs(s.z) > 8, `${label} D ${s.id} left the boards (z ${s.z.toFixed(2)})`);
+    assert.ok(s.x * attack > BLUE_X + 0.2, `${label} D ${s.id} is outside the zone`);
     const away = Math.hypot(s.x - carrier.x, s.z - carrier.z);
-    assert.ok(away >= 4, `${label} D ${s.id} is ${away.toFixed(2)} m from the carrier`);
+    assert.ok(away >= 8, `${label} D ${s.id} is ${away.toFixed(2)} m from the carrier`);
   }
-  const split = Math.abs(zs[0] - zs[1]);
-  assert.ok(split >= 8, `${label} lateral split ${split.toFixed(2)}`);
-  assert.ok(zs[0] * zs[1] < 0, `${label} both D on one side (${zs.map((z) => z.toFixed(1))})`);
-  if (wall) {
-    assert.ok(Math.min(...zs) < -6, `${label} no weak-side point (z ${zs.map((z) => z.toFixed(1))})`);
-    assert.ok(Math.max(...zs) > 7, `${label} no half-wall (z ${zs.map((z) => z.toFixed(1))})`);
-  }
-  const between = Math.hypot(backs[0].x - backs[1].x, backs[0].z - backs[1].z);
-  assert.ok(between >= 8, `${label} D are ${between.toFixed(2)} m apart`);
-  assert.ok(
-    depths.every((d) => d > 8),
-    `${label} a defenseman sank to a forward spot`,
-  );
+  assert.ok(backs[0].z * backs[1].z < 0, `${label} both D on one side`);
+  assert.ok(Math.abs(backs[0].z - backs[1].z) > 12, `${label} D are not spread`);
 }
 
-test("a deep corner carry puts both teams' defense on open point spots", () => {
+test("a deep corner carry puts both teams' defense on the blue-line corners", () => {
   for (const side of ["home", "away"]) {
     for (const behind of [false, true]) {
       fresh();
@@ -275,7 +225,7 @@ test("a deep corner carry puts both teams' defense on open point spots", () => {
         worstInside = Math.min(worstInside, inside.x * attack);
       });
       const label = `${side} ${behind ? "behind the goal" : "corner"}`;
-      assertPointPair(side, attack, carrier, backs, label, !behind);
+      assertBlueCorners(attack, carrier, backs, label);
       assert.ok(
         backs[0].x * attack > BLUE_X + 0.4,
         `${label} neutral-zone D stayed outside at along ${(backs[0].x * attack).toFixed(2)}`,
@@ -392,9 +342,7 @@ test("the user defenseman is not steered onto a point", () => {
   assert.ok(Math.abs(userD.x - x0) < 1.2, `user D steered in x to ${userD.x.toFixed(2)}`);
   assert.ok(Math.abs(userD.z - z0) < 1.2, `user D steered in z to ${userD.z.toFixed(2)}`);
   const depth = ozDepth(cpuD.x, attack);
-  assert.ok(depth >= 8.2 && depth <= 13, `cpu D depth ${depth.toFixed(2)}`);
-  assert.ok(Math.abs(cpuD.z) > 5, `cpu D did not take a point (z ${cpuD.z.toFixed(2)})`);
-  assert.ok(defenderGap(cpuD.x, cpuD.z, "home") >= 3);
-  assert.ok(!laneBlocked(userD.x, userD.z, cpuD.x, cpuD.z, "home"));
-  assert.ok(Math.hypot(cpuD.x - userD.x, cpuD.z - userD.z) >= 4);
+  assert.ok(depth > 15.2 && depth < 21.2, `cpu D left the blue (depth ${depth.toFixed(2)})`);
+  assert.ok(Math.abs(cpuD.z) > 8, `cpu D did not take a blue-line corner (z ${cpuD.z.toFixed(2)})`);
+  assert.ok(Math.hypot(cpuD.x - userD.x, cpuD.z - userD.z) >= 8);
 });

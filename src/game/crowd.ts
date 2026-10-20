@@ -14,11 +14,6 @@ export const FASCIA_W = 0.55;
 export const FASCIA_H = 0.22;
 export const FASCIA_D = 0.55;
 export const FASCIA_DROP = 0.52;
-export const RIBBON_Y = 5.55;
-export const RIBBON_INSET = -12.55;
-export const RIBBON_Y2 = 10.18;
-export const RIBBON_INSET2 = -21.15;
-export const JUMBO_Y = 27.4;
 export const JUMBO_HW = 5.15;
 export const JUMBO_HH = 2.42;
 export const JUMBO_SHELL_SHRINK = 0.12;
@@ -31,20 +26,71 @@ export const PRESS_BAYS = [0, 18.4] as const;
 /** Live puck cylinder in PuckMesh. */
 export const CROWD_PUCK_R = 0.052;
 
-const THIRD_ROWS = 12;
-const THIRD_GAP = 21.8;
-const THIRD_Y0 = 10.9;
+/** Lower bowl. Twice the previous 21 rows. Tread and rise stay the same. */
+const LOWER_ROWS = 42;
+const LOWER_GAP = 2.5;
+const LOWER_Y0 = 1.28;
+const LOWER_ROW_D = 0.51;
+const LOWER_RISE = 0.18;
+/** Second deck. Previous 9 rows, 25% more and rounded (9 × 1.25 = 11.25). */
+const SECOND_ROWS = 11;
+const SECOND_ROW_D = 0.54;
+const SECOND_RISE = 0.27;
+/** Upper deck. Previous 24 rows, 75% more (24 × 1.75 = 42). */
+const THIRD_ROWS = 42;
 const THIRD_ROW_D = 0.56;
 const THIRD_RISE = 0.28;
+/** Radial and vertical concourse gaps from the previous 21 / 14 / 12 bowl. */
+const LOWER_TO_SECOND_GAP = 13.8 - (2.5 + 20 * 0.51);
+const LOWER_TO_SECOND_RISE = 6.35 - (1.28 + 20 * 0.18);
+const SECOND_TO_THIRD_GAP = 21.8 - (13.8 + 13 * 0.54);
+const SECOND_TO_THIRD_RISE = 10.9 - (6.35 + 13 * 0.27);
+
+const lowerEndGap = LOWER_GAP + (LOWER_ROWS - 1) * LOWER_ROW_D;
+const lowerEndY = LOWER_Y0 + (LOWER_ROWS - 1) * LOWER_RISE;
+const SECOND_GAP = lowerEndGap + LOWER_TO_SECOND_GAP;
+const SECOND_Y0 = lowerEndY + LOWER_TO_SECOND_RISE;
+const secondEndGap = SECOND_GAP + (SECOND_ROWS - 1) * SECOND_ROW_D;
+const secondEndY = SECOND_Y0 + (SECOND_ROWS - 1) * SECOND_RISE;
+const THIRD_GAP = secondEndGap + SECOND_TO_THIRD_GAP;
+const THIRD_Y0 = secondEndY + SECOND_TO_THIRD_RISE;
+const thirdEndGap = THIRD_GAP + (THIRD_ROWS - 1) * THIRD_ROW_D;
+const thirdEndY = THIRD_Y0 + (THIRD_ROWS - 1) * THIRD_RISE;
 /** Boards to the outer face of the last seat. The ring is the seat center, so add half the depth. */
-const STAND_REACH = THIRD_GAP + (THIRD_ROWS - 1) * THIRD_ROW_D + SEAT_D / 2;
+const STAND_REACH = thirdEndGap + SEAT_D / 2;
+
+/** Ribbon lips keep the old offset from the deck they trim. */
+export const RIBBON_Y = lowerEndY + (5.55 - (1.28 + 20 * 0.18));
+export const RIBBON_INSET = -(lowerEndGap - ((2.5 + 20 * 0.51) - 12.55));
+export const RIBBON_Y2 = secondEndY + (10.18 - (6.35 + 13 * 0.27));
+export const RIBBON_INSET2 = -(secondEndGap + (21.15 - (13.8 + 13 * 0.54)));
+
+const oldDeckTop = 10.9 + 11 * 0.28;
+/** Jumbotron center is level with the press-box shell. */
+const pressCenter = thirdEndY + 0.62 + PRESS_SHELL.h / 2;
+export const JUMBO_Y = pressCenter;
+
+const oldReach = 21.8 + 11 * 0.56 + SEAT_D / 2;
+const endClear = 62 - (RINK_L / 2 + oldReach);
+const wallAbove = 29 - oldDeckTop;
+const shellTop = thirdEndY + wallAbove;
+const shellBottom = -1;
+const shellInner = RINK_L / 2 + STAND_REACH + endClear;
+/** Dark bowl wall and the floor slab under it. Top radius is the old inner 62. */
+export const BOWL_WALL = {
+  y: (shellTop + shellBottom) / 2,
+  topR: shellInner,
+  bottomR: shellInner + 6,
+  height: shellTop - shellBottom,
+  floorL: 2 * (RINK_L / 2 + STAND_REACH + (80 - (RINK_L / 2 + oldReach))),
+  floorW: 2 * (RINK_W / 2 + STAND_REACH + (55 - (RINK_W / 2 + oldReach))),
+};
 
 export type SeatSpot = { x: number; y: number; z: number; rot: number; awayFan: boolean };
 
 export function pressBoxFrame(): { y: number; z: number; boxH: number } {
   const boxH = PRESS_SHELL.h;
-  const deckTopY = THIRD_Y0 + (THIRD_ROWS - 1) * THIRD_RISE;
-  const y = deckTopY + 0.62 + boxH / 2;
+  const y = pressCenter;
   const z = RINK_W / 2 + THIRD_GAP + (THIRD_ROWS - 1) * THIRD_ROW_D - 0.2;
   return { y, z, boxH };
 }
@@ -103,17 +149,23 @@ function buildStands(
 
 const GLASS = buildStands(2, 0.52, 0.96, 0.52, 0.1, skipRinkside);
 const INNER = buildStands(2, 1.56, 1.16, 0.5, 0.08, skipRinkside);
-const LOWER = buildStands(21, 2.5, 1.28, 0.51, 0.18, skipRinkside);
-const UPPER = buildStands(14, 13.8, 6.35, 0.54, 0.27);
+const LOWER = buildStands(LOWER_ROWS, LOWER_GAP, LOWER_Y0, LOWER_ROW_D, LOWER_RISE, skipRinkside);
+const UPPER = buildStands(SECOND_ROWS, SECOND_GAP, SECOND_Y0, SECOND_ROW_D, SECOND_RISE);
+const oldPressZ = RINK_W / 2 + (21.8 + 11 * 0.56) - 0.2;
+const pressZ = RINK_W / 2 + thirdEndGap - 0.2;
+const pressCutZ = pressZ - (oldPressZ - (RINK_W / 2 + 25.6));
+const pressCutY = thirdEndY - (oldDeckTop - 13.4);
+const pressCutX0 = PRESS_BAYS[0] - PRESS_ROOF.w / 2 + 0.2;
+const pressCutX1 = PRESS_BAYS[1] + PRESS_ROOF.w / 2 + 0.2;
 const THIRD = buildStands(THIRD_ROWS, THIRD_GAP, THIRD_Y0, THIRD_ROW_D, THIRD_RISE).filter(
-  (p) => !(p.z > RINK_W / 2 + 25.6 && p.x > -9.4 && p.x < 28.2 && p.y > 13.4),
+  (p) => !(p.z > pressCutZ && p.x > pressCutX0 && p.x < pressCutX1 && p.y > pressCutY),
 );
 export const STANDS: SeatSpot[] = [...GLASS, ...INNER, ...LOWER, ...UPPER, ...THIRD];
 (() => {
   const nAway = Math.round(STANDS.length * 0.05);
   const pocket = STANDS.map((p, i) => ({ p, i }))
-    .filter(({ p }) => p.y >= 10.9 && p.x > 0 && p.z < 0)
-    .sort((a, b) => a.p.z - b.p.z || Math.abs(a.p.x - 5) - Math.abs(b.p.x - 5));
+    .filter(({ p }) => p.y >= THIRD_Y0 && p.x < 0 && p.z < 0)
+    .sort((a, b) => a.p.z - b.p.z || Math.abs(a.p.x + 5) - Math.abs(b.p.x + 5));
   const away = new Set<number>();
   for (const { i } of pocket) {
     if (away.size >= nAway) break;

@@ -45,12 +45,11 @@ const input = await server.ssrLoadModule("/src/game/input.ts");
 
 const { resetWorld, stepSim, world } = sim;
 const { useGame } = store;
-const { BLUE_X, BLUE_LINE_W, GOAL_LINE_X, RINK_W } = rink;
+const { BLUE_X, BLUE_LINE_W, FACEOFF_SPOT_Z, GOAL_LINE_X, RINK_W } = rink;
 const { setInjectedKeys } = input;
 
 const DT = 1 / 60;
 const EDGE = BLUE_X + BLUE_LINE_W * 0.5;
-const Z_LIM = RINK_W / 2 - 1.6;
 
 function fresh() {
   setInjectedKeys([]);
@@ -60,12 +59,13 @@ function fresh() {
   ui.setPlaying(true);
   ui.setControlProfile("classic");
   resetWorld();
+  world.homeAttack = 1;
+  resetWorld({ keepScore: true });
   world.faceoff = false;
   world.faceoffPhase = "live";
   world.stoppage = false;
   world.whistle = null;
   world.delayedOffside = 0;
-  world.homeAttack = 1;
 }
 
 function attackOf(side) {
@@ -199,69 +199,32 @@ function holdParked(keep) {
   pinGoals();
 }
 
-function inBox(s, attack) {
-  const mouth = attack * GOAL_LINE_X;
-  const own = -mouth;
-  if (attack > 0) {
-    if (s.x > mouth - 2.6 + 0.05 || s.x < own + 2.4 - 0.05) return false;
-  } else if (s.x < mouth + 2.6 - 0.05 || s.x > own - 2.4 + 0.05) return false;
-  return Math.abs(s.z) <= Z_LIM + 0.05;
-}
-
-function assertSupport(side, attack, carrier, forwards, label) {
+/** Offensive-zone carry uses the goal-line corners instead of the old support triangle. */
+function assertUserCorners(attack, carrier, forwards, label) {
   assert.equal(world.whistle, null, `${label} whistled ${world.whistle}`);
-  assert.ok(forwards.length >= 2, `${label} forward count`);
-  const weak = -Math.sign(carrier.z || 1);
+  const edge = BLUE_X + BLUE_LINE_W * 0.5;
   for (const s of forwards) {
-    const dist = Math.hypot(s.x - carrier.x, s.z - carrier.z);
-    assert.ok(dist >= 3.4, `${label} F ${s.id} is trailing at ${dist.toFixed(2)} m`);
-    assert.ok(dist < 18, `${label} F ${s.id} pass is ${dist.toFixed(2)} m`);
-    const gap = defenderGap(s.x, s.z, side);
-    let near = null;
-    for (const o of world.skaters) {
-      if (o.side === side || o.kind === "goalie") continue;
-      const d = Math.hypot(o.x - s.x, o.z - s.z);
-      if (!near || d < near.d) near = { d, id: o.id, kind: o.kind, x: o.x, z: o.z };
-    }
+    const along = s.x * attack;
+    const depth = GOAL_LINE_X - along;
+    const fromBlue = along - edge;
     assert.ok(
-      gap >= 3.2,
-      `${label} F ${s.id} gap ${gap.toFixed(2)} at (${s.x.toFixed(2)}, ${s.z.toFixed(2)}) nearest ${near ? `${near.kind} ${near.id} (${near.x.toFixed(2)}, ${near.z.toFixed(2)})` : "none"}`,
+      depth + 0.3 < fromBlue,
+      `${label} F ${s.id} is nearer the blue than the goal line (depth ${depth.toFixed(2)}, blue ${fromBlue.toFixed(2)})`,
     );
-    assert.ok(!laneBlocked(carrier.x, carrier.z, s.x, s.z, side), `${label} F ${s.id} lane is closed`);
-    assert.ok(!shotStacked(s.x, s.z, carrier, attack), `${label} F ${s.id} is in the carrier's lane`);
-    assert.ok(inBox(s, attack), `${label} F ${s.id} left the lane box (${s.x.toFixed(2)}, ${s.z.toFixed(2)})`);
-    assert.ok(s.x * attack > EDGE + 0.4, `${label} F ${s.id} is outside at along ${(s.x * attack).toFixed(2)}`);
+    const dist = Math.hypot(s.x - carrier.x, s.z - carrier.z);
+    assert.ok(dist > 4.2, `${label} F ${s.id} is on the carrier (${dist.toFixed(2)})`);
   }
   for (let i = 0; i < forwards.length; i++) {
     for (let j = i + 1; j < forwards.length; j++) {
-      const a = forwards[i];
-      const b = forwards[j];
-      const lat = Math.abs(a.z - b.z);
-      const dep = Math.abs(a.x - b.x);
-      assert.ok(
-        lat >= 4.7 || dep >= 2.85,
-        `${label} F ${a.id} and ${b.id} clump (lat ${lat.toFixed(2)}, depth ${dep.toFixed(2)})`,
-      );
-      assert.ok(
-        !shotStacked(a.x, a.z, b, attack) && !shotStacked(b.x, b.z, a, attack),
-        `${label} F ${a.id} shares ${b.id}'s lane to the net`,
-      );
+      const d = Math.hypot(forwards[i].x - forwards[j].x, forwards[i].z - forwards[j].z);
+      assert.ok(d > 4.2, `${label} forwards share a spot (${d.toFixed(2)})`);
     }
   }
-  const scored = forwards
-    .map((s) => ({ s, depth: ozDepth(s.x, attack), z: s.z }))
-    .sort((a, b) => a.depth - b.depth);
-  assert.ok(scored[0].z * weak > 0, `${label} low forward is not on the weak side (z ${scored[0].z.toFixed(2)})`);
-  assert.ok(scored[0].depth < 8, `${label} low forward is deep at ${scored[0].depth.toFixed(2)} (hash or blue)`);
-  const strong = scored.find((p) => p.z * weak < 0);
-  assert.ok(strong, `${label} nobody took the strong side`);
-  assert.ok(
-    strong.depth > scored[0].depth + 2.4,
-    `${label} strong side is not higher (${strong.depth.toFixed(2)} vs ${scored[0].depth.toFixed(2)})`,
-  );
+  const far = Math.max(...forwards.map((s) => Math.abs(s.z)));
+  assert.ok(far > 8, `${label} nobody took a board corner (${far.toFixed(2)})`);
 }
 
-test("both teams' forwards hold open support spots in the zone", () => {
+test("both teams' forwards hold the end-line corners in the zone", () => {
   for (const side of ["home", "away"]) {
     fresh();
     const attack = attackOf(side);
@@ -290,7 +253,7 @@ test("both teams' forwards hold open support spots in the zone", () => {
       stepSim(DT);
     }
     pinCarrier(carrier, cx, cz);
-    assertSupport(side, attack, carrier, forwards, `${side} deep`);
+    assertUserCorners(attack, carrier, forwards, `${side} deep`);
     const settled = forwards.map((s) => ({ id: s.id, x: s.x, z: s.z }));
     for (let i = 0; i < 240; i++) {
       pinCarrier(carrier, cx, cz);
@@ -299,7 +262,7 @@ test("both teams' forwards hold open support spots in the zone", () => {
       stepSim(DT);
     }
     pinCarrier(carrier, cx, cz);
-    assertSupport(side, attack, carrier, forwards, `${side} held`);
+    assertUserCorners(attack, carrier, forwards, `${side} held`);
     for (const was of settled) {
       const now = forwards.find((s) => s.id === was.id);
       const moved = Math.hypot(now.x - was.x, now.z - was.z);
@@ -308,7 +271,7 @@ test("both teams' forwards hold open support spots in the zone", () => {
   }
 });
 
-test("a covered spot is the one that rotates", () => {
+test("user teammates hold separate end-line corners", () => {
   fresh();
   const attack = 1;
   const backs = defs("home");
@@ -327,45 +290,25 @@ test("a covered spot is the one that rotates", () => {
     s.vx = 0;
     s.vz = 0;
   });
-  for (let i = 0; i < 160; i++) {
+  for (let i = 0; i < 180; i++) {
     pinCarrier(carrier, cx, cz);
     pinStill(user, -18, 0);
     holdParked(keep);
     stepSim(DT);
   }
-  const ranked = [...forwards].sort((a, b) => Math.abs(b.z) - Math.abs(a.z));
-  const covered = ranked[0];
-  const spot = { x: covered.x, z: covered.z };
-  const open = forwards
-    .filter((s) => s.id !== covered.id)
-    .map((s) => ({ id: s.id, x: s.x, z: s.z }));
-  const foe = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
-  for (let i = 0; i < 140; i++) {
+  pinCarrier(carrier, cx, cz);
+  assertUserCorners(attack, carrier, forwards, "corners");
+  const settled = forwards.map((s) => ({ id: s.id, x: s.x, z: s.z }));
+  for (let i = 0; i < 90; i++) {
     pinCarrier(carrier, cx, cz);
     pinStill(user, -18, 0);
     holdParked(keep);
-    pinStill(foe, spot.x, spot.z);
     stepSim(DT);
   }
-  const left = Math.hypot(covered.x - spot.x, covered.z - spot.z);
-  assert.ok(left > 2.4, `covered forward only moved ${left.toFixed(2)} m`);
-  for (const was of open) {
+  for (const was of settled) {
     const now = forwards.find((s) => s.id === was.id);
-    const held = Math.hypot(now.x - was.x, now.z - was.z);
-    assert.ok(
-      held < 1.6,
-      `open forward ${was.id} left a good spot (${held.toFixed(2)} m) from (${was.x.toFixed(1)},${was.z.toFixed(1)})`,
-    );
-  }
-  assert.ok(defenderGap(covered.x, covered.z, "home") >= 3.2);
-  assert.ok(!laneBlocked(cx, cz, covered.x, covered.z, "home"));
-  assert.ok(!shotStacked(covered.x, covered.z, { x: cx, z: cz }, attack));
-  for (const was of open) {
-    const now = forwards.find((s) => s.id === was.id);
-    assert.ok(
-      !shotStacked(covered.x, covered.z, now, attack) && !shotStacked(now.x, now.z, covered, attack),
-      `covered forward settled on ${was.id}'s lane`,
-    );
+    const moved = Math.hypot(now.x - was.x, now.z - was.z);
+    assert.ok(moved < 1.4, `F ${was.id} left the corner (${moved.toFixed(2)} m)`);
   }
 });
 
@@ -420,7 +363,7 @@ test("forwards already inside the blue are not pulled back out", () => {
       const moved = Math.hypot(now.x - was.x, now.z - was.z);
       assert.ok(moved < 1.5, `${side} F ${was.id} left the spot after arriving (${moved.toFixed(2)} m)`);
     }
-    assertSupport(side, attack, carrier, forwards, `${side} from the join`);
+    assertUserCorners(attack, carrier, forwards, `${side} from the join`);
   }
 });
 
@@ -463,5 +406,76 @@ test("a winger carrier does not leave teammates trailing the puck", () => {
     const dep = Math.abs(mates[0].x - mates[1].x);
     assert.ok(lat >= 4.7 || dep >= 2.85, `${side} mates clumped (lat ${lat.toFixed(2)}, depth ${dep.toFixed(2)})`);
     assert.ok(!shotStacked(mates[0].x, mates[0].z, mates[1], attack), `${side} mates share a lane`);
+  }
+});
+
+test("CPU offense keeps its corners when the puck moves between the points", () => {
+  fresh();
+  const attack = attackOf("away");
+  const forwards = wings("away");
+  const backs = defs("away");
+  const carrier = forwards[0];
+  const center = forwards[1];
+  const wingsOnly = forwards.filter((s) => s.id !== carrier.id && s.id !== center.id);
+  assert.equal(forwards.length, 3);
+  assert.equal(backs.length, 2);
+  assert.ok(wingsOnly.length >= 1);
+  const keep = new Set([carrier.id, ...forwards.map((s) => s.id), ...backs.map((s) => s.id)]);
+  parkOthers(keep);
+  for (const s of [...forwards, ...backs]) {
+    s.stun = 0;
+    s.vx = 0;
+    s.vz = 0;
+    s.x = attack * (EDGE + 2);
+    s.z = 0;
+  }
+  const boards = RINK_W / 2 - 2.2;
+  const blue = attack * (EDGE + 1.2);
+  const settle = (who, z) => {
+    for (let i = 0; i < 180; i++) {
+      pinCarrier(who, blue, z);
+      holdParked(keep);
+      stepSim(DT);
+    }
+  };
+  settle(carrier, boards);
+  for (const s of forwards) {
+    if (s.id === carrier.id) continue;
+    const depth = GOAL_LINE_X - s.x * attack;
+    const fromBlue = s.x * attack - EDGE;
+    assert.ok(depth < fromBlue, `CPU F ${s.id} stayed near the blue (depth ${depth.toFixed(2)})`);
+    assert.ok(Math.hypot(s.x - blue, s.z - boards) > 4.2, `CPU F ${s.id} chased the carrier`);
+  }
+  assert.ok(Math.abs(center.z) < 8, `CPU center took a corner (z ${center.z.toFixed(2)})`);
+  const wingSide = new Map(wingsOnly.map((s) => [s.id, Math.sign(s.z) || 1]));
+  const dSide = new Map(backs.map((s) => [s.id, Math.sign(s.z)]));
+  assert.equal(dSide.get(backs[0].id), -1, `left CPU defense started at z ${backs[0].z.toFixed(2)}`);
+  assert.equal(dSide.get(backs[1].id), 1, `right CPU defense started at z ${backs[1].z.toFixed(2)}`);
+  for (const d of backs) {
+    assert.ok(Math.abs(d.z) > 8, `CPU defense ${d.id} left the boards (z ${d.z.toFixed(2)})`);
+    assert.ok(backs[0].z * backs[1].z < 0, "CPU defense shared a corner");
+  }
+  settle(backs[0], dSide.get(backs[0].id) * boards);
+  settle(backs[1], dSide.get(backs[1].id) * boards);
+  for (const s of wingsOnly) {
+    const dotSide = wingSide.get(s.id);
+    assert.equal(Math.sign(s.z) || dotSide, dotSide, `CPU wing ${s.id} switched boards to ${s.z.toFixed(2)}`);
+    if (dotSide > 0) assert.ok(s.z >= -FACEOFF_SPOT_Z - 0.3, `CPU wing crossed the far dot (${s.z.toFixed(2)})`);
+    else assert.ok(s.z <= FACEOFF_SPOT_Z + 0.3, `CPU wing crossed the far dot (${s.z.toFixed(2)})`);
+  }
+  assert.ok(Math.abs(center.z) < 8, `CPU center left the net front (z ${center.z.toFixed(2)})`);
+  for (const d of backs) {
+    if (d.id === backs[1].id) continue;
+    assert.equal(Math.sign(d.z), dSide.get(d.id), `CPU defense ${d.id} switched halves to ${d.z.toFixed(2)}`);
+    assert.ok(Math.abs(d.z) > 8, `CPU defense ${d.id} left its corner (z ${d.z.toFixed(2)})`);
+  }
+  for (let i = 0; i < 180; i++) {
+    pinCarrier(carrier, 0, -boards);
+    holdParked(keep);
+    stepSim(DT);
+  }
+  for (const d of backs) {
+    assert.equal(Math.sign(d.z), dSide.get(d.id), `CPU defense ${d.id} crossed with the zone (${d.z.toFixed(2)})`);
+    assert.ok(Math.abs(d.z) > 3, `CPU defense ${d.id} stacked at center (${d.z.toFixed(2)})`);
   }
 });

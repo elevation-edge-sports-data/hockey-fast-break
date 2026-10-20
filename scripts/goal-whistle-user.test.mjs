@@ -1,6 +1,6 @@
 /**
- * After a goal, either side, the user can burst, dive, and rage.
- * X rages only within 2 m of a post or the crossbar.
+ * After a goal the user can burst and dive.
+ * X rages only within 2 m of a post or the crossbar, and only when the home team did not score.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -42,7 +42,7 @@ const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
-const { resetWorld, stepSim, whistleUserLook, world } = sim;
+const { resetWorld, stepSim, whistleUserLook, world, rageDraw } = sim;
 const { useGame } = store;
 const { setInjectedKeys, setInjectedAim, setInjectedStart } = input;
 const { GOAL_LINE_X, GOAL_W } = rink;
@@ -63,6 +63,8 @@ function sheet() {
   ui.setPaused(false);
   ui.setControlProfile("stick");
   resetWorld();
+  world.homeAttack = 1;
+  resetWorld({ keepScore: true });
   world.faceoff = false;
   world.faceoffPhase = "live";
   world.stoppage = false;
@@ -72,7 +74,6 @@ function sheet() {
   world.replay = false;
   world.goalSide = null;
   world.lastShooter = null;
-  world.homeAttack = 1;
   world.camFx = 1;
   world.camFz = 0;
   world.camRx = 0;
@@ -124,6 +125,14 @@ function park() {
   world.ref2.z = -12;
   world.ref2.vx = 0;
   world.ref2.vz = 0;
+  world.ref3.x = 24;
+  world.ref3.z = 12;
+  world.ref3.vx = 0;
+  world.ref3.vz = 0;
+  world.ref4.x = 24;
+  world.ref4.z = -12;
+  world.ref4.vx = 0;
+  world.ref4.vz = 0;
 }
 
 function goal(side) {
@@ -181,7 +190,7 @@ test("holding B after either goal bursts, and a tap still skips", () => {
   assert.equal(world.stoppage, false);
 });
 
-test("an offside whistle keeps the user camera, burst, dive, pass, and saucer", () => {
+test("an offside whistle stays on the puck spot and keeps burst, dive, pass, and saucer", () => {
   sheet();
   park();
   const u = user();
@@ -200,15 +209,20 @@ test("an offside whistle keeps the user camera, burst, dive, pass, and saucer", 
   world.faceoff = false;
   world.faceoffA = false;
   useGame.getState().setWhistle("offside");
+  const spotX = world.puck.x;
+  const spotZ = world.puck.z;
   const look = whistleUserLook();
   assert.ok(look);
-  assert.equal(look.x, u.x);
-  assert.equal(look.z, u.z);
-  assert.equal(look.y, 1.05);
-  assert.ok(Math.hypot(look.x - world.puck.x, look.z - world.puck.z) > 8);
+  assert.equal(look.x, spotX);
+  assert.equal(look.z, spotZ);
+  assert.equal(look.y, 0.55);
+  assert.ok(Math.hypot(look.x - u.x, look.z - u.z) > 8);
 
   frames(Math.round(0.45 / DT), ["KeyW", "Space"]);
   const burst = speed();
+  const held = whistleUserLook();
+  assert.equal(held.x, spotX);
+  assert.equal(held.z, spotZ);
   assert.equal(world.whistle, "offside");
   assert.equal(u.burst, 1);
   sheet();
@@ -276,6 +290,9 @@ test("an offside whistle keeps the user camera, burst, dive, pass, and saucer", 
   world.faceoff = false;
   world.faceoffA = false;
   world.lastPass = -10;
+  const sauceX = world.puck.x;
+  const sauceZ = world.puck.z;
+  whistleUserLook();
   setInjectedStart(true);
   setInjectedKeys(["KeyE"]);
   stepSim(DT);
@@ -286,8 +303,9 @@ test("an offside whistle keeps the user camera, burst, dive, pass, and saucer", 
   assert.equal(useGame.getState().shotKind, "saucer");
   assert.ok(world.puck.vy > 0.3, `saucer vy ${world.puck.vy}`);
   const lookAfter = whistleUserLook();
-  assert.equal(lookAfter.x, saucer.x);
-  assert.equal(lookAfter.z, saucer.z);
+  assert.equal(lookAfter.x, sauceX);
+  assert.equal(lookAfter.z, sauceZ);
+  assert.ok(Math.hypot(world.puck.x - sauceX, world.puck.z - sauceZ) > 0.2);
 });
 
 test("RT starts a dive after either goal", () => {
@@ -303,7 +321,7 @@ test("RT starts a dive after either goal", () => {
   }
 });
 
-test("X rages within 2 m of a post or the bar on either net, and not from center ice", () => {
+test("X rages within 2 m of a post or the bar after an away goal, and not after a home goal", () => {
   sheet();
   park();
   const u = user();
@@ -315,14 +333,17 @@ test("X rages within 2 m of a post or the bar on either net, and not from center
   frames(1, []);
   frames(1, ["KeyF"]);
   assert.equal(u.smashKind, 2);
-  frames(18, []);
-  assert.ok(u.x > x0 + 0.12, `approached the scored net ${u.x} from ${x0}`);
+  assert.ok(rageDraw(u.id));
+  frames(18, ["KeyS"]);
+  assert.ok(u.x < x0 - 0.12, `skates off the iron ${u.x} from ${x0}`);
+  assert.ok(u.smash > 0);
+  assert.ok(rageDraw(u.id));
 
   sheet();
   park();
   user().x = -GOAL_LINE_X + 1.7;
   user().z = -postZ;
-  goal("home");
+  goal("away");
   frames(1, []);
   frames(1, ["KeyF"]);
   assert.equal(user().smashKind, 3);
@@ -331,10 +352,28 @@ test("X rages within 2 m of a post or the bar on either net, and not from center
   park();
   user().x = GOAL_LINE_X - 1.4;
   user().z = 0;
-  goal("home");
+  goal("away");
   frames(1, []);
   frames(1, ["KeyF"]);
   assert.equal(user().smashKind, 1);
+
+  sheet();
+  park();
+  user().x = GOAL_LINE_X - 1.7;
+  user().z = postZ;
+  goal("home");
+  frames(1, []);
+  frames(1, ["KeyF"]);
+  assert.equal(user().smashKind, 0);
+
+  sheet();
+  park();
+  user().x = GOAL_LINE_X - 1.4;
+  user().z = 0;
+  goal("home");
+  frames(1, []);
+  frames(1, ["KeyF"]);
+  assert.equal(user().smashKind, 0);
 
   sheet();
   park();
@@ -347,12 +386,21 @@ test("X rages within 2 m of a post or the bar on either net, and not from center
 
   sheet();
   park();
-  user().x = 0;
-  user().z = 0;
+  const checker = user();
+  checker.x = 0;
+  checker.z = 0;
+  checker.yaw = -Math.PI / 2;
   goal("home");
-  frames(1, []);
-  frames(1, ["KeyF"]);
-  assert.equal(user().smashKind, 0);
+  world.ref.x = 1.05;
+  world.ref.z = 0;
+  world.ref.struck = 0;
+  world.ref.tumble = 0;
+  world.ref.vx = 0;
+  world.ref.vz = 0;
+  world.lastHitTime = -10;
+  frames(1, ["KeyQ"]);
+  assert.equal(checker.smashKind, 0);
+  assert.ok(world.ref.struck > 1, `ref check after a home goal ${world.ref.struck}`);
 });
 
 test("a user goalie can burst and rage after a goal", () => {
@@ -396,6 +444,79 @@ test("a user goalie can burst and rage after a goal", () => {
   goal("home");
   frames(1, []);
   frames(1, ["KeyF"]);
-  assert.equal(g3.smashKind, 1);
-  assert.ok(g3.smashHit > 0);
+  assert.equal(g3.smashKind, 0);
+  sheet();
+  const g4 = world.skaters.find((s) => s.kind === "goalie" && s.side === "home");
+  world.userId = g4.id;
+  park();
+  g4.x = GOAL_LINE_X - 1.5;
+  g4.z = 0;
+  g4.stun = 0;
+  g4.struck = 0;
+  g4.tumble = 0;
+  goal("away");
+  frames(1, []);
+  frames(1, ["KeyF"]);
+  assert.equal(g4.smashKind, 1);
+  assert.ok(g4.smashHit > 0);
+  const gx = g4.x;
+  frames(16, ["KeyS"]);
+  assert.ok(g4.x < gx - 0.08, `goalie skates during rage ${g4.x} from ${gx}`);
+  assert.ok(g4.smash > 0);
+});
+
+test("a raging user can still burst, dive, and check", () => {
+  sheet();
+  park();
+  const u = user();
+  u.x = GOAL_LINE_X - 1.7;
+  u.z = GOAL_W / 2;
+  goal("away");
+  frames(1, []);
+  frames(1, ["KeyF"]);
+  assert.equal(u.smashKind, 2);
+  const coast = Math.hypot(u.vx, u.vz);
+  frames(18, ["KeyS"]);
+  const skating = Math.hypot(u.vx, u.vz);
+  frames(18, ["KeyS", "Space"]);
+  assert.equal(world.whistle, "goal");
+  assert.equal(u.burst, 1);
+  assert.ok(Math.hypot(u.vx, u.vz) > Math.max(coast, skating) + 0.4);
+  assert.ok(rageDraw(u.id));
+  frames(1, ["ShiftLeft"]);
+  assert.ok(u.dive > 1, `dive ${u.dive}`);
+  assert.equal(u.smashKind, 2);
+  assert.ok(rageDraw(u.id));
+
+  sheet();
+  park();
+  const hitter = user();
+  hitter.x = GOAL_LINE_X - 1.6;
+  hitter.z = 0;
+  hitter.yaw = -Math.PI / 2;
+  goal("away");
+  frames(1, []);
+  frames(1, ["KeyF"]);
+  assert.equal(hitter.smashKind, 1);
+  const foe = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
+  assert.ok(foe);
+  foe.x = hitter.x + 1.05;
+  foe.z = hitter.z;
+  foe.vx = 0;
+  foe.vz = 0;
+  foe.stun = 0;
+  foe.struck = 0;
+  foe.tumble = 0;
+  foe.hit = 0;
+  foe.celebrate = 0;
+  for (const r of [world.ref, world.ref2, world.ref3, world.ref4]) {
+    r.x = -30;
+    r.z = 0;
+    r.vx = 0;
+    r.vz = 0;
+  }
+  frames(1, ["KeyQ"]);
+  assert.ok(foe.struck > 1.1, `checked during rage ${foe.struck}`);
+  assert.equal(hitter.smashKind, 1);
+  assert.ok(rageDraw(hitter.id));
 });

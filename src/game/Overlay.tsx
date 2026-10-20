@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { Pause, Play, RotateCcw } from "lucide-react";
 import { setTouchBurst, setTouchFace, setTouchLt, setTouchMove, setTouchView } from "./input";
 import {
+  applyLiveLineup,
   resetWorld,
   world,
   attackCompass,
@@ -1031,7 +1032,6 @@ export function Overlay() {
   const awayScore = useGame((s) => s.awayScore);
   const whistle = useGame((s) => s.whistle);
   const delayedOffside = useGame((s) => s.delayedOffside);
-  const passChain = useGame((s) => s.passChain);
   const replay = useGame((s) => s.replay);
   const clockMode = useGame((s) => s.clockMode);
   const controlProfile = useGame((s) => s.controlProfile);
@@ -1068,14 +1068,16 @@ export function Overlay() {
   const applyHome = useCallback(
     (l: Lineup) => {
       setHomeLineup(l);
-      resetWorld();
+      if (useGame.getState().playing) applyLiveLineup("home");
+      else resetWorld();
     },
     [setHomeLineup],
   );
   const applyAway = useCallback(
     (l: Lineup) => {
       setAwayLineup(l);
-      resetWorld();
+      if (useGame.getState().playing) applyLiveLineup("away");
+      else resetWorld();
     },
     [setAwayLineup],
   );
@@ -1218,7 +1220,6 @@ export function Overlay() {
               {shotName.toUpperCase()} <b>{speed.toFixed(0)}</b>
               <small> MPH</small>
             </span>
-            {passChain > 0 ? <span className="puck-chip">Chain {passChain}</span> : null}
             {/*
               hud-stats is a right-aligned column. This row is flex-end: sauce, then the
               pass bar (min-width 92px). Dropping the pass bar used to shrink the row, so

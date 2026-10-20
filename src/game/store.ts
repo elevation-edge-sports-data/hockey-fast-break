@@ -519,7 +519,7 @@ export const useGame = create<GameUi>((set, get) => ({
   ignoreAutoFind: loadFlag("hfb-ignore-auto-find", false),
   passLock: loadFlag("hfb-pass-lock", true),
   offsides: INITIAL_MODE === "game",
-  gameSpeed: 1,
+  gameSpeed: 0.8,
   cpuOffense: 1,
   cpuDefense: 1,
   cpuGoalie: 0.8,

@@ -152,12 +152,13 @@ function fresh() {
   ui.setPaused(false);
   ui.setControlProfile("classic");
   resetWorld();
+  world.homeAttack = 1;
+  resetWorld({ keepScore: true });
   world.faceoff = false;
   world.faceoffPhase = "live";
   world.stoppage = false;
   world.whistle = null;
   world.delayedOffside = 0;
-  world.homeAttack = 1;
   world.periodOver = false;
   world.replay = false;
   settleUser();

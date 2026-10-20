@@ -46,7 +46,7 @@ const rink = await server.ssrLoadModule("/src/game/rink.ts");
 const { resetWorld, stepSim, world } = sim;
 const { useGame } = store;
 const { setInjectedKeys } = input;
-const { sweepCrowd, CROWD_PUCK_R, STANDS, PERSON_LIFT, JUMBO_Y, outsideStandFootprint, SEAT_D } =
+const { sweepCrowd, CROWD_PUCK_R, STANDS, PERSON_LIFT, JUMBO_Y, JUMBO_HW, outsideStandFootprint, SEAT_D } =
   crowd;
 const { resolveRink, RINK_L, RINK_W, FACEOFF_EZ_X, FACEOFF_NZ_X, FACEOFF_SPOT_Z } = rink;
 
@@ -276,9 +276,10 @@ function nearestFaceoff(x, z) {
   return { x: bestX, z: bestZ };
 }
 
-/** Over the third deck and under the jumbotron, toward the bench side. */
+/** Over the upper deck and outside the jumbotron, toward the bench side. */
 function launchOverBowl() {
-  launch(0, 20, 0, 0, 4, -55);
+  const deckTop = STANDS.reduce((m, p) => Math.max(m, p.y), 0);
+  launch(0, deckTop + 5, -(JUMBO_HW + 3), 0, 4, -55);
 }
 
 test("a puck that clears the bowl and lands whistles without touching a solid", () => {

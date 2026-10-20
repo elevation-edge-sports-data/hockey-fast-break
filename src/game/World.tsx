@@ -6,7 +6,7 @@ import { Arena } from "./Arena";
 import { Rink } from "./Rink.tsx";
 import { PlayerMesh, PUCK_MARK_INNER, PuckMesh, RefereeMesh, USER_MARK_INNER } from "./PlayerMesh";
 import { attachInput } from "./input";
-import { installControlsProbe, periodEndLook, replayLockKind, stepPlayFrame, whistleUserLook, world } from "./sim";
+import { installControlsProbe, mirrorFreeCamEnds, orbitFromOffset, periodEndLook, replayLockKind, stepPlayFrame, whistleUserLook, world } from "./sim";
 import { useGame, type CamMode } from "./store";
 import { BOARD_H, BLUE_X, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
 
@@ -336,7 +336,7 @@ function seedFreestyleCam(camera: THREE.PerspectiveCamera) {
   }
 }
 
-function captureFreeCam(camera: THREE.Camera) {
+function captureFreeCam(camera: THREE.Camera, loose = false) {
   const fc = world.freeCam;
   const puck = world.puck;
   const playing = useGame.getState().playing;
@@ -349,10 +349,10 @@ function captureFreeCam(camera: THREE.Camera) {
   const dx = camera.position.x - fc.tx;
   const dy = camera.position.y - fc.ty;
   const dz = camera.position.z - fc.tz;
-  fc.radius = Math.max(4.2, Math.hypot(dx, dy, dz));
-  fc.phi = Math.acos(Math.max(-0.99, Math.min(0.99, dy / fc.radius)));
-  fc.theta = Math.atan2(dx, dz);
-  fc.phi = Math.max(0.12, Math.min(1.45, fc.phi));
+  const orbit = orbitFromOffset(dx, dy, dz, loose);
+  fc.radius = orbit.radius;
+  fc.phi = orbit.phi;
+  fc.theta = orbit.theta;
   fc.captured = true;
 }
 
@@ -701,8 +701,19 @@ function CameraRig() {
       prevMode.current = mode;
       return;
     }
-    if (mode === "freestyle" && freeCamLive) {
-      world.freeCamReapply = false;
+    if (mode === "freestyle") {
+      const switchedMode = prevMode.current !== mode;
+      if (fromTitle) {
+        captureFreeCam(cam, true);
+        world.freeCamReapply = false;
+      } else if (world.freeCamReapply) {
+        world.freeCamReapply = false;
+      } else if (switchedMode) {
+        seedFreestyleCam(cam);
+      }
+      if (periodSnap && !fromTitle && !switchedMode) mirrorFreeCamEnds();
+      if (periodSnap) seenPeriod.current = world.periodView;
+      if (!useGame.getState().freeCamLive) useGame.getState().setFreeCamLive(true);
       const fc = world.freeCam;
       const puck = world.puck;
       const drillCam = drillFollow();
@@ -721,36 +732,17 @@ function CameraRig() {
       prevMode.current = mode;
       return;
     }
-    if (mode === "freestyle") {
-      if (world.freeCamReapply) {
-        applyFreeCam(cam);
-        world.freeCamReapply = false;
-      } else if (prevMode.current !== mode) seedFreestyleCam(cam);
-      cam.up.set(0, 1, 0);
-      _pos.copy(cam.position);
-      writeCamBasis(cam);
-      projectUser(cam);
-      prevMode.current = mode;
-      return;
-    }
     const d = Math.min(dt, 0.1);
     const puck = world.puck;
     const idle = !playing || pausedNow;
     const drillCam = drillFollow();
     const endCam = !idle && !drillCam ? periodEndLook() : null;
     const whistleCam = !idle && !endCam ? whistleUserLook() : null;
-    const controlled = endCam || whistleCam ? world.skaters[world.userId] : undefined;
-    const px = idle ? 0 : drillCam ? drillCam.x : controlled ? controlled.x : puck.x;
-    const pz = idle ? 0 : drillCam ? drillCam.z : controlled ? controlled.z : puck.z;
-    const py = idle
-      ? 0.45
-      : drillCam
-        ? drillCam.y
-        : endCam
-          ? endCam.y
-          : whistleCam
-            ? whistleCam.y
-            : Math.max(0.35, puck.y);
+    const focus = endCam ?? whistleCam;
+    const controlled = focus && !endCam && world.whistle === "goal" ? world.skaters[world.userId] : undefined;
+    const px = idle ? 0 : drillCam ? drillCam.x : focus ? focus.x : puck.x;
+    const pz = idle ? 0 : drillCam ? drillCam.z : focus ? focus.z : puck.z;
+    const py = idle ? 0.45 : drillCam ? drillCam.y : focus ? focus.y : Math.max(0.35, puck.y);
     if (periodSnap) seenPeriod.current = world.periodView;
     const switched = prevMode.current !== mode || fromTitle || drillSnap || periodSnap;
     prevMode.current = mode;
@@ -915,7 +907,7 @@ function FreestyleControls() {
 
   useLayoutEffect(() => {
     if (!live || !useGame.getState().playing) return;
-    if (world.freeCam.captured || world.freeCamReapply) return;
+    if (world.freeCam.captured || world.freeCamReapply || useGame.getState().freeCamLive) return;
     seedFreestyleCam(camera as THREE.PerspectiveCamera);
   }, [live, camera]);
 
@@ -1016,8 +1008,14 @@ export function World() {
           kitId={s.side === "home" ? homeKit : awayKit}
         />
       ))}
-      <RefereeMesh lane={1} />
-      {clockMode === "practice" ? null : <RefereeMesh lane={-1} />}
+      <RefereeMesh slot={0} />
+      {clockMode === "practice" ? null : <RefereeMesh slot={1} />}
+      {clockMode === "game" ? (
+        <>
+          <RefereeMesh slot={2} />
+          <RefereeMesh slot={3} />
+        </>
+      ) : null}
       <PuckMesh />
       <CameraRig />
       <FreestyleControls />

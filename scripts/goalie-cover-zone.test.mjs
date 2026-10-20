@@ -93,9 +93,10 @@ function sheet(side, attack) {
   ui.setPlaying(true);
   ui.setPaused(false);
   resetWorld();
+  world.homeAttack = attack;
+  resetWorld({ keepScore: true });
   stepSim(DT);
   setInjectedKeys([]);
-  world.homeAttack = attack;
   world.faceoff = false;
   world.faceoffA = false;
   world.faceoffPhase = "live";

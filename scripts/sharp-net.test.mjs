@@ -68,6 +68,8 @@ function boot(mode = "game") {
   ui.setOffsides(false);
   ui.setControlProfile("classic");
   resetWorld();
+  world.homeAttack = 1;
+  resetWorld({ keepScore: true });
   world.faceoff = false;
   world.faceoffPhase = "live";
   world.stoppage = false;
@@ -76,7 +78,6 @@ function boot(mode = "game") {
   world.periodOver = false;
   world.goalSide = null;
   world.goalBank = null;
-  world.homeAttack = 1;
   world.puck.owner = null;
   useGame.getState().setWhistle(null);
   useGame.getState().setPeriodOver(false);

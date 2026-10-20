@@ -19,6 +19,7 @@ import {
   FASCIA_DROP,
   FASCIA_H,
   FASCIA_W,
+  BOWL_WALL,
   fasciaRing,
   JUMBO_FACE_SCALE,
   JUMBO_HH,
@@ -677,7 +678,7 @@ const BENCH_SEATS = BENCH_SKATERS + 1;
 const HOME_BENCH_NUMS = [84, 62, 42, 25, 11, 10, 15, 18, 21];
 const AWAY_BENCH_NUMS = [2, 4, 9, 14, 17, 19, 22, 27, 31];
 
-/** 9 skaters plus one goalie. Home index 0 is the end toward −X. */
+/** 9 skaters plus one goalie. Index 0 of a −X bench is the end toward −X. */
 function benchXs(end: -1 | 1): number[] {
   const inner = 0.88;
   const outer = 9.42;
@@ -690,8 +691,8 @@ function benchXs(end: -1 | 1): number[] {
   return xs;
 }
 
-const HOME_BENCH_XS = benchXs(-1);
-const AWAY_BENCH_XS = benchXs(1);
+const HOME_BENCH_XS = benchXs(1);
+const AWAY_BENCH_XS = benchXs(-1);
 
 function penaltyBoxWidth(n: number): number {
   return n <= 2 ? 2.6 : Math.min(5.1, 1.15 + n * 0.96);
@@ -959,11 +960,11 @@ export function Arena() {
       <Truss />
       <Benches />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.04, 0]} receiveShadow>
-        <planeGeometry args={[160, 110]} />
+        <planeGeometry args={[BOWL_WALL.floorL, BOWL_WALL.floorW]} />
         <meshStandardMaterial color="#12161c" roughness={0.9} />
       </mesh>
-      <mesh position={[0, 14, 0]}>
-        <cylinderGeometry args={[62, 68, 30, 48, 1, true]} />
+      <mesh position={[0, BOWL_WALL.y, 0]}>
+        <cylinderGeometry args={[BOWL_WALL.topR, BOWL_WALL.bottomR, BOWL_WALL.height, 48, 1, true]} />
         <meshStandardMaterial color="#151b24" side={THREE.BackSide} roughness={0.85} />
       </mesh>
     </group>

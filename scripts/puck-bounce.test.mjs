@@ -75,6 +75,8 @@ function boot() {
   ui.setOffsides(false);
   ui.setControlProfile("classic");
   resetWorld();
+  world.homeAttack = 1;
+  resetWorld({ keepScore: true });
   world.faceoff = false;
   world.faceoffPhase = "live";
   world.stoppage = false;
@@ -84,7 +86,6 @@ function boot() {
   world.goalSide = null;
   world.goalBank = null;
   world.goalieShot = null;
-  world.homeAttack = 1;
   world.reboundSoft = false;
   world.reboundN = 0;
   world.lastShotCorner = false;

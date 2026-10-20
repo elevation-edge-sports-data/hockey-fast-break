@@ -45,7 +45,7 @@ const input = await server.ssrLoadModule("/src/game/input.ts");
 
 const { resetWorld, stepSim, world } = sim;
 const { useGame } = store;
-const { BLUE_X, BLUE_LINE_W } = rink;
+const { BLUE_X, BLUE_LINE_W, GOAL_LINE_X } = rink;
 const { setInjectedKeys } = input;
 
 const DT = 1 / 60;
@@ -58,12 +58,13 @@ function fresh() {
   ui.setOffsides(true);
   ui.setPlaying(true);
   resetWorld();
+  world.homeAttack = 1;
+  resetWorld({ keepScore: true });
   world.faceoff = false;
   world.faceoffPhase = "live";
   world.stoppage = false;
   world.whistle = null;
   world.delayedOffside = 0;
-  world.homeAttack = 1;
 }
 
 function wings(side) {
@@ -142,7 +143,8 @@ test("home forwards join before the attacking blue and cross on entry", () => {
   });
   backs.forEach((s, i) => {
     s.x = -18;
-    s.z = i % 2 === 0 ? -8.2 : 8.2;
+    // Lower id is the left defenseman. Attack is +X, so that half is +Z.
+    s.z = i % 2 === 0 ? 8.2 : -8.2;
     s.vx = 0;
     s.vz = 0;
     s.stun = 0;
@@ -163,14 +165,31 @@ test("home forwards join before the attacking blue and cross on entry", () => {
     assert.ok(s.x > 0, `defense ${s.id} did not join (x=${s.x.toFixed(2)})`);
   }
 
-  stepN(90, () => pinCarrier(user, EDGE + 1.6, 0, 3));
+  stepN(150, () => pinCarrier(user, EDGE + 1.6, 0, 3));
   assert.equal(world.whistle, null);
+  const mid = (EDGE + GOAL_LINE_X) / 2;
+  const allF = wings("home");
+  const centerI = allF.length <= 2 ? 0 : Math.floor((allF.length - 1) / 2);
+  const centerId = allF[centerI].id;
   for (const s of mates) {
-    assert.ok(s.x > EDGE + 0.45, `winger ${s.id} parked outside at ${s.x.toFixed(2)} after entry`);
-    assert.ok(s.x < EDGE + 6, `winger ${s.id} left the entry lane at ${s.x.toFixed(2)}`);
+    const depth = GOAL_LINE_X - s.x;
+    const fromBlue = s.x - EDGE;
+    assert.ok(s.x > mid, `winger ${s.id} stayed near the blue at ${s.x.toFixed(2)}`);
+    assert.ok(depth < fromBlue, `winger ${s.id} is closer to the blue than the goal line`);
+    if (s.id === centerId) {
+      assert.ok(Math.abs(s.z) < 8, `center ${s.id} took a corner (z ${s.z.toFixed(2)})`);
+    } else {
+      assert.ok(Math.abs(s.z) > 6, `wing ${s.id} left its side (z ${s.z.toFixed(2)})`);
+    }
   }
+  assert.ok(
+    Math.hypot(mates[0].x - mates[1].x, mates[0].z - mates[1].z) > 6,
+    "forwards clustered",
+  );
   for (const s of backs) {
-    assert.ok(s.x > EDGE + 0.2, `defense ${s.id} stayed outside at ${s.x.toFixed(2)} after entry`);
+    assert.ok(s.x > EDGE + 0.15, `defense ${s.id} stayed outside at ${s.x.toFixed(2)} after entry`);
+    assert.ok(s.x < mid, `defense ${s.id} followed the forwards in at ${s.x.toFixed(2)}`);
+    assert.ok(Math.abs(s.z) > 7, `defense ${s.id} left the blue-line boards (z ${s.z.toFixed(2)})`);
   }
 });
 
