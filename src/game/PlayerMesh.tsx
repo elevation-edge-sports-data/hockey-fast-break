@@ -1,8 +1,8 @@
 import { useLayoutEffect, useMemo, useRef, type ReactElement, type RefObject } from "react";
-import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
+import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNumberTexture } from "./iceTexture";
-import { attackDir, burstPoseWeight, checkedCyclePose, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, rageGizmoDragOn, rageIron, shotFollowTime, stepRagePreview, TUMBLE_PITCH_MAX, TUMBLE_PITCH_RATE, TUMBLE_STRIKE, TUMBLE_UP, world, type Referee, type Skater } from "./sim";
+import { attackDir, burstPoseWeight, checkedCyclePose, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, shotFollowTime, TUMBLE_PITCH_MAX, TUMBLE_PITCH_RATE, TUMBLE_STRIKE, TUMBLE_UP, world, type Referee, type Skater } from "./sim";
 import { GOALIE_BUTTERFLY_BLADE_LEAD, GOALIE_ICE_CENTER_Z, GOALIE_PADDLE_T, GOALIE_PADDLE_W, GOALIE_STICK_LEN, GOALIE_Z, GOALIE_Z_BLADE_LEAD, bodyToLocal, bodyToWorld, goalieIceGeo, goalieIceHeel, layoutGoalieStick, placeGoalieIceMesh, poseGoalieButterflyArms, poseGoalieButterflyLimbs, poseGoalieHand, poseGoalieButterflyStanceLimbs, poseGoaliePlay, poseGoalieZArms, poseGoalieZLimbs, posedBody, torsoPivotY, torsoPlacedY } from "./goalieStance";
 import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, SKATER_TAPE_Z0, SKATER_TAPE_Z1, burstCarryStickAim, carryStickAim, dekePull, dekeStickAim, neutralCarryBlend, neutralCarryStickAim, shotStickAim, skaterBladeCurveX, skaterBladeLiePoint, skillCarryStickAim, stickFrame, type StickAim } from "./stickSide";
 import { kitById, type UniformKit } from "./uniforms";
@@ -757,26 +757,6 @@ const POKE_BACK_FOOT_Z = -0.13;
 const POKE_FRONT_FOOT_Z = 0.47;
 /** Left hand at or above the knob-side grip. */
 const POKE_LEFT_GRIP = 0.96;
-const RAGE_HX = 0.14;
-const RAGE_HY = 1.2;
-const RAGE_HZ = 0.34;
-const _rageBodyQ = new THREE.Quaternion();
-const _rageBodyP = new THREE.Vector3();
-const _rageStickQ = new THREE.Quaternion();
-const _rageStickP = new THREE.Vector3();
-const _rageLQ = new THREE.Quaternion();
-const _rageRQ = new THREE.Quaternion();
-const _rageLFQ = new THREE.Quaternion();
-const _rageRFQ = new THREE.Quaternion();
-const _rageLP = new THREE.Vector3();
-const _rageRP = new THREE.Vector3();
-const _rageA = new THREE.Quaternion();
-const _rageB = new THREE.Quaternion();
-const _rageC = new THREE.Quaternion();
-const _rageD = new THREE.Quaternion();
-const _rageHoldP = new THREE.Vector3();
-const _rageHoldQ = new THREE.Quaternion();
-const _rageAim = new THREE.Vector3();
 
 function mat(color: string, extras: THREE.MeshStandardMaterialParameters = {}) {
   return new THREE.MeshStandardMaterial({
@@ -3083,282 +3063,6 @@ function poseGloveAt(body: THREE.Group, arm: THREE.Group, fore: THREE.Group, sx:
   fore.quaternion.copy(_parentQ);
 }
 
-/** 0 through the wind-up, 1 once smash reaches the scheduled iron time. */
-function rageEase(t: number, hit: number): number {
-  const h = hit > 0 ? hit : 99;
-  const wind0 = Math.max(0.16, h - 0.52);
-  if (t >= h) return 1;
-  if (t <= wind0) return 0;
-  const u = (t - wind0) / Math.max(0.05, h - wind0);
-  return u * u * (3 - 2 * u);
-}
-
-function slerpRageArms(e: number, lArm: THREE.Group, rArm: THREE.Group, lFore: THREE.Group | null, rFore: THREE.Group | null): void {
-  _rageA.copy(lArm.quaternion);
-  _rageC.copy(rArm.quaternion);
-  if (lFore) _rageB.copy(lFore.quaternion);
-  if (rFore) _rageD.copy(rFore.quaternion);
-  lArm.quaternion.copy(_rageLQ).slerp(_rageA, e);
-  rArm.quaternion.copy(_rageRQ).slerp(_rageC, e);
-  if (lFore) lFore.quaternion.copy(_rageLFQ).slerp(_rageB, e);
-  if (rFore) rFore.quaternion.copy(_rageRFQ).slerp(_rageD, e);
-  lArm.position.copy(_rageLP);
-  rArm.position.copy(_rageRP);
-}
-
-/** Flying half-shaft. Local +Y matches the piece axis, which points from the blade toward the hand. */
-function poseRagePiece(group: THREE.Group, piece: { on: boolean; x: number; y: number; z: number; dx: number; dy: number; dz: number; rx: number; ry: number; rz: number }, root: THREE.Object3D): void {
-  group.visible = piece.on;
-  if (!piece.on) return;
-  _ikTo.set(piece.x, piece.y, piece.z);
-  root.worldToLocal(_ikTo);
-  group.position.copy(_ikTo);
-  _rageAim.set(piece.dx, piece.dy, piece.dz);
-  if (_rageAim.lengthSq() < 1e-8) _rageAim.set(0, 1, 0);
-  else _rageAim.normalize();
-  group.quaternion.setFromUnitVectors(_fromY, _rageAim);
-  group.rotateX(piece.rx);
-  group.rotateY(piece.ry);
-  group.rotateZ(piece.rz);
-}
-
-function poseRage(root: THREE.Group, body: THREE.Group | null, lArm: THREE.Group, rArm: THREE.Group, lFore: THREE.Group | null, rFore: THREE.Group | null, stick: THREE.Group, shaft: THREE.Group, blade: THREE.Group, knob: THREE.Object3D, flyBlade: THREE.Group, flyShaft: THREE.Group, layout: { len: number }, view: NonNullable<ReturnType<typeof rageDraw>>) {
-  const e = rageEase(view.t, view.hit);
-  const toss = view.toss > 0 ? view.toss : view.hit > 0 ? view.hit + 0.4 : 99;
-  const follow = view.t >= toss ? Math.min(1, (view.t - toss) / 0.5) : 0;
-  const throughU = Math.min(1, follow * 2);
-  const dropU = Math.max(0, follow * 2 - 1);
-  const bladeGone = view.blade.on;
-  const shaftGone = view.shaft.on;
-  const poseE = follow > 0 ? 1 : e;
-
-  if (body) {
-    _rageBodyQ.copy(body.quaternion);
-    _rageBodyP.copy(body.position);
-  }
-  _rageStickQ.copy(stick.quaternion);
-  _rageStickP.copy(stick.position);
-  _rageLQ.copy(lArm.quaternion);
-  _rageRQ.copy(rArm.quaternion);
-  _rageLP.copy(lArm.position);
-  _rageRP.copy(rArm.position);
-  if (lFore) _rageLFQ.copy(lFore.quaternion);
-  if (rFore) _rageRFQ.copy(rFore.quaternion);
-
-  root.updateWorldMatrix(true, false);
-  _ikTo.set(view.ironX, view.ironY, view.ironZ);
-  root.worldToLocal(_ikTo);
-  _rageAim.set(RAGE_HX - _ikTo.x, RAGE_HY - _ikTo.y, RAGE_HZ - _ikTo.z);
-  const reach = _rageAim.length();
-  const maxReach = layout.len * 0.9;
-  let heelX = _ikTo.x;
-  let heelY = _ikTo.y;
-  let heelZ = _ikTo.z;
-  if (reach > maxReach && reach > 1e-4) {
-    const sc = maxReach / reach;
-    heelX = RAGE_HX - _rageAim.x * sc;
-    heelY = RAGE_HY - _rageAim.y * sc;
-    heelZ = RAGE_HZ - _rageAim.z * sc;
-    _rageAim.multiplyScalar(sc);
-  }
-  if (_rageAim.lengthSq() < 1e-8) _rageAim.set(0, 1, 0);
-  else _rageAim.normalize();
-  // Heel at the clamped iron. Local +Y runs heel → knob, back toward the hands.
-  _rageA.setFromUnitVectors(_fromY, _rageAim);
-  stick.quaternion.copy(_rageStickQ).slerp(_rageA, poseE);
-  stick.position.set(
-    _rageStickP.x + (heelX - _rageStickP.x) * poseE,
-    _rageStickP.y + (heelY - _rageStickP.y) * poseE,
-    _rageStickP.z + (heelZ - _rageStickP.z) * poseE,
-  );
-  stick.visible = !shaftGone;
-  knob.visible = !shaftGone;
-  knob.position.set(0, layout.len, 0);
-  blade.visible = !bladeGone;
-  blade.position.set(0, 0, 0);
-  blade.rotation.set(0, 0, 0);
-  blade.scale.set(1, 1, 1);
-  shaft.visible = !shaftGone;
-  shaft.rotation.set(0, 0, 0);
-  if (bladeGone && !shaftGone) {
-    shaft.position.set(0, layout.len * 0.75, 0);
-    shaft.scale.set(1, layout.len * 0.5, 1);
-  } else {
-    shaft.position.set(0, layout.len * 0.5, 0);
-    shaft.scale.set(1, layout.len, 1);
-  }
-
-  if (body) {
-    body.quaternion.copy(_rageBodyQ);
-    const pitch = 0.2 * poseE + 0.22 * throughU * (1 - dropU);
-    if (pitch !== 0) body.rotateX(pitch);
-    body.position.copy(_rageBodyP);
-    stick.updateWorldMatrix(true, false);
-    body.updateWorldMatrix(true, false);
-    const topT = layout.len * 0.7 * (1 - poseE) + layout.len * 0.84 * poseE;
-    let botT = topT - 0.36;
-    if (bladeGone) botT = Math.max(botT, layout.len * 0.58);
-    _handTop.set(0, topT, 0);
-    stick.localToWorld(_handTop);
-    bodyToLocal(body, _handTop);
-    const topX = _handTop.x;
-    const topY = _handTop.y;
-    const topZ = _handTop.z;
-    _handBot.set(0, botT, 0);
-    stick.localToWorld(_handBot);
-    bodyToLocal(body, _handBot);
-    const botX = _handBot.x;
-    const botY = _handBot.y;
-    const botZ = _handBot.z;
-    _corner.set(view.ironX, view.ironY, view.ironZ);
-    bodyToLocal(body, _corner);
-    const ix = _corner.x;
-    const iy = _corner.y;
-    const iz = _corner.z;
-    let lx = topX;
-    let ly = topY;
-    let lz = topZ;
-    let rx = botX;
-    let ry = botY;
-    let rz = botZ;
-    if (follow > 0) {
-      lx = topX + (ix - topX) * 0.85 * throughU;
-      ly = topY + (iy - topY) * 0.85 * throughU;
-      lz = topZ + (iz - topZ) * 0.85 * throughU;
-      rx = botX + (ix - botX) * 0.85 * throughU;
-      ry = botY + (iy - botY) * 0.85 * throughU;
-      rz = botZ + (iz - botZ) * 0.85 * throughU;
-      lx += (-0.34 - lx) * dropU;
-      ly += (0.88 - ly) * dropU;
-      lz += (0.16 - lz) * dropU;
-      rx += (0.32 - rx) * dropU;
-      ry += (0.9 - ry) * dropU;
-      rz += (0.14 - rz) * dropU;
-    }
-    // Player's right hand (lArm, body −X) is the top hand. The left hand is lower on the shaft.
-    poseArmIk(lArm, lFore, _rageLP.x, _rageLP.y, _rageLP.z, lx, ly, lz, -1, true);
-    poseArmIk(rArm, rFore, _rageRP.x, _rageRP.y, _rageRP.z, rx, ry, rz, 1, true);
-    slerpRageArms(follow > 0 ? 1 : e, lArm, rArm, lFore, rFore);
-  }
-  poseRagePiece(flyBlade, view.blade, root);
-  poseRagePiece(flyShaft, view.shaft, root);
-}
-
-/**
- * Goalie stick origin is the knob. Local +Y runs heel → knob, so local −Y aims the heel.
- * Iron straight below the knob keeps +Y up and puts the heel on the bar.
- */
-function aimGoalieStick(stick: THREE.Object3D, ironX: number, ironY: number, ironZ: number, dip: number): void {
-  const parent = stick.parent;
-  if (!parent) return;
-  parent.updateWorldMatrix(true, false);
-  stick.getWorldPosition(_handTop);
-  _corner.set(ironX, ironY, ironZ);
-  parent.worldToLocal(_corner);
-  parent.worldToLocal(_handTop);
-  _rageAim.set(_corner.x - _handTop.x, _corner.y - _handTop.y, _corner.z - _handTop.z);
-  if (_rageAim.lengthSq() < 1e-8) _rageAim.set(0, -1, 0);
-  else _rageAim.normalize();
-  if (dip > 0) {
-    _rageAim.y -= dip;
-    if (_rageAim.lengthSq() < 1e-8) _rageAim.set(0, -1, 0);
-    else _rageAim.normalize();
-  }
-  _rageAim.negate();
-  stick.quaternion.setFromUnitVectors(_fromY, _rageAim);
-}
-
-function gripGoalieRageHands(body: THREE.Group, stick: THREE.Group, lArm: THREE.Group, rArm: THREE.Group, lFore: THREE.Group, rFore: THREE.Group): void {
-  stick.updateWorldMatrix(true, false);
-  body.updateWorldMatrix(true, false);
-  _handTop.set(0, -0.16, 0);
-  stick.localToWorld(_handTop);
-  bodyToLocal(body, _handTop);
-  const ux = _handTop.x;
-  const uy = _handTop.y;
-  const uz = _handTop.z;
-  _handBot.set(0, -0.48, 0);
-  stick.localToWorld(_handBot);
-  bodyToLocal(body, _handBot);
-  poseArmIk(lArm, lFore, _rageLP.x, _rageLP.y, _rageLP.z, ux, uy, uz, -1, true);
-  poseArmIk(rArm, rFore, _rageRP.x, _rageRP.y, _rageRP.z, _handBot.x, _handBot.y, _handBot.z, 1, true);
-}
-
-function poseGoalieRage(s: Skater, body: THREE.Group | null, lArm: THREE.Group, rArm: THREE.Group, lFore: THREE.Group | null, rFore: THREE.Group | null, stick: THREE.Group): void {
-  if (!body || !lFore || !rFore || stick.parent !== lFore) return;
-  const e = rageEase(s.smash, s.smashHit);
-  const past = s.smashHit > 0 && s.smash >= s.smashHit ? Math.min(1, (s.smash - s.smashHit) / 0.55) : 0;
-  const dropU = Math.max(0, (past - 0.45) / 0.55);
-  const iron = rageIron(1, s.side);
-  pivotGoalieStickOnKnob(stick);
-  _rageBodyQ.copy(body.quaternion);
-  _rageBodyP.copy(body.position);
-  _rageStickQ.copy(stick.quaternion);
-  _rageStickP.copy(stick.position);
-  _rageLQ.copy(lArm.quaternion);
-  _rageRQ.copy(rArm.quaternion);
-  _rageLFQ.copy(lFore.quaternion);
-  _rageRFQ.copy(rFore.quaternion);
-  _rageLP.copy(lArm.position);
-  _rageRP.copy(rArm.position);
-
-  const dip = Math.min(1, past / 0.45) * 0.75;
-  for (let n = 0; n < 2; n++) {
-    aimGoalieStick(stick, iron.x, iron.y, iron.z, dip);
-    gripGoalieRageHands(body, stick, lArm, rArm, lFore, rFore);
-  }
-  aimGoalieStick(stick, iron.x, iron.y, iron.z, dip);
-  // Contact aim stays parent-local. The world hold is taken after the body pitch, once the hands let go.
-  _blendQ.copy(stick.quaternion);
-
-  const blend = past > 0 ? 1 : e;
-  _rageA.copy(lArm.quaternion);
-  _rageB.copy(lFore.quaternion);
-  _rageC.copy(rArm.quaternion);
-  _rageD.copy(rFore.quaternion);
-  lArm.quaternion.copy(_rageLQ).slerp(_rageA, blend);
-  lFore.quaternion.copy(_rageLFQ).slerp(_rageB, blend);
-  rArm.quaternion.copy(_rageRQ).slerp(_rageC, blend);
-  rFore.quaternion.copy(_rageRFQ).slerp(_rageD, blend);
-  lArm.position.copy(_rageLP);
-  rArm.position.copy(_rageRP);
-  stick.quaternion.copy(_rageStickQ).slerp(_blendQ, blend);
-  stick.position.copy(_rageStickP);
-  body.quaternion.copy(_rageBodyQ);
-  if (blend > 0) body.rotateX(0.16 * Math.max(blend, past * 0.5));
-  body.position.copy(_rageBodyP);
-  stick.visible = true;
-
-  if (dropU <= 0) return;
-  // Hands leave the shaft. The stick stays on the follow-through world pose.
-  stick.updateWorldMatrix(true, true);
-  stick.getWorldPosition(_rageHoldP);
-  stick.getWorldQuaternion(_rageHoldQ);
-  _rageA.copy(lArm.quaternion);
-  _rageB.copy(lFore.quaternion);
-  _rageC.copy(rArm.quaternion);
-  _rageD.copy(rFore.quaternion);
-  poseArmIk(lArm, lFore, _rageLP.x, _rageLP.y, _rageLP.z, -0.42, 0.84, 0.2, -1, true);
-  poseArmIk(rArm, rFore, _rageRP.x, _rageRP.y, _rageRP.z, 0.36, 0.88, 0.16, 1, true);
-  _stickQ.copy(lArm.quaternion);
-  _parentQ.copy(lFore.quaternion);
-  _blendQ.copy(rArm.quaternion);
-  _ikInv.copy(rFore.quaternion);
-  lArm.quaternion.copy(_rageA).slerp(_stickQ, dropU);
-  lFore.quaternion.copy(_rageB).slerp(_parentQ, dropU);
-  rArm.quaternion.copy(_rageC).slerp(_blendQ, dropU);
-  rFore.quaternion.copy(_rageD).slerp(_ikInv, dropU);
-  lArm.position.copy(_rageLP);
-  rArm.position.copy(_rageRP);
-  lFore.updateWorldMatrix(true, false);
-  _ikTo.copy(_rageHoldP);
-  lFore.worldToLocal(_ikTo);
-  stick.position.copy(_ikTo);
-  lFore.getWorldQuaternion(_stickQ);
-  _stickQ.invert();
-  stick.quaternion.copy(_stickQ).multiply(_rageHoldQ);
-}
-
 /**
  * Folded reach used only by the goal glide. The pole is the elbow hint in body space.
  * The glove point, not the forearm origin, lands on the target.
@@ -4430,8 +4134,6 @@ export function PlayerMesh({
   const knobRef = useRef<THREE.Mesh>(null);
   const flyBlade = useRef<THREE.Group>(null);
   const flyShaft = useRef<THREE.Group>(null);
-  const rageDragHeld = useRef(false);
-  const invalidate = useThree((s) => s.invalidate);
   const ring = useRef<THREE.Group>(null);
   const shadow = useRef<THREE.Mesh>(null);
   const skater = world.skaters[index]!;
@@ -4477,18 +4179,6 @@ export function PlayerMesh({
     shaftHold: shaftHold.current,
   });
 
-  const applyRagePhase = (s: Skater, g: THREE.Group) => {
-    if (s.dive > 0.04 || checkedCyclePose(s.struck, s.tumble)) return;
-    if (s.kind === "goalie") {
-      if (s.smashKind <= 0 || s.smashHit <= 0 || !stick.current || !lArm.current || !rArm.current) return;
-      poseGoalieRage(s, body.current, lArm.current, rArm.current, lFore.current, rFore.current, stick.current);
-      return;
-    }
-    const view = rageDraw(s.id);
-    if (!view || !stick.current || !shaftHold.current || !bladeGrp.current || !knobRef.current || !flyBlade.current || !flyShaft.current || !lArm.current || !rArm.current) return;
-    poseRage(g, body.current, lArm.current, rArm.current, lFore.current, rFore.current, stick.current, shaftHold.current, bladeGrp.current, knobRef.current, flyBlade.current, flyShaft.current, layout, view);
-  };
-
   useLayoutEffect(() => {
     const group = body.current;
     if (!group) return;
@@ -4506,8 +4196,6 @@ export function PlayerMesh({
     if (!s) return;
     releaseStickFromHand(stick.current);
     stampPoseOverride(index, s, poseGroups());
-    const g = root.current;
-    if (g && (world.namedPose === "rage" || world.namedPose === "goalieRage")) applyRagePhase(s, g);
   }, [index, onJointRefs, posedEpoch]);
 
   useLayoutEffect(() => {
@@ -4565,34 +4253,12 @@ export function PlayerMesh({
     if (world.poseEditorActive || world.poseEditorLock) {
       // The editor does not apply the goalie root scale, so the helmet stays at the skater size.
       if (head.current) head.current.scale.set(1, 1, 1);
-      const heldRage = world.poseHold && world.namedPoseIndex === index && (world.namedPose === "rage" || world.namedPose === "goalieRage");
-      if (world.poseEditorLock || !heldRage) return;
-      const s = world.skaters[index];
-      const g = root.current;
-      if (!s || !g) return;
-      if (rageGizmoDragOn()) {
-        if (!rageDragHeld.current) {
-          rageDragHeld.current = true;
-          releaseStickFromHand(stick.current);
-          stampPoseOverride(index, s, poseGroups());
-        }
-        return;
-      }
-      rageDragHeld.current = false;
-      stepRagePreview(Math.min(0.05, delta || 0));
-      releaseStickFromHand(stick.current);
-      stampPoseOverride(index, s, poseGroups());
-      applyRagePhase(s, g);
-      invalidate();
       return;
     }
     if (body.current) body.current.userData.torsoPivotY = torsoPivot;
     const s: Skater | undefined = world.skaters[index];
     const g = root.current;
     if (!s || !g) return;
-    if (world.poseHold && world.namedPoseIndex === index && (world.namedPose === "rage" || world.namedPose === "goalieRage")) {
-      stepRagePreview(Math.min(0.05, delta || 0));
-    }
     g.visible = true;
     const diveU = Math.min(1, Math.max(0, s.dive / 0.95));
     const diving = !goalie && s.dive > 0.04;
@@ -4623,7 +4289,19 @@ export function PlayerMesh({
     const dekeA = s.deke > 0.02 ? Math.sin(s.deke * 12) : 0;
     const cheer = !goalie && s.celebrate > 0.05;
     const goalieCheer = goalie && !tumbling && s.celebrate > 0.05;
-    const rage = !goalie ? rageDraw(s.id) : null;
+    // Rage is only the saved rage1/rage2 or goalieRage1/goalieRage2 joints. No stick aim, dip, or IK.
+    // A scored-on goalie with no smash clock still stamps goalieRage1, so the stick plant stays off.
+    const goalieRageStill =
+      goalie &&
+      !world.poseHold &&
+      !tumbling &&
+      s.dive <= 0.04 &&
+      !checkedCyclePose(s.struck, s.tumble) &&
+      namedPoseFor(s, index) === "goalieRage1";
+    const rage =
+      (!goalie && !!rageDraw(s.id)) ||
+      (goalie && s.smashKind > 0 && !tumbling && s.dive <= 0.04 && !checkedCyclePose(s.struck, s.tumble)) ||
+      goalieRageStill;
     let swingT = 0;
     let slapping = false;
     if (follow > 0.02) {
@@ -4742,10 +4420,10 @@ export function PlayerMesh({
     let pokeToeX = 0;
     let pokeToeZ = 1;
     const pokeStop = puckDrop || faceoffTaker || diving || tumbling || cheer || !!rage || !!brawlPoseFor(s.id) || slapping || wrist || s.hit > 0 || s.struck > 0.2;
-    if (goalie && !tumbling) {
+    if (goalie && !tumbling && !rage) {
       poseGoaliePads(s, g, body.current, lLeg.current, rLeg.current, lShin.current, rShin.current, lBoot.current, rBoot.current);
     }
-    const butterflied = goalie && !tumbling && !goalieCheer && poseGoalieCover(s, g, body.current, lLeg.current, rLeg.current, lArm.current, rArm.current, lFore.current, rFore.current, stick.current);
+    const butterflied = goalie && !tumbling && !goalieCheer && !rage && poseGoalieCover(s, g, body.current, lLeg.current, rLeg.current, lArm.current, rArm.current, lFore.current, rFore.current, stick.current);
     const checking = !goalie && s.hit > 0 && !diving && !tumbling && s.struck <= 0.2 && !slapping && !wrist && !rage;
     if (checking) {
       if (!checkWas.current) {
@@ -5159,9 +4837,7 @@ export function PlayerMesh({
         poseStickOneHand(stick.current, g, lFore.current, layout);
       }
     }
-    if (rage && stick.current && shaftHold.current && bladeGrp.current && knobRef.current && flyBlade.current && flyShaft.current && lArm.current && rArm.current) {
-      // Swing and break run after the stamp so the saved wind-up is only the start pose.
-    } else if (!goalie && shaftHold.current && bladeGrp.current && knobRef.current && stick.current) {
+    if (!goalie && shaftHold.current && bladeGrp.current && knobRef.current && stick.current) {
       stick.current.visible = true;
       shaftHold.current.visible = true;
       shaftHold.current.position.set(0, layout.len * 0.5, 0);
@@ -5617,10 +5293,11 @@ export function PlayerMesh({
       plantFlatRinkMark(ring.current, _shadowCom.x, _shadowCom.z, ring.current.scale.x * fit, ring.current.scale.z * fit);
     }
     // Slap aim, arm IK, the lead leg, and the torso plant all run above. Stamp again
-    // so every saved rotation and position is the last write of the frame.
-    // The rage phase is applied after that, so the wind-up still does not freeze the swing.
+    // so every saved rotation and position is the last joint write of the frame.
+    // Skater rage blends rage1 into rage2. A goalie smash blends goalieRage1 into goalieRage2.
+    // A scored-on goalie with no smash clock stamps goalieRage1 and does not blend.
+    // Puck possess blends puckPossess1 into puckPossess2 on the stride clock.
     stampPoseOverride(index, s, poseGroups());
-    applyRagePhase(s, g);
   });
 
   const selectPoseJoint = (event: ThreeEvent<MouseEvent>) => {

@@ -315,7 +315,7 @@ function saveControlProfile(v: ControlProfile): void {
 export const GAME_MINUTES_MIN = 1;
 export const GAME_MINUTES_MAX = 5;
 export const GAME_MINUTES_DEFAULT = 1;
-/** Each period counts down 20:00, scaled to the real length. A game is three of them. */
+/** Each period counts down 20:00, scaled to the real length. Regulation is three of them. */
 export const GAME_CLOCK_DISPLAY_MINUTES = 20;
 export const GAME_PERIODS = 3;
 /** Each roller period counts down 18:00. A roller match is two of them. */
@@ -346,7 +346,7 @@ export function gameClockScale(minutes: number): number {
  * World multiplies the frame delta by this. The period clock divides it back out.
  */
 export function gameSpeedRate(speed: number): number {
-  return Math.max(0.45, Math.min(1.6, Number.isFinite(speed) ? speed : 1));
+  return Math.max(0.75, Math.min(1.25, Number.isFinite(speed) ? speed : 1));
 }
 
 /** A 1-minute roller period runs the 18:00 clock at 18×. A 3-minute period runs it at 6×. */
@@ -359,6 +359,10 @@ export function showsPeriodClock(mode: PlayMode): boolean {
 }
 
 export function periodOrdinal(period: number): string {
+  if (period > GAME_PERIODS) {
+    const ot = period - GAME_PERIODS;
+    return ot === 1 ? "OT" : `${ot}OT`;
+  }
   if (period === 2) return "2nd";
   if (period === 3) return "3rd";
   return "1st";
@@ -519,7 +523,7 @@ export const useGame = create<GameUi>((set, get) => ({
   ignoreAutoFind: loadFlag("hfb-ignore-auto-find", false),
   passLock: loadFlag("hfb-pass-lock", true),
   offsides: INITIAL_MODE === "game",
-  gameSpeed: 0.8,
+  gameSpeed: 1.0,
   cpuOffense: 1,
   cpuDefense: 1,
   cpuGoalie: 0.8,
@@ -678,7 +682,7 @@ export const useGame = create<GameUi>((set, get) => ({
     saveFlag("hfb-offsides", v);
     set({ offsides: v });
   },
-  setGameSpeed: (n) => set({ gameSpeed: snapSlider(n, 0.5, 1.5) }),
+  setGameSpeed: (n) => set({ gameSpeed: snapSlider(n, 0.75, 1.25) }),
   setCpuOffense: (n) => set({ cpuOffense: snapSlider(n, 0, 2) }),
   setCpuDefense: (n) => set({ cpuDefense: snapSlider(n, 0, 2) }),
   setCpuGoalie: (n) => set({ cpuGoalie: snapSlider(n, 0, 1.6) }),

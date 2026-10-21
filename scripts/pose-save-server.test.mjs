@@ -48,7 +48,7 @@ test("the public editor can save idle and deke", async () => {
   const dir = mkdtempSync(join(tmpdir(), "hfb-pose-save-"));
   mkdirSync(join(dir, "src", "game"), { recursive: true });
   writeFileSync(join(dir, "src", "game", "poseOverrides.json"), "{}\n");
-  for (const poseName of ["coast", "puckPossess", "forehandDeke", "backhandShot", "backhandDeke", "autoDeke", "shoulderCheck", "absorb", "knockout", "fight", "celebrate", "speedPuckPossess", "recover", "bench", "goalieUpright", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGloveSave", "goalieDivingGloveSave", "goalieProtectLeft", "goalieProtectRight", "goalieDivingStickSave", "goalieGetUp"]) {
+  for (const poseName of ["coast", "puckPossess1", "puckPossess2", "forehandDeke", "backhandShot", "backhandDeke", "autoDeke1", "autoDeke2", "shoulderCheck1", "shoulderCheck2", "absorb", "knockout", "fight", "celebrate", "speedPuckLeft", "speedPuckRight", "recover", "bench", "goalieUpright", "goalieRage1", "goalieRage2", "rage1", "rage2", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGloveSave", "goalieDivingGloveSave", "goalieProtectLeft", "goalieProtectRight", "goalieDivingStickSave", "goalieGetUp", "backSkate", "divePoke", "wristFollow", "slapFollow", "backhandFollow", "snap", "snapFollow"]) {
     const result = await saveAndRebuild(
       { poseName, joints: { body: [0.1, 0, 0] }, publicOnly: true },
       async () => {},
@@ -58,13 +58,26 @@ test("the public editor can save idle and deke", async () => {
   }
   const file = JSON.parse(readFileSync(join(dir, "src", "game", "poseOverrides.json"), "utf8"));
   assert.deepEqual(file.coast.body, [0.1, 0, 0]);
-  assert.deepEqual(file.puckPossess.body, [0.1, 0, 0]);
+  assert.deepEqual(file.puckPossess1.body, [0.1, 0, 0]);
+  assert.deepEqual(file.puckPossess2.body, [0.1, 0, 0]);
+  assert.deepEqual(file.rage1.body, [0.1, 0, 0]);
+  assert.deepEqual(file.goalieRage1.body, [0.1, 0, 0]);
   assert.deepEqual(file.forehandDeke.body, [0.1, 0, 0]);
   assert.deepEqual(file.backhandShot.body, [0.1, 0, 0]);
   assert.deepEqual(file.backhandDeke.body, [0.1, 0, 0]);
-  assert.deepEqual(file.autoDeke.body, [0.1, 0, 0]);
-  assert.deepEqual(file.speedPuckPossess.body, [0.1, 0, 0]);
-  assert.deepEqual(file.shoulderCheck.body, [0.1, 0, 0]);
+  assert.deepEqual(file.autoDeke1.body, [0.1, 0, 0]);
+  assert.deepEqual(file.autoDeke2.body, [0.1, 0, 0]);
+  assert.deepEqual(file.speedPuckLeft.body, [0.1, 0, 0]);
+  assert.deepEqual(file.speedPuckRight.body, [0.1, 0, 0]);
+  assert.deepEqual(file.shoulderCheck1.body, [0.1, 0, 0]);
+  assert.deepEqual(file.shoulderCheck2.body, [0.1, 0, 0]);
+  assert.deepEqual(file.backSkate.body, [0.1, 0, 0]);
+  assert.deepEqual(file.divePoke.body, [0.1, 0, 0]);
+  assert.deepEqual(file.wristFollow.body, [0.1, 0, 0]);
+  assert.deepEqual(file.slapFollow.body, [0.1, 0, 0]);
+  assert.deepEqual(file.backhandFollow.body, [0.1, 0, 0]);
+  assert.deepEqual(file.snap.body, [0.1, 0, 0]);
+  assert.deepEqual(file.snapFollow.body, [0.1, 0, 0]);
   assert.deepEqual(file.absorb.body, [0.1, 0, 0]);
   assert.deepEqual(file.knockout.body, [0.1, 0, 0]);
   assert.deepEqual(file.recover.body, [0.1, 0, 0]);

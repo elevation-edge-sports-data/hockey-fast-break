@@ -1,36 +1,48 @@
 import { BLUE_LINE_W, BLUE_X, GOAL_LINE_X } from "./rink";
-import { armStickRage, attackDir, defendDir, holdBurstPose, resetWorld, world, type Skater } from "./sim";
-import { useGame, type ControlProfile } from "./store";
+import { attackDir, defendDir, holdBurstPose, resetWorld, world, type Skater } from "./sim";
+import { useGame, type ControlProfile, type ShotKind } from "./store";
 
 /** Every still. The public gallery and public editor use this list. */
 export const PUBLIC_POSES = [
   "default",
   "ready",
+  "backSkate",
   "strideLeft",
   "strideRight",
   "faceoff",
   "coast",
-  "puckPossess",
-  "autoDeke",
+  "puckPossess1",
+  "puckPossess2",
+  "autoDeke1",
+  "autoDeke2",
   "forehandDeke",
   "backhandDeke",
-  "speedPuckPossess",
+  "speedPuckLeft",
+  "speedPuckRight",
   "wrist",
+  "wristFollow",
   "backhandShot",
+  "backhandFollow",
   "slap",
-  "shot-follow-through",
-  "poke",
-  "shoulderCheck",
+  "slapFollow",
+  "snap",
+  "snapFollow",
+  "shoulderCheck1",
+  "shoulderCheck2",
   "absorb",
+  "poke",
   "dive",
+  "divePoke",
   "knockout",
   "recover",
   "celebrate",
-  "rage",
+  "rage1",
+  "rage2",
   "fight",
   "bench",
   "goalieUpright",
-  "goalieRage",
+  "goalieRage1",
+  "goalieRage2",
   "goalieButterfly",
   "goalieMid",
   "goaliePerimeter",
@@ -260,15 +272,15 @@ export function releasePoseGallery(): void {
 }
 
 /**
- * Held inside the 0.75s slap follow window, on the shared follow pose.
- * The gallery freezes delta, so the pose is read from the remaining timer.
+ * Held inside that shot's follow window.
+ * Snap's window is 0.25s, so its timer sits earlier than the 0.35s wrist hold.
  */
-export function holdShotFollow(s: Skater): void {
+export function holdShotFollow(s: Skater, kind: ShotKind = "wrist"): void {
   s.windup = 0;
-  s.follow = 0.35;
-  world.lastShotSlap = true;
-  world.lastShotBackhand = false;
-  world.lastShotKind = "slap";
+  s.follow = kind === "snap" ? 0.12 : 0.35;
+  world.lastShotSlap = kind === "slap";
+  world.lastShotBackhand = kind === "backhand";
+  world.lastShotKind = kind;
   world.lastShooter = s.id;
   world.lastShoot = world.time;
   world.puck.owner = null;
@@ -277,7 +289,8 @@ export function holdShotFollow(s: Skater): void {
 function publicGoalie(pose: PublicPoseId): boolean {
   return (
     pose === "goalieUpright" ||
-    pose === "goalieRage" ||
+    pose === "goalieRage1" ||
+    pose === "goalieRage2" ||
     pose === "goalieButterfly" ||
     pose === "goalieGloveSave" ||
     pose === "goalieBlockerSave" ||
@@ -301,6 +314,7 @@ export function applyPose(pose: PublicPoseId): number {
     case "default":
       break;
     case "ready":
+    case "backSkate":
       break;
     case "strideLeft":
     case "strideRight":
@@ -323,10 +337,12 @@ export function applyPose(pose: PublicPoseId): number {
       world.homeDot = -1;
       world.awayDot = -1;
       break;
-    case "puckPossess":
+    case "puckPossess1":
+    case "puckPossess2":
       ownPuck(index, 0, -1.1);
       break;
-    case "autoDeke":
+    case "autoDeke1":
+    case "autoDeke2":
       // Held deke sits at dekePull 1, the backhand, not the neutral middle.
       s.deke = 0.525;
       ownPuck(index, 0.4, -0.7);
@@ -339,9 +355,10 @@ export function applyPose(pose: PublicPoseId): number {
       s.stickPull = 1;
       ownPuck(index, 0.7, -0.85);
       break;
-    case "speedPuckPossess":
+    case "speedPuckLeft":
+    case "speedPuckRight":
       s.burst = 1;
-      s.stride = Math.PI / 2;
+      s.stride = pose === "speedPuckRight" ? -Math.PI / 2 : Math.PI / 2;
       ownPuck(index, 0, -1.1);
       holdBurstPose(s.id);
       break;
@@ -359,15 +376,27 @@ export function applyPose(pose: PublicPoseId): number {
       s.follow = 0;
       ownPuck(index, 0, -1.05);
       break;
-    case "shot-follow-through":
-      holdShotFollow(s);
+    case "wristFollow":
+      holdShotFollow(s, "wrist");
+      break;
+    case "slapFollow":
+      holdShotFollow(s, "slap");
+      break;
+    case "backhandFollow":
+      holdShotFollow(s, "backhand");
+      break;
+    case "snap":
+      break;
+    case "snapFollow":
+      holdShotFollow(s, "snap");
       break;
     case "poke":
       s.poke = 1;
       // Yaw 0 faces world −Z, so a positive z sits behind the skater.
       loosePuck(0, -1.4);
       break;
-    case "shoulderCheck":
+    case "shoulderCheck1":
+    case "shoulderCheck2":
       s.hit = 1;
       break;
     case "absorb":
@@ -375,7 +404,9 @@ export function applyPose(pose: PublicPoseId): number {
       s.struck = 1;
       break;
     case "dive":
+    case "divePoke":
       s.dive = 0.95;
+      if (pose === "divePoke") s.stride = -Math.PI / 2;
       break;
     case "knockout":
       s.tumble = 1;
@@ -391,25 +422,17 @@ export function applyPose(pose: PublicPoseId): number {
       s.celebrate = 2;
       world.time = 0.7;
       break;
-    case "rage":
-      // smashHit 0.7: wind-up until ~0.18, contact at 0.7. The preview clock advances smash.
-      s.smashKind = 1;
-      s.smash = 0;
-      s.smashHit = 0.7;
-      armStickRage(index);
+    case "rage1":
+    case "rage2":
       break;
     case "bench":
       break;
     case "goalieUpright":
-    case "goalieRage": {
+    case "goalieRage1":
+    case "goalieRage2": {
       const end = defendDir(s.side) > 0 ? 1 : -1;
       const edge = BLUE_X + BLUE_LINE_W * 0.5;
       loosePuck(-end * (edge + 6), 0);
-      if (pose === "goalieRage") {
-        s.smashKind = 1;
-        s.smash = 0;
-        s.smashHit = 0.7;
-      }
       break;
     }
     case "goalieButterfly":

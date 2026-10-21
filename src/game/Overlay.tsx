@@ -324,14 +324,14 @@ function AbilitySliders() {
         <span>Game Speed</span>
         <input
           type="range"
-          min={0.5}
-          max={1.5}
+          min={0.75}
+          max={1.25}
           step={0.05}
           value={gameSpeed}
           aria-label="Game Speed"
           onChange={(e) => setGameSpeed(Number(e.target.value))}
         />
-        <b>{Math.round(((gameSpeed - 0.5) / 1) * 20) * 5}</b>
+        <b>{gameSpeed.toFixed(2) + "x"}</b>
       </label>
     </div>
   );
@@ -379,6 +379,7 @@ function SideSliders({ who }: { who: "user" | "cpu" }) {
             aria-label={`${who} ${row.label}`}
             onChange={(e) => row.set(Number(e.target.value))}
           />
+          <b>{row.value.toFixed(2)}</b>
         </label>
       ))}
     </div>

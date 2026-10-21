@@ -1,4 +1,4 @@
-import { Vector3, type Object3D } from "three";
+import { Quaternion, Vector3, type Object3D } from "three";
 import { mirrorPoseJoints } from "./poseMirror";
 import { goalieHandPivotShift, torsoPivotY } from "./goalieStance";
 import { goalieBladeKnobShift, goalieStickKnobShift } from "./stickKnobPivot";
@@ -33,6 +33,11 @@ export const POSE_JOINTS = [
 ] as const;
 
 export type PoseJointId = (typeof POSE_JOINTS)[number];
+
+const _blendFromQ = POSE_JOINTS.map(() => new Quaternion());
+const _blendFromP = POSE_JOINTS.map(() => new Vector3());
+const _blendToQ = new Quaternion();
+const _blendToP = new Vector3();
 /** Three Euler radians, or six numbers when the stick also stores local position. */
 export type PoseJointValue = number[];
 export type PoseJoints = Partial<Record<PoseJointId, PoseJointValue>>;
@@ -67,16 +72,22 @@ function asFile(value: unknown): PoseFile {
   delete file.burstCarry;
   if (file.backhandCarry && !file.backhandDeke) file.backhandDeke = file.backhandCarry;
   delete file.backhandCarry;
-  if (file.speedCarry && !file.speedPuckPossess) file.speedPuckPossess = file.speedCarry;
+  if (file.speedCarry && !file.speedPuckPossess && !file.speedPuckLeft) file.speedPuckPossess = file.speedCarry;
   delete file.speedCarry;
+  if (file.speedPuckPossess && !file.speedPuckLeft) file.speedPuckLeft = file.speedPuckPossess;
+  delete file.speedPuckPossess;
+  if (file.speedPuckLeft && !file.speedPuckRight) file.speedPuckRight = cloneJoints(file.speedPuckLeft);
   if (file.neutralCarry && !file.puckPossess) file.puckPossess = file.neutralCarry;
   delete file.neutralCarry;
   if (file.wristBackhand && !file.backhandShot) file.backhandShot = file.wristBackhand;
   delete file.wristBackhand;
   if (file.skillCarry && !file.forehandDeke) file.forehandDeke = file.skillCarry;
   delete file.skillCarry;
-  if (file.deke && !file.autoDeke) file.autoDeke = file.deke;
+  if (file.deke && !file.autoDeke && !file.autoDeke1) file.autoDeke = file.deke;
   delete file.deke;
+  if (file.autoDeke && !file.autoDeke1) file.autoDeke1 = file.autoDeke;
+  delete file.autoDeke;
+  if (file.autoDeke1 && !file.autoDeke2) file.autoDeke2 = cloneJoints(file.autoDeke1);
   if (file.getUp && !file.recover) file.recover = file.getUp;
   delete file.getUp;
   if (file.checked && !file.absorb) file.absorb = file.checked;
@@ -87,14 +98,35 @@ function asFile(value: unknown): PoseFile {
   delete file.brawl;
   if (file.cheer && !file.celebrate) file.celebrate = file.cheer;
   delete file.cheer;
-  if (file.check && !file.shoulderCheck) file.shoulderCheck = file.check;
+  if (file.check && !file.shoulderCheck && !file.shoulderCheck1) file.shoulderCheck = file.check;
   delete file.check;
+  if (file.shoulderCheck && !file.shoulderCheck1) file.shoulderCheck1 = file.shoulderCheck;
+  delete file.shoulderCheck;
+  if (file.shoulderCheck1 && !file.shoulderCheck2) file.shoulderCheck2 = cloneJoints(file.shoulderCheck1);
   if (file.stride && !file.strideLeft) file.strideLeft = file.stride;
   delete file.stride;
   if (file.strideLeft && !file.strideRight) {
     file.strideRight = mirrorPoseJoints(file.strideLeft as Record<string, number[]>);
   }
+  if (file["shot-follow-through"] && !file.wristFollow) file.wristFollow = file["shot-follow-through"];
+  delete file["shot-follow-through"];
+  if (file.wristFollow && !file.slapFollow) file.slapFollow = cloneJoints(file.wristFollow);
+  if (file.wristFollow && !file.backhandFollow) file.backhandFollow = cloneJoints(file.wristFollow);
+  if (file.wristFollow && !file.snapFollow) file.snapFollow = cloneJoints(file.wristFollow);
+  if (file.snapFollow && !file.snap) file.snap = cloneJoints(file.snapFollow);
+  if (file.ready && !file.backSkate) file.backSkate = cloneJoints(file.ready);
+  if (file.dive && !file.divePoke) file.divePoke = cloneJoints(file.dive);
+  if (file.rage && !file.rage1) file.rage1 = cloneJoints(file.rage);
+  if (file.rage && !file.rage2) file.rage2 = cloneJoints(file.rage);
+  if (file.goalieRage && !file.goalieRage1) file.goalieRage1 = cloneJoints(file.goalieRage);
+  if (file.goalieRage && !file.goalieRage2) file.goalieRage2 = cloneJoints(file.goalieRage);
+  if (file.puckPossess && !file.puckPossess1) file.puckPossess1 = cloneJoints(file.puckPossess);
+  if (file.puckPossess && !file.puckPossess2) file.puckPossess2 = cloneJoints(file.puckPossess);
   return file;
+}
+
+function cloneJoints(joints: PoseJoints): PoseJoints {
+  return JSON.parse(JSON.stringify(joints)) as PoseJoints;
 }
 
 let live: PoseFile = asFile(bundledOverrides);
@@ -141,6 +173,30 @@ export function poseOverrideRevision(): number {
   return revision;
 }
 
+/** Shaft scale is the stick length. Leave that group on the procedural shaft. */
+function writePoseJoint(id: PoseJointId, v: PoseJointValue, group: Object3D): void {
+  group.rotation.set(v[0]!, v[1]!, v[2]!);
+  group.quaternion.setFromEuler(group.rotation);
+  if (id === "lHand" && goalieHandPivotShift(group, _poseShift)) {
+    // Saved positions are the old arm-side origin. The joint now sits on the glove.
+    if (v.length >= 6) group.position.set(v[3]!, v[4]!, v[5]!);
+    else if (group.name === "goalieBlocker") group.position.set(0, -0.28, 0.03);
+    else group.position.set(0, 0, 0);
+    group.position.add(_poseShift);
+  } else if (v.length >= 6) {
+    group.position.set(v[3]!, v[4]!, v[5]!);
+    if (id === "body") {
+      _poseShift.set(0, torsoPivotY(group), 0).applyQuaternion(group.quaternion);
+      group.position.add(_poseShift);
+    } else if (id === "stick" && goalieStickKnobShift(group, _poseShift)) {
+      _poseShift.applyQuaternion(group.quaternion);
+      group.position.add(_poseShift);
+    } else if (id === "bladeGrp" && goalieBladeKnobShift(group, _poseShift)) {
+      group.position.sub(_poseShift);
+    }
+  }
+}
+
 /**
  * Copy saved local transforms onto the groups.
  * Joints store parent-local Euler radians. The pose editor shows the world
@@ -155,28 +211,77 @@ export function applyPoseJoints(name: string, groups: Partial<Record<PoseJointId
   for (const id of POSE_JOINTS) {
     const v = row[id];
     const group = groups[id];
-    // Shaft scale is the stick length. Leave that group on the procedural shaft.
     if (!v || v.length < 3 || !group || id === "shaftHold") continue;
-    group.rotation.set(v[0]!, v[1]!, v[2]!);
-    group.quaternion.setFromEuler(group.rotation);
-    if (id === "lHand" && goalieHandPivotShift(group, _poseShift)) {
-      // Saved positions are the old arm-side origin. The joint now sits on the glove.
-      if (v.length >= 6) group.position.set(v[3]!, v[4]!, v[5]!);
-      else if (group.name === "goalieBlocker") group.position.set(0, -0.28, 0.03);
-      else group.position.set(0, 0, 0);
-      group.position.add(_poseShift);
-    } else if (v.length >= 6) {
-      group.position.set(v[3]!, v[4]!, v[5]!);
-      if (id === "body") {
-        _poseShift.set(0, torsoPivotY(group), 0).applyQuaternion(group.quaternion);
-        group.position.add(_poseShift);
-      } else if (id === "stick" && goalieStickKnobShift(group, _poseShift)) {
-        _poseShift.applyQuaternion(group.quaternion);
-        group.position.add(_poseShift);
-      } else if (id === "bladeGrp" && goalieBladeKnobShift(group, _poseShift)) {
-        group.position.sub(_poseShift);
-      }
+    writePoseJoint(id, v, group);
+    hit = true;
+  }
+  return hit;
+}
+
+/**
+ * Smash wind-up curve shared by the skater and goalie rage sequences.
+ * 0 holds the first pose. An unset hit stays there. Otherwise hold until
+ * hit - 0.52 (at least 0.16), then smoothstep, and stay on the second pose after contact.
+ */
+function ragePoseBlend(smash: number, smashHit: number): number {
+  const h = smashHit > 0 ? smashHit : 99;
+  const wind0 = Math.max(0.16, h - 0.52);
+  if (smash >= h) return 1;
+  if (smash <= wind0) return 0;
+  const u = (smash - wind0) / Math.max(0.05, h - wind0);
+  return u * u * (3 - 2 * u);
+}
+
+/**
+ * Puck-possess stride clock. Stride 0 is puckPossess1. One stride later
+ * (π radians, the same half-cycle as strideLeft / strideRight) is puckPossess2.
+ */
+function puckPossessBlend(stride: number): number {
+  return (1 - Math.cos(stride)) * 0.5;
+}
+
+/** Write the first pose, then slerp toward the second. t is 0 at the first and 1 at the second. */
+export function applyBlendedPoseJoints(
+  fromName: string,
+  toName: string,
+  t: number,
+  groups: Partial<Record<PoseJointId, Object3D | null>>,
+): boolean {
+  const from = live[fromName];
+  const to = live[toName];
+  const u = Math.min(1, Math.max(0, Number.isFinite(t) ? t : 0));
+  if (!from && !to) return false;
+  if (!to || u <= 0) return from ? applyPoseJoints(fromName, groups) : false;
+  if (!from || u >= 1) return applyPoseJoints(toName, groups);
+  let hit = false;
+  for (let i = 0; i < POSE_JOINTS.length; i++) {
+    const id = POSE_JOINTS[i]!;
+    const a = from[id];
+    const b = to[id];
+    const group = groups[id];
+    if (id === "shaftHold" || !group) continue;
+    const aOk = !!a && a.length >= 3;
+    const bOk = !!b && b.length >= 3;
+    if (!aOk && !bOk) continue;
+    if (!bOk) {
+      writePoseJoint(id, a!, group);
+      hit = true;
+      continue;
     }
+    if (!aOk) {
+      writePoseJoint(id, b!, group);
+      hit = true;
+      continue;
+    }
+    writePoseJoint(id, a!, group);
+    _blendFromQ[i]!.copy(group.quaternion);
+    _blendFromP[i]!.copy(group.position);
+    writePoseJoint(id, b!, group);
+    _blendToQ.copy(group.quaternion);
+    _blendToP.copy(group.position);
+    group.quaternion.copy(_blendFromQ[i]!).slerp(_blendToQ, u);
+    group.position.copy(_blendFromP[i]!).lerp(_blendToP, u);
+    group.rotation.setFromQuaternion(group.quaternion);
     hit = true;
   }
   return hit;
@@ -209,7 +314,19 @@ export function poseHasJoint(name: string | null, id: PoseJointId): boolean {
 
 export function stampPoseOverride(index: number, s: Skater, groups: Partial<Record<PoseJointId, Object3D | null>>): boolean {
   const name = namedPoseFor(s, index);
-  if (!name || !live[name]) return false;
+  if (!name) return false;
+  // Held rage1 and goalieRage1 are stills. Live smash blends those into the *2 poses.
+  if (!world.poseHold && name === "rage1" && s.kind !== "goalie" && s.smashKind > 0 && (live.rage1 || live.rage2)) {
+    return applyBlendedPoseJoints("rage1", "rage2", ragePoseBlend(s.smash, s.smashHit), groups);
+  }
+  if (!world.poseHold && name === "goalieRage1" && s.smashKind > 0 && (live.goalieRage1 || live.goalieRage2)) {
+    return applyBlendedPoseJoints("goalieRage1", "goalieRage2", ragePoseBlend(s.smash, s.smashHit), groups);
+  }
+  // Editor stills apply the selected pose. Live play blends puckPossess1 into puckPossess2.
+  if (!world.poseHold && name === "puckPossess1" && (live.puckPossess1 || live.puckPossess2)) {
+    return applyBlendedPoseJoints("puckPossess1", "puckPossess2", puckPossessBlend(s.stride), groups);
+  }
+  if (!live[name]) return false;
   return applyPoseJoints(name, groups);
 }
 

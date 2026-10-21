@@ -1,5 +1,5 @@
 /**
- * Default speed is 30. A freestyle orbit keeps its zoom and elevation when
+ * Default speed is 1.00x. A freestyle orbit keeps its zoom and elevation when
  * the period puts that same view on the other end of the rink.
  */
 import assert from "node:assert/strict";
@@ -37,10 +37,6 @@ const store = await server.ssrLoadModule("/src/game/store.ts");
 const { mirrorFreeCamEnds, orbitFromOffset, world } = sim;
 const { useGame } = store;
 
-function speedLabel(speed) {
-  return Math.round(((speed - 0.5) / 1) * 20) * 5;
-}
-
 function place(theta, phi, radius) {
   const cam = new THREE.PerspectiveCamera(46, 16 / 9, 0.1, 240);
   cam.up.set(0, 1, 0);
@@ -57,11 +53,9 @@ function ndc(cam, x) {
   return [v.x, v.y];
 }
 
-test("default game speed is 30", () => {
-  assert.equal(useGame.getState().gameSpeed, 0.8);
-  assert.equal(speedLabel(useGame.getState().gameSpeed), 30);
-  assert.equal(speedLabel(0.5), 0);
-  assert.equal(speedLabel(1), 50);
+test("default game speed is 1x", () => {
+  assert.equal(useGame.getState().gameSpeed, 1);
+  assert.equal(useGame.getState().gameSpeed.toFixed(2) + "x", "1.00x");
 });
 
 test("a title freestyle orbit round-trips onto the puck", () => {

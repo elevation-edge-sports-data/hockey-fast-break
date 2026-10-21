@@ -146,8 +146,14 @@ function writeCamBasis(camera: THREE.Camera) {
 const CLASSIC_MIN_BACK = 2;
 const CLASSIC_UP_COS = Math.cos((25 * Math.PI) / 180);
 
+/** Screen-up along the rink. Drill keeps the +X target net at the top. */
+function screenUpX(): 1 | -1 {
+  if (useGame.getState().clockMode === "drill") return 1;
+  return world.homeAttack > 0 ? 1 : -1;
+}
+
 function aimClassic(camera: THREE.PerspectiveCamera, look: THREE.Vector3): void {
-  const atk = world.homeAttack > 0 ? 1 : -1;
+  const atk = screenUpX();
   camera.up.set(atk, 0, 0);
   camera.position.z = look.z;
   let behind = (look.x - camera.position.x) * atk;
@@ -291,7 +297,7 @@ function drillFollow(): { x: number; y: number; z: number } | null {
 }
 
 function parkClassicAt(x: number, y: number, z: number, cam: THREE.PerspectiveCamera): void {
-  const atk = world.homeAttack > 0 ? 1 : -1;
+  const atk = screenUpX();
   const back = 13.2;
   const camX = atk > 0 ? Math.max(-RINK_L / 2 + 1.6, x - back) : Math.min(RINK_L / 2 - 1.6, x + back);
   const zLimit = RINK_W / 2 - 4.8;
@@ -552,8 +558,9 @@ function snapCrowdFollow(cam: THREE.PerspectiveCamera, mode: CamMode): void {
   _lookSmooth.copy(_look);
   const atk = world.homeAttack > 0 ? 1 : -1;
   if (mode === "classic") {
-    cam.up.set(atk, 0, 0);
-    cam.position.set(px - atk * 13.2, py + 6.4, pz);
+    const upX = screenUpX();
+    cam.up.set(upX, 0, 0);
+    cam.position.set(px - upX * 13.2, py + 6.4, pz);
     aimClassic(cam, _lookSmooth);
   } else if (mode === "high") {
     cam.up.set(atk, 0, 0);
@@ -765,7 +772,7 @@ function CameraRig() {
     const zoom = _defendZoom;
 
     if (mode === "classic") {
-      const atk = world.homeAttack;
+      const atk = screenUpX();
       const wall = Math.min(1, Math.max(0, (Math.abs(fzP) - (RINK_W / 2 - 6.8)) / 5.2));
       const back = 13.2 + zoom * 9.8 + wall * 3.4;
       const camY = 9.4 + zoom * 5.8 + wall * 2.6;
@@ -789,7 +796,7 @@ function CameraRig() {
     } else if (mode === "high") {
       _desired.set(fxP, 32 + zoom * 5, fzP);
       _look.set(fxP, 0, fzP);
-      state.camera.up.set(world.homeAttack, 0, 0);
+      state.camera.up.set(screenUpX(), 0, 0);
       _pos.copy(_desired);
       _lookSmooth.copy(_look);
     } else {
@@ -881,7 +888,7 @@ function CameraRig() {
     if (mode === "classic") {
       _pos.z = _lookSmooth.z;
       _desired.z = _lookSmooth.z;
-      state.camera.up.set(world.homeAttack, 0, 0);
+      state.camera.up.set(screenUpX(), 0, 0);
     }
     state.camera.position.copy(_pos);
     if (mode === "classic") aimClassic(cam, _lookSmooth);

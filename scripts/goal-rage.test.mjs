@@ -1,6 +1,6 @@
 /**
  * After a goal the scored-on side rages before the faceoff.
- * Exactly one skater breaks a stick, or the goalie when no skater is up.
+ * Exactly one skater breaks a stick. A scored-on goalie is not put on the smash clock.
  * A second scored-on skater can check a referee. The scoring side does not rage.
  */
 import assert from "node:assert/strict";
@@ -307,7 +307,8 @@ test("a raging CPU skater stays checkable during and after the swing", () => {
   assert.ok(later.smashKind > 0);
   assert.ok(later.struck > 1.1, `after the swing struck ${later.struck}`);
   const after = inferNamedPose(later, later.id);
-  assert.notEqual(after, "rage");
+  assert.notEqual(after, "rage1");
+  assert.notEqual(after, "rage2");
 });
 
 test("CPU goal: one home teammate rages and the user does not", () => {
@@ -338,7 +339,7 @@ test("CPU goal: one home teammate rages and the user does not", () => {
   assert.equal(user.smashKind, 0);
 });
 
-test("practice user goal: the CPU goalie scoops, then rages", () => {
+test("practice user goal: the CPU goalie scoops, then holds goalie rage 1", () => {
   sheet("practice");
   assert.equal(world.skaters.filter((s) => s.side === "away" && s.kind !== "goalie").length, 0);
   score(world.homeAttack);
@@ -346,10 +347,13 @@ test("practice user goal: the CPU goalie scoops, then rages", () => {
   assert.ok(g);
   seconds(0.4);
   assert.equal(g.smashKind, 0);
+  assert.equal(g.smashHit, 0);
   assert.ok(g.coverPose > 0.3);
   seconds(2.2);
-  assert.ok(g.smashKind > 0 && g.smashHit > 0);
-  assert.equal(inferNamedPose(g, g.id), "goalieRage");
+  assert.equal(g.smashKind, 0);
+  assert.equal(g.smash, 0);
+  assert.equal(g.smashHit, 0);
+  assert.equal(inferNamedPose(g, g.id), "goalieRage1");
   assert.equal(stickRagers("away").length, 0);
   assert.equal(stickRagers("home").length, 0);
 });
@@ -398,52 +402,35 @@ test("scrimmage knockdown: the other team rages without a goalie", () => {
   }
 });
 
-test("rage preview plays the break without skating, then loops", () => {
+test("held rage1 and goalieRage1 do not advance the preview clock", () => {
   sheet("game");
   const s = world.skaters.find((p) => p.kind !== "goalie" && p.side === "away");
   assert.ok(s);
   const x0 = s.x;
   const z0 = s.z;
   world.poseHold = true;
-  world.namedPose = "rage";
+  world.namedPose = "rage1";
   world.namedPoseIndex = s.id;
   s.smashKind = 1;
   s.smash = 0;
   s.smashHit = 0.7;
   armStickRage(s.id);
-  assert.equal(rageDraw(s.id).blade.on, false);
   stepRagePreview(0.5);
-  assert.ok(s.smash > 0.45 && s.smash < 0.7);
+  assert.equal(s.smash, 0);
   assert.equal(rageDraw(s.id).blade.on, false);
   assert.equal(s.x, x0);
   assert.equal(s.z, z0);
-  stepRagePreview(0.25);
-  assert.ok(s.smash >= 0.7);
-  assert.equal(rageDraw(s.id).blade.on, true);
-  assert.equal(rageDraw(s.id).shaft.on, false);
-  stepRagePreview(0.45);
-  assert.equal(rageDraw(s.id).shaft.on, true);
-  const held = s.smash;
-  world.poseHold = false;
-  stepRagePreview(0.2);
-  assert.equal(s.smash, held);
-  world.poseHold = true;
-  s.smash = 0.7 + 1.6;
-  stepRagePreview(0.02);
-  assert.equal(s.smash, 0);
-  assert.equal(rageDraw(s.id).blade.on, false);
-  assert.equal(rageDraw(s.id).shaft.on, false);
   const g = goalie("away");
   assert.ok(g);
   const gx = g.x;
   const gz = g.z;
-  world.namedPose = "goalieRage";
+  world.namedPose = "goalieRage1";
   world.namedPoseIndex = g.id;
   g.smashKind = 1;
   g.smash = 0;
   g.smashHit = 0.7;
   stepRagePreview(0.5);
-  assert.ok(g.smash > 0.45 && g.smash < 0.7);
+  assert.equal(g.smash, 0);
   assert.equal(g.x, gx);
   assert.equal(g.z, gz);
   world.poseHold = false;

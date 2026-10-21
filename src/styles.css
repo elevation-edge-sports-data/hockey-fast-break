@@ -694,7 +694,7 @@ h2 {
 
 .hud-slider-row {
   display: grid;
-  grid-template-columns: 3.4rem 1fr;
+  grid-template-columns: 3.4rem 1fr auto;
   gap: 4px;
   align-items: center;
   font-family: var(--font-display);
@@ -702,6 +702,13 @@ h2 {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--color-muted);
+}
+
+.hud-slider-row b {
+  font-size: 0.68rem;
+  color: var(--color-fg);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .hud-slider-row input[type="range"] {

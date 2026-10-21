@@ -215,11 +215,19 @@ test("period length is 1 to 5 minutes and defaults to 1", () => {
   assert.equal(periodOrdinal(1), "1st");
   assert.equal(periodOrdinal(2), "2nd");
   assert.equal(periodOrdinal(3), "3rd");
+  assert.equal(periodOrdinal(4), "OT");
+  assert.equal(periodOrdinal(5), "2OT");
+  assert.equal(periodOrdinal(6), "3OT");
+  assert.equal(periodOrdinal(7), "4OT");
   assert.equal(periodEndCopy(1, 2, 0).title, "END 1ST");
   assert.equal(periodEndCopy(1, 2, 0).score, "YOU 2-0 CPU");
   assert.equal(periodEndCopy(2, 4, 3).title, "END 2ND");
   assert.equal(periodEndCopy(2, 4, 3).score, "YOU 4-3 CPU");
   assert.equal(periodEndCopy(3, 1, 1).title, "END 3RD");
+  assert.equal(periodEndCopy(4, 1, 1).title, "END OT");
+  assert.equal(periodEndCopy(4, 1, 1).score, "YOU 1-1 CPU");
+  assert.equal(periodEndCopy(5, 2, 2).title, "END 2OT");
+  assert.equal(periodEndCopy(6, 3, 3).title, "END 3OT");
 });
 
 test("the 20:00 clock scales with the real period length", () => {
@@ -595,6 +603,8 @@ test("period end suspends chasing, possession, and zone holds", () => {
   assert.equal(world.periodOver, false);
   assert.equal(periodEndLive(), false);
 
+  useGame.getState().setHomeScore(1);
+  useGame.getState().setAwayScore(0);
   world.period = 3;
   useGame.getState().setPeriod(3);
   liveClock();
@@ -660,8 +670,12 @@ test("period end suspends chasing, possession, and zone holds", () => {
 
 test("the game speed slider does not change the period countdown", () => {
   try {
+    useGame.getState().setGameSpeed(0.5);
+    assert.equal(useGame.getState().gameSpeed, 0.75);
+    useGame.getState().setGameSpeed(1.5);
+    assert.equal(useGame.getState().gameSpeed, 1.25);
     const drops = [];
-    for (const speed of [0.5, 1, 1.5]) {
+    for (const speed of [0.75, 1, 1.2]) {
       freshGame();
       liveClock();
       resetPlayFrame();
@@ -684,7 +698,7 @@ test("the game speed slider does not change the period countdown", () => {
     resetPlayFrame();
     useGame.getState().setRollerMinutes(1);
     world.periodClock = 18 * 60;
-    for (const speed of [0.5, 1.5]) {
+    for (const speed of [0.75, 1.2]) {
       useGame.getState().setGameSpeed(speed);
       world.periodClock = 18 * 60;
       resetPlayFrame();
@@ -772,4 +786,222 @@ test("the final buzzer celebrates for 10 seconds, then pauses", () => {
   step(1);
   assert.equal(useGame.getState().paused, true);
   assert.equal(world.periodOver, true);
+});
+
+function countKind(side, kind) {
+  return world.skaters.filter((s) => s.side === side && s.kind === kind).length;
+}
+
+function tiedThroughPeriod(period) {
+  freshGame();
+  useGame.getState().setHomeScore(1);
+  useGame.getState().setAwayScore(1);
+  for (let i = 1; i < period; i++) {
+    world.period = i;
+    useGame.getState().setPeriod(i);
+    expirePeriod();
+    assert.equal(world.periodOver, false, `period ${i} ended a tie`);
+    drainPeriodBreak();
+  }
+  assert.equal(world.period, period);
+}
+
+test("a tied game plays sudden-death overtime and does not end 0-0", () => {
+  tiedThroughPeriod(3);
+  assert.equal(world.homeAttack, -1);
+  expirePeriod();
+  assert.equal(world.periodOver, false);
+  assert.equal(useGame.getState().periodOver, false);
+  assert.equal(useGame.getState().periodBreak, 3);
+  assert.equal(periodEndCopy(3, 1, 1).title, "END 3RD");
+  assert.equal(world.period, 3);
+  drainPeriodBreak();
+  assert.equal(world.period, 4);
+  assert.equal(useGame.getState().period, 4);
+  assert.equal(periodOrdinal(world.period), "OT");
+  assert.equal(world.periodOver, false);
+  assert.equal(world.periodClock, 1200);
+  assert.equal(useGame.getState().periodClock, 1200);
+  assert.equal(useGame.getState().gameMinutes, 2);
+  assert.equal(world.homeAttack, 1);
+  assert.equal(world.faceoff, true);
+  assert.equal(world.faceX, 0);
+  assert.equal(world.faceZ, 0);
+  assert.equal(useGame.getState().homeScore, 1);
+  assert.equal(useGame.getState().awayScore, 1);
+  for (const side of ["home", "away"]) {
+    assert.equal(countKind(side, "goalie"), 1, side);
+    assert.equal(countKind(side, "defense"), 2, side);
+    assert.equal(countKind(side, "winger"), 3, side);
+  }
+
+  expirePeriod();
+  assert.equal(world.periodOver, false);
+  assert.equal(useGame.getState().periodBreak, 4);
+  assert.equal(periodEndCopy(useGame.getState().periodBreak, 1, 1).title, "END OT");
+  drainPeriodBreak();
+  assert.equal(world.period, 5);
+  assert.equal(periodOrdinal(world.period), "2OT");
+  assert.equal(periodEndCopy(5, 1, 1).title, "END 2OT");
+  assert.equal(world.periodClock, 1200);
+  assert.equal(world.homeAttack, -1);
+  assert.equal(world.periodOver, false);
+  assert.equal(useGame.getState().homeScore, 1);
+  assert.equal(useGame.getState().awayScore, 1);
+
+  useGame.getState().setHomeScore(2);
+  useGame.getState().setAwayScore(1);
+  world.period = 4;
+  useGame.getState().setPeriod(4);
+  expirePeriod();
+  assert.equal(world.periodOver, true);
+  assert.equal(world.period, 4);
+  assert.equal(useGame.getState().periodBreak, 0);
+});
+
+test("roller still ends when the second period is tied", () => {
+  freshRoller();
+  useGame.getState().setHomeScore(0);
+  useGame.getState().setAwayScore(0);
+  world.period = 2;
+  useGame.getState().setPeriod(2);
+  expirePeriod();
+  assert.equal(world.periodOver, true);
+  assert.equal(useGame.getState().periodOver, true);
+  assert.equal(world.period, 2);
+  assert.equal(useGame.getState().periodBreak, 0);
+});
+
+function parkNets() {
+  for (const s of world.skaters) {
+    if (s.kind !== "goalie") continue;
+    s.x = 0;
+    s.z = 18;
+    s.vx = 0;
+    s.vz = 0;
+    s.stun = 30;
+  }
+}
+
+function crossNet(side) {
+  parkNets();
+  const mouth = side * GOAL_LINE_X;
+  world.goalieShot = "score";
+  world.lastShoot = -10;
+  world.lastShooter = null;
+  world.puck.owner = null;
+  world.puck.x = mouth - side * 0.01;
+  world.puck.z = 0;
+  world.puck.y = 0.2;
+  world.puck.vx = side * 2;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  world.periodOver = false;
+  world.replay = false;
+  useGame.getState().setOffsides(false);
+  useGame.getState().setWhistle(null);
+  useGame.getState().setPeriodOver(false);
+  useGame.getState().setPlaying(true);
+  useGame.getState().setPaused(false);
+  step(1);
+}
+
+test("a regulation goal still faces off, and an overtime goal ends the match", () => {
+  freshGame();
+  useGame.getState().setHomeScore(0);
+  useGame.getState().setAwayScore(0);
+  world.period = 3;
+  useGame.getState().setPeriod(3);
+  world.periodClock = 600;
+  useGame.getState().setPeriodClock(600);
+  liveClock();
+  world.periodClock = 600;
+  crossNet(world.homeAttack);
+  assert.equal(world.whistle, "goal");
+  assert.equal(world.periodOver, false);
+  assert.equal(useGame.getState().homeScore, 1);
+  let guard = 0;
+  while (!world.faceoff && guard < 500) {
+    step(1);
+    guard++;
+  }
+  assert.equal(world.faceoff, true);
+  assert.equal(world.periodOver, false);
+  assert.equal(world.period, 3);
+  assert.equal(useGame.getState().homeScore, 1);
+  assert.equal(useGame.getState().awayScore, 0);
+
+  freshGame();
+  useGame.getState().setHomeScore(1);
+  useGame.getState().setAwayScore(1);
+  world.period = 4;
+  useGame.getState().setPeriod(4);
+  world.homeAttack = -1;
+  world.periodClock = 480;
+  useGame.getState().setPeriodClock(480);
+  liveClock();
+  world.period = 4;
+  world.periodClock = 480;
+  const before = world.periodClock;
+  crossNet(world.homeAttack);
+  assert.equal(world.whistle, "goal");
+  assert.equal(world.periodOver, false);
+  assert.equal(world.faceoff, false);
+  assert.equal(useGame.getState().homeScore, 2);
+  assert.equal(useGame.getState().awayScore, 1);
+  assert.equal(world.period, 4);
+  guard = 0;
+  while (!world.periodOver && guard < 500) {
+    step(1);
+    guard++;
+    assert.equal(world.faceoff, false);
+  }
+  assert.equal(world.periodOver, true);
+  assert.equal(useGame.getState().periodOver, true);
+  assert.equal(world.faceoff, false);
+  assert.equal(world.whistle, null);
+  assert.equal(world.stoppage, false);
+  assert.equal(world.period, 4);
+  assert.equal(useGame.getState().period, 4);
+  assert.ok(world.periodClock > 400, `ot clock cleared to ${world.periodClock}`);
+  assert.ok(Math.abs(world.periodClock - before) < 1, `ot clock ran during the goal ${world.periodClock}`);
+  assert.equal(useGame.getState().paused, false);
+  const user = world.skaters[world.userId];
+  assert.ok(user.celebrate > 8, `celebrate ${user.celebrate}`);
+  const away = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
+  assert.equal(away.celebrate, 0);
+  step(599);
+  assert.equal(useGame.getState().paused, false);
+  step(1);
+  assert.equal(useGame.getState().paused, true);
+  assert.equal(world.periodOver, true);
+  assert.equal(world.faceoff, false);
+
+  freshGame();
+  useGame.getState().setHomeScore(0);
+  useGame.getState().setAwayScore(0);
+  world.period = 5;
+  useGame.getState().setPeriod(5);
+  world.periodClock = 900;
+  liveClock();
+  world.period = 5;
+  world.periodClock = 900;
+  crossNet(-world.homeAttack);
+  assert.equal(useGame.getState().awayScore, 1);
+  assert.equal(world.whistle, "goal");
+  assert.equal(world.periodOver, false);
+  step(10);
+  setInjectedKeys(["Space"]);
+  step(3);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(world.periodOver, true);
+  assert.equal(world.faceoff, false);
+  assert.equal(world.period, 5);
+  assert.equal(useGame.getState().homeScore, 0);
+  assert.equal(useGame.getState().awayScore, 1);
 });

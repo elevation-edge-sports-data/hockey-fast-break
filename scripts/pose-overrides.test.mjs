@@ -25,10 +25,10 @@ test("merge keeps other poses and replaces the named one", () => {
 
 test("parse accepts a named pose and drops unknown joints", () => {
   const saved = parsePoseSave({
-    pose: "shot-follow-through",
+    pose: "wristFollow",
     joints: { lLeg: [0.41, 0, 0], notAJoint: [1, 2, 3], head: [0, 0.2, 0] },
   });
-  assert.equal(saved.pose, "shot-follow-through");
+  assert.equal(saved.pose, "wristFollow");
   assert.deepEqual(saved.joints, { lLeg: [0.41, 0, 0], head: [0, 0.2, 0] });
 });
 
