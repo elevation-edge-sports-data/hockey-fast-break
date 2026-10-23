@@ -250,6 +250,10 @@ test("user goalie dive picks stick or blocker side from the goalie's left and ri
   left.vx = 0;
   left.vz = 0;
   world.puck.owner = null;
+  stepSim(DT);
+  left.yaw = faceYaw("home");
+  left.vx = 0;
+  left.vz = 0;
   setInjectedKeys(["ShiftLeft", "KeyA"]);
   stepSim(DT);
   assert.ok(left.dive > 1, `left dive ${left.dive}`);

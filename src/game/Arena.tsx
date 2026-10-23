@@ -8,7 +8,7 @@ import {
   createScoreboardCanvas,
   mixHex,
 } from "./iceTexture";
-import { BOARD_H, FT, GLASS_H, GOAL_LINE_X, RINK_W } from "./rink";
+import { BOARD_H, CORNER_R, FT, GLASS_H, GOAL_LINE_X, RINK_L, RINK_W } from "./rink";
 import { rinkPerimeter } from "./rinkGeom";
 import { kitById } from "./uniforms";
 import { periodOrdinal, showsPeriodClock, useGame, type ArenaLook } from "./store";
@@ -49,6 +49,326 @@ import {
 const seatGeo = new THREE.BoxGeometry(SEAT_W, SEAT_H, SEAT_D);
 const personGeo = new THREE.CylinderGeometry(PERSON_RT, PERSON_RB, PERSON_H, 5);
 const _crowdDummy = new THREE.Object3D();
+
+const RINK_HX = RINK_L / 2;
+const RINK_HZ = RINK_W / 2;
+const RINK_WALL_TOP = BOARD_H + GLASS_H;
+const RINK_INNER_X = RINK_HX - CORNER_R;
+const RINK_INNER_Z = RINK_HZ - CORNER_R;
+const CORNER_CENTERS: ReadonlyArray<readonly [number, number]> = [
+  [RINK_INNER_X, RINK_INNER_Z],
+  [RINK_INNER_X, -RINK_INNER_Z],
+  [-RINK_INNER_X, RINK_INNER_Z],
+  [-RINK_INNER_X, -RINK_INNER_Z],
+];
+
+function insideRink(x: number, z: number): boolean {
+  const ax = Math.abs(x);
+  const az = Math.abs(z);
+  if (ax <= RINK_INNER_X) return az <= RINK_HZ;
+  if (az <= RINK_INNER_Z) return ax <= RINK_HX;
+  const dx = ax - RINK_INNER_X;
+  const dz = az - RINK_INNER_Z;
+  return dx * dx + dz * dz <= CORNER_R * CORNER_R;
+}
+
+/** Nearest t > 0 where O + t D meets the ice or the board/glass wall. Infinity if it misses. */
+function nearestRinkT(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): number {
+  let best = Infinity;
+  if (dy < -1e-5 || dy > 1e-5) {
+    const t = -oy / dy;
+    if (t > 0.05) {
+      const x = ox + dx * t;
+      const z = oz + dz * t;
+      if (insideRink(x, z) && t < best) best = t;
+    }
+  }
+  if (dz < -1e-5 || dz > 1e-5) {
+    for (const hz of [RINK_HZ, -RINK_HZ]) {
+      const t = (hz - oz) / dz;
+      if (t <= 0.05 || t >= best) continue;
+      const x = ox + dx * t;
+      const y = oy + dy * t;
+      if (Math.abs(x) <= RINK_INNER_X && y >= 0 && y <= RINK_WALL_TOP) best = t;
+    }
+  }
+  if (dx < -1e-5 || dx > 1e-5) {
+    for (const hx of [RINK_HX, -RINK_HX]) {
+      const t = (hx - ox) / dx;
+      if (t <= 0.05 || t >= best) continue;
+      const z = oz + dz * t;
+      const y = oy + dy * t;
+      if (Math.abs(z) <= RINK_INNER_Z && y >= 0 && y <= RINK_WALL_TOP) best = t;
+    }
+  }
+  for (let i = 0; i < CORNER_CENTERS.length; i++) {
+    const ccx = CORNER_CENTERS[i]![0];
+    const ccz = CORNER_CENTERS[i]![1];
+    const lx = ox - ccx;
+    const lz = oz - ccz;
+    const a = dx * dx + dz * dz;
+    if (a < 1e-8) continue;
+    const b = 2 * (lx * dx + lz * dz);
+    const c = lx * lx + lz * lz - CORNER_R * CORNER_R;
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) continue;
+    const root = Math.sqrt(disc);
+    const inv = 0.5 / a;
+    const t0 = (-b - root) * inv;
+    const t1 = (-b + root) * inv;
+    if (t0 > 0.05 && t0 < best) {
+      const y = oy + dy * t0;
+      if (y >= 0 && y <= RINK_WALL_TOP) best = t0;
+    }
+    if (t1 > 0.05 && t1 < best) {
+      const y = oy + dy * t1;
+      if (y >= 0 && y <= RINK_WALL_TOP) best = t1;
+    }
+  }
+  return best;
+}
+
+/** Point is in front of the ice, boards, or glass along the ray from the camera. */
+function occludesRink(cx: number, cy: number, cz: number, x: number, y: number, z: number): boolean {
+  const dx = x - cx;
+  const dy = y - cy;
+  const dz = z - cz;
+  const hit = nearestRinkT(cx, cy, cz, dx, dy, dz);
+  return hit > 1.015 && hit < Infinity;
+}
+
+/** Ice and glass outline, used to find the rink's on-screen silhouette. */
+const SIGHT_RING = rinkPerimeter(0, 48);
+const SIGHT_BINS = 32;
+const SIGHT_PAD_X = 0.05;
+const SIGHT_PAD_Y = 0.03;
+const sightBin = new Float64Array(SIGHT_BINS);
+const sightPts = new Float32Array(SIGHT_RING.length * 4);
+const _sightNdc = new THREE.Vector3();
+let sightPtN = 0;
+let sightMinX = -1;
+let sightMaxX = 1;
+let sightReady = false;
+let sightCam: THREE.Camera | null = null;
+let sightCx = 0;
+let sightCy = 0;
+let sightCz = 0;
+let sightFx = 0;
+let sightFy = 0;
+let sightFz = 1;
+/** Hidden radial span of a seat column, filled after the seat pass. */
+const crowdClear = new Map<number, { r0: number; r1: number }>();
+
+function updateSight(camera: THREE.Camera): void {
+  sightCam = camera;
+  camera.updateMatrixWorld();
+  const e = camera.matrixWorld.elements;
+  sightCx = camera.position.x;
+  sightCy = camera.position.y;
+  sightCz = camera.position.z;
+  sightFx = -e[8];
+  sightFy = -e[9];
+  sightFz = -e[10];
+  sightPtN = 0;
+  for (let pass = 0; pass < 2; pass++) {
+    const y = pass === 0 ? 0 : RINK_WALL_TOP;
+    for (let i = 0; i < SIGHT_RING.length; i++) {
+      const p = SIGHT_RING[i]!;
+      const depth = (p.x - sightCx) * sightFx + (y - sightCy) * sightFy + (p.z - sightCz) * sightFz;
+      if (depth <= 0.35) continue;
+      _sightNdc.set(p.x, y, p.z).project(camera);
+      if (_sightNdc.x < -1.15 || _sightNdc.x > 1.15) continue;
+      let sy = _sightNdc.y;
+      if (sy < -1.05) sy = -1;
+      else if (sy > 1.2) continue;
+      sightPts[sightPtN++] = _sightNdc.x;
+      sightPts[sightPtN++] = sy;
+    }
+  }
+  if (sightPtN < 8) {
+    sightReady = false;
+    return;
+  }
+  let minX = Infinity;
+  let maxX = -Infinity;
+  for (let i = 0; i < sightPtN; i += 2) {
+    const x = sightPts[i]!;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+  }
+  if (!(maxX - minX > 1e-3)) {
+    sightReady = false;
+    return;
+  }
+  sightMinX = minX;
+  sightMaxX = maxX;
+  sightBin.fill(Infinity);
+  const span = maxX - minX;
+  for (let i = 0; i < sightPtN; i += 2) {
+    const t = (sightPts[i]! - minX) / span;
+    const bin = Math.min(SIGHT_BINS - 1, Math.max(0, Math.round(t * (SIGHT_BINS - 1))));
+    const y = sightPts[i + 1]!;
+    if (y < sightBin[bin]!) sightBin[bin] = y;
+  }
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < SIGHT_BINS; i++) {
+    if (sightBin[i]! < Infinity) {
+      if (first < 0) first = i;
+      if (last >= 0 && i - last > 1) {
+        const a = sightBin[last]!;
+        const b = sightBin[i]!;
+        for (let k = last + 1; k < i; k++) {
+          const f = (k - last) / (i - last);
+          sightBin[k] = a + (b - a) * f;
+        }
+      }
+      last = i;
+    }
+  }
+  if (first < 0 || last < 0) {
+    sightReady = false;
+    return;
+  }
+  for (let i = 0; i < first; i++) sightBin[i] = sightBin[first]!;
+  for (let i = last + 1; i < SIGHT_BINS; i++) sightBin[i] = sightBin[last]!;
+  sightReady = true;
+}
+
+/** On screen at or above the rink silhouette, and not well outside its width. */
+function crossesSightline(x: number, y: number, z: number): boolean {
+  if (!sightReady || !sightCam) return false;
+  const depth = (x - sightCx) * sightFx + (y - sightCy) * sightFy + (z - sightCz) * sightFz;
+  if (depth <= 0.35) return false;
+  _sightNdc.set(x, y, z).project(sightCam);
+  if (_sightNdc.x < sightMinX - SIGHT_PAD_X || _sightNdc.x > sightMaxX + SIGHT_PAD_X) return false;
+  const span = sightMaxX - sightMinX;
+  let t = span > 1e-4 ? (_sightNdc.x - sightMinX) / span : 0.5;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  const f = t * (SIGHT_BINS - 1);
+  const i0 = Math.min(SIGHT_BINS - 1, Math.floor(f));
+  const i1 = Math.min(SIGHT_BINS - 1, i0 + 1);
+  const u = i1 === i0 ? 0 : f - i0;
+  const lim = sightBin[i0]! * (1 - u) + sightBin[i1]! * u;
+  return _sightNdc.y >= lim - SIGHT_PAD_Y;
+}
+
+function columnCrosses(i: number): boolean {
+  const p = STANDS[i]!;
+  return crossesSightline(p.x, p.y + PERSON_LIFT + PERSON_H * 0.5, p.z);
+}
+
+/** Seat hangs into the upper frame, including just past the top edge. Not the foreground. */
+function protrudesTop(i: number): boolean {
+  if (!sightReady || !sightCam) return false;
+  const p = STANDS[i]!;
+  const y = p.y + PERSON_LIFT + PERSON_H * 0.5;
+  const depth = (p.x - sightCx) * sightFx + (y - sightCy) * sightFy + (p.z - sightCz) * sightFz;
+  if (depth <= 0.35) return false;
+  _sightNdc.set(p.x, y, p.z).project(sightCam);
+  if (_sightNdc.y < 0) return false;
+  return _sightNdc.x >= -1.35 && _sightNdc.x <= 1.35;
+}
+
+const SKY_BINS = 64;
+const skyTop = new Float64Array(SKY_BINS);
+
+function headOnScreen(i: number): boolean {
+  if (!sightCam) return false;
+  const p = STANDS[i]!;
+  const y = p.y + PERSON_LIFT + PERSON_H * 0.5;
+  const depth = (p.x - sightCx) * sightFx + (y - sightCy) * sightFy + (p.z - sightCz) * sightFz;
+  if (depth <= 0.35) return false;
+  _sightNdc.set(p.x, y, p.z).project(sightCam);
+  return _sightNdc.z >= -1 && _sightNdc.z <= 1;
+}
+
+/** Drop seats that stick up above the crowd to either side. The lower frame is left alone. */
+function trimTopWedges(): void {
+  if (!sightReady) return;
+  skyTop.fill(-2);
+  for (let i = 0; i < STANDS.length; i++) {
+    if (crowdHide[i] === 1 || !headOnScreen(i)) continue;
+    if (_sightNdc.y < 0 || _sightNdc.x < -1.15 || _sightNdc.x > 1.15) continue;
+    const b = Math.min(SKY_BINS - 1, Math.max(0, Math.floor(((_sightNdc.x + 1) * 0.5) * SKY_BINS)));
+    if (_sightNdc.y > skyTop[b]!) skyTop[b] = _sightNdc.y;
+  }
+  for (let i = 0; i < STANDS.length; i++) {
+    if (crowdHide[i] === 1 || !headOnScreen(i)) continue;
+    if (_sightNdc.y < 0.02 || _sightNdc.x < -1.15 || _sightNdc.x > 1.15) continue;
+    const b = Math.min(SKY_BINS - 1, Math.max(0, Math.floor(((_sightNdc.x + 1) * 0.5) * SKY_BINS)));
+    let shoulder = -2;
+    for (const dir of [-1, 1]) {
+      for (let d = 8; d <= 18; d++) {
+        const j = b + dir * d;
+        if (j < 0 || j >= SKY_BINS) continue;
+        if (skyTop[j]! > shoulder) shoulder = skyTop[j]!;
+      }
+    }
+    if (shoulder < -1) continue;
+    if (_sightNdc.y > shoulder + 0.045) crowdHide[i] = 1;
+  }
+}
+
+function sameColumnFamily(a: number, b: number): boolean {
+  return Math.floor(a / 100_000) === Math.floor(b / 100_000);
+}
+
+/** Stadium solid between the camera and the rink, or left floating in a cleared column. */
+function floatsInSight(x: number, y: number, z: number): boolean {
+  if (!sightReady || !sightCam) return false;
+  const depth = (x - sightCx) * sightFx + (y - sightCy) * sightFy + (z - sightCz) * sightFz;
+  if (depth <= 0.35) return false;
+  if (occludesRink(sightCx, sightCy, sightCz, x, y, z)) return true;
+  const key = crowdColumnKey(x, z);
+  const r = Math.hypot(x, z);
+  let inClear = false;
+  for (let d = -2; d <= 2; d++) {
+    const n = key + d;
+    if (!sameColumnFamily(n, key)) continue;
+    const span = crowdClear.get(n);
+    if (span && r >= span.r0 - 1.2) {
+      inClear = true;
+      break;
+    }
+  }
+  if (!inClear) return false;
+  if (crossesSightline(x, y, z)) return true;
+  _sightNdc.set(x, y, z).project(sightCam);
+  return (
+    _sightNdc.z >= -1 &&
+    _sightNdc.z <= 1 &&
+    _sightNdc.y >= 0 &&
+    _sightNdc.x >= -1.35 &&
+    _sightNdc.x <= 1.35
+  );
+}
+
+const crowdHide = new Uint8Array(STANDS.length);
+const crowdCols = new Map<number, number[]>();
+
+/** Straight-side columns share x, end columns share z, corners share an angle. */
+function crowdColumnKey(x: number, z: number): number {
+  const ax = Math.abs(x);
+  const az = Math.abs(z);
+  if (ax <= RINK_INNER_X + 2 && az >= RINK_HZ - 1) {
+    return 1_000_000 + (z >= 0 ? 100_000 : 0) + Math.round(x / 0.72);
+  }
+  if (az <= RINK_INNER_Z + 2 && ax >= RINK_HX - 1) {
+    return 2_000_000 + (x >= 0 ? 100_000 : 0) + Math.round(z / 0.72);
+  }
+  return 3_000_000 + Math.round(Math.atan2(z, x) / 0.04);
+}
+
+function crowdColumn(key: number): number[] {
+  let list = crowdCols.get(key);
+  if (!list) {
+    list = [];
+    crowdCols.set(key, list);
+  }
+  return list;
+}
 
 function SeatDeck() {
   const home = kitById(useGame((s) => s.homeKit));
@@ -125,27 +445,116 @@ function SeatDeck() {
       : (world.goalTicker > 0 && !!world.goalSide) || winHome || winAway;
     const scoringHome = winHome || (!world.periodOver && world.goalSide === "home");
     const t = world.time;
-    const cx = camera.position.x;
-    const cy = camera.position.y;
-    const cz = camera.position.z;
-    camera.updateMatrixWorld();
-    const e = camera.matrixWorld.elements;
-    const upx = e[4];
-    const upy = e[5];
-    const upz = e[6];
-    const fx = -e[8];
-    const fy = -e[9];
-    const fz = -e[10];
+    updateSight(camera);
+    const cx = sightCx;
+    const cy = sightCy;
+    const cz = sightCz;
+    const fx = sightFx;
+    const fy = sightFy;
+    const fz = sightFz;
+    for (const list of crowdCols.values()) list.length = 0;
     for (let i = 0; i < STANDS.length; i++) {
       const p = STANDS[i]!;
-      const vx = p.x - cx;
-      const vy = p.y - cy;
-      const vz = p.z - cz;
-      const dist = Math.hypot(vx, vy, vz);
-      const depth = vx * fx + vy * fy + vz * fz;
-      const below = -(vx * upx + vy * upy + vz * upz);
-      const hide = dist < 4.4 && depth > 0 && depth < 5.2 && p.y < 4.2 && below > 0.15;
-      const sc = hide ? 0.001 : 1;
+      const depth = (p.x - cx) * fx + (p.y - cy) * fy + (p.z - cz) * fz;
+      let hide = false;
+      if (depth > 0.35) {
+        const foot = p.y - SEAT_H * 0.5;
+        const head = p.y + PERSON_LIFT + PERSON_H * 0.5;
+        hide =
+          occludesRink(cx, cy, cz, p.x, foot, p.z) ||
+          occludesRink(cx, cy, cz, p.x, p.y, p.z) ||
+          occludesRink(cx, cy, cz, p.x, p.y + PERSON_LIFT, p.z) ||
+          occludesRink(cx, cy, cz, p.x, head, p.z);
+      }
+      crowdHide[i] = hide ? 1 : 0;
+      crowdColumn(crowdColumnKey(p.x, p.z)).push(i);
+    }
+    for (const col of crowdCols.values()) {
+      if (col.length === 0) continue;
+      let any = false;
+      for (let k = 0; k < col.length; k++) {
+        if (crowdHide[col[k]!] === 1) {
+          any = true;
+          break;
+        }
+      }
+      if (!any) continue;
+      col.sort((a, b) => {
+        const pa = STANDS[a]!;
+        const pb = STANDS[b]!;
+        return Math.hypot(pa.x, pa.z) - Math.hypot(pb.x, pb.z) || pa.y - pb.y;
+      });
+      let seen = false;
+      for (let k = 0; k < col.length; k++) {
+        if (crowdHide[col[k]!] === 1) seen = true;
+        else if (seen && columnCrosses(col[k]!)) crowdHide[col[k]!] = 1;
+      }
+      if (col.length > 1 && crowdHide[col[1]!] === 1 && columnCrosses(col[0]!)) crowdHide[col[0]!] = 1;
+      for (let k = 0; k < col.length; k++) {
+        if (crowdHide[col[k]!] !== 1 && protrudesTop(col[k]!)) crowdHide[col[k]!] = 1;
+      }
+    }
+    // One neighboring column, same deck band, so the cleared edge is not a stair of triangles.
+    // Seats below the ice stay. Seats that hang in from the top of the frame go with the column.
+    const cleared: number[] = [];
+    for (const [key, col] of crowdCols) {
+      for (let k = 0; k < col.length; k++) {
+        if (crowdHide[col[k]!] === 1) {
+          cleared.push(key);
+          break;
+        }
+      }
+    }
+    for (let c = 0; c < cleared.length; c++) {
+      const key = cleared[c]!;
+      const col = crowdCols.get(key);
+      if (!col) continue;
+      let r0 = Infinity;
+      let r1 = -Infinity;
+      for (let k = 0; k < col.length; k++) {
+        if (crowdHide[col[k]!] !== 1) continue;
+        const p = STANDS[col[k]!]!;
+        const r = Math.hypot(p.x, p.z);
+        if (r < r0) r0 = r;
+        if (r > r1) r1 = r;
+      }
+      const family = Math.floor(key / 100_000);
+      for (const n of [key - 2, key - 1, key + 1, key + 2]) {
+        if (Math.floor(n / 100_000) !== family) continue;
+        const ncol = crowdCols.get(n);
+        if (!ncol) continue;
+        let top = false;
+        for (let k = 0; k < ncol.length; k++) {
+          const p = STANDS[ncol[k]!]!;
+          const r = Math.hypot(p.x, p.z);
+          if (r >= r0 - 0.9 && r <= r1 + 0.9 && columnCrosses(ncol[k]!)) crowdHide[ncol[k]!] = 1;
+          if (r >= r0 - 0.9 && protrudesTop(ncol[k]!)) {
+            crowdHide[ncol[k]!] = 1;
+            top = true;
+          }
+        }
+        if (!top) continue;
+        for (let k = 0; k < ncol.length; k++) {
+          if (crowdHide[ncol[k]!] !== 1 && protrudesTop(ncol[k]!)) crowdHide[ncol[k]!] = 1;
+        }
+      }
+    }
+    trimTopWedges();
+    crowdClear.clear();
+    for (const [key, col] of crowdCols) {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let k = 0; k < col.length; k++) {
+        if (crowdHide[col[k]!] !== 1) continue;
+        const r = Math.hypot(STANDS[col[k]!]!.x, STANDS[col[k]!]!.z);
+        if (r < lo) lo = r;
+        if (r > hi) hi = r;
+      }
+      if (lo <= hi) crowdClear.set(key, { r0: lo, r1: hi });
+    }
+    for (let i = 0; i < STANDS.length; i++) {
+      const p = STANDS[i]!;
+      const sc = crowdHide[i] === 1 ? 0.001 : 1;
       let hop = 0;
       if (brawl || (on && p.awayFan !== scoringHome)) {
         hop = 0.16 + 0.72 * Math.abs(Math.sin(t * 13.4 + i * 0.37));
@@ -248,6 +657,9 @@ function StadiumRibbon({
   useLayoutEffect(() => () => segs.forEach((s) => s.geo.dispose()), [segs]);
 
   const fascia = useMemo(() => fasciaRing(inset), [inset]);
+  const fasciaGroup = useRef<THREE.Group>(null);
+  const segGroup = useRef<THREE.Group>(null);
+  const boardGroup = useRef<THREE.Group>(null);
 
   const boards = useMemo(() => {
     const longs = segs.filter((s) => Math.abs(s.z) > 16);
@@ -283,6 +695,34 @@ function StadiumRibbon({
     };
     ribbon.paint(opts);
     board.paint(opts);
+    const fy = y - FASCIA_DROP;
+    const shells = fasciaGroup.current;
+    if (shells) {
+      for (let i = 0; i < fascia.length; i++) {
+        const mesh = shells.children[i];
+        const p = fascia[i];
+        if (!mesh || !p) continue;
+        mesh.visible = !floatsInSight(p.x, fy, p.z);
+      }
+    }
+    const bands = segGroup.current;
+    if (bands) {
+      for (let i = 0; i < segs.length; i++) {
+        const mesh = bands.children[i];
+        const s = segs[i];
+        if (!mesh || !s) continue;
+        mesh.visible = !floatsInSight(s.x, y, s.z);
+      }
+    }
+    const leds = boardGroup.current;
+    if (leds) {
+      for (let i = 0; i < boards.length; i++) {
+        const mesh = leds.children[i];
+        const b = boards[i];
+        if (!mesh || !b) continue;
+        mesh.visible = !floatsInSight(b.x, y, b.z);
+      }
+    }
   });
 
   const mat = useMemo(
@@ -308,16 +748,21 @@ function StadiumRibbon({
 
   return (
     <group>
-      {fascia.map((p, i) => (
-        <mesh key={`fascia-${i}`} position={[p.x, y - FASCIA_DROP, p.z]} material={shell}>
-          <boxGeometry args={[FASCIA_W, FASCIA_H, FASCIA_D]} />
-        </mesh>
-      ))}
-      {segs.map((s, i) => (
-        <mesh key={i} geometry={s.geo} position={[s.x, y, s.z]} rotation={[0, s.rot, 0]} material={mat} />
-      ))}
-      {boardsOn
-        ? boards.map((b, i) => (
+      <group ref={fasciaGroup}>
+        {fascia.map((p, i) => (
+          <mesh key={`fascia-${i}`} position={[p.x, y - FASCIA_DROP, p.z]} material={shell}>
+            <boxGeometry args={[FASCIA_W, FASCIA_H, FASCIA_D]} />
+          </mesh>
+        ))}
+      </group>
+      <group ref={segGroup}>
+        {segs.map((s, i) => (
+          <mesh key={i} geometry={s.geo} position={[s.x, y, s.z]} rotation={[0, s.rot, 0]} material={mat} />
+        ))}
+      </group>
+      {boardsOn ? (
+        <group ref={boardGroup}>
+          {boards.map((b, i) => (
             <mesh
               key={`led-${i}`}
               position={[b.x, y, b.z]}
@@ -326,8 +771,9 @@ function StadiumRibbon({
             >
               <planeGeometry args={[5.4, 0.98]} />
             </mesh>
-          ))
-        : null}
+          ))}
+        </group>
+      ) : null}
     </group>
   );
 }
@@ -625,9 +1071,34 @@ function PressBox() {
   );
   const frame = pressBoxFrame();
   const { y, z, boxH } = frame;
+  const bayGroups = useRef<Array<THREE.Group | null>>([]);
+  useFrame(() => {
+    if (useGame.getState().camMode === "high") return;
+    for (let i = 0; i < PRESS_BAYS.length; i++) {
+      const g = bayGroups.current[i];
+      const ox = PRESS_BAYS[i];
+      if (!g || ox === undefined) continue;
+      let hide = false;
+      for (const dx of [0, -8.6, 8.6]) {
+        const x = ox + dx;
+        const pz = z + PRESS_SHELL.z;
+        if (floatsInSight(x, y, pz) || floatsInSight(x, y + boxH * 0.46, pz)) {
+          hide = true;
+          break;
+        }
+      }
+      g.visible = !hide;
+    }
+  });
   if (cam === "high") return null;
-  const bay = (ox: number) => (
-    <group key={ox} position={[ox, 0, 0]}>
+  const bay = (ox: number, i: number) => (
+    <group
+      key={ox}
+      position={[ox, 0, 0]}
+      ref={(node) => {
+        bayGroups.current[i] = node;
+      }}
+    >
       <mesh material={shell} position={[0, 0, PRESS_SHELL.z]}>
         <boxGeometry args={[PRESS_SHELL.w, boxH, PRESS_SHELL.d]} />
       </mesh>
@@ -643,7 +1114,7 @@ function PressBox() {
   );
   return (
     <group position={[0, y, z]}>
-      {PRESS_BAYS.map((ox) => bay(ox))}
+      {PRESS_BAYS.map((ox, i) => bay(ox, i))}
     </group>
   );
 }
@@ -664,11 +1135,6 @@ function Truss() {
       <mesh ref={roof} position={[0, 80, 0]} material={mat}>
         <boxGeometry args={[64, 0.35, 36]} />
       </mesh>
-      {[-18, -6, 6, 18].map((x) => (
-        <mesh key={x} position={[x, 76, 0]} material={mat}>
-          <boxGeometry args={[0.28, 6.4, 22]} />
-        </mesh>
-      ))}
     </group>
   );
 }

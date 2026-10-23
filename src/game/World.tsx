@@ -312,6 +312,14 @@ function parkClassicAt(x: number, y: number, z: number, cam: THREE.PerspectiveCa
   aimClassic(cam, _lookSmooth);
 }
 
+const _titleBaseline = new THREE.Vector3();
+const _titleHold = new THREE.Vector3();
+let _titleSeedKind = "";
+let _titleReady = false;
+let _titleNeedsBaseline = false;
+let _titleUserCam = false;
+let _titleModeSeen: CamMode | null = null;
+
 function seedFreestyleCam(camera: THREE.PerspectiveCamera) {
   const playing = useGame.getState().playing;
   const puck = world.puck;
@@ -346,7 +354,7 @@ function captureFreeCam(camera: THREE.Camera, loose = false) {
   const fc = world.freeCam;
   const puck = world.puck;
   const playing = useGame.getState().playing;
-  const drillCam = playing ? drillFollow() : null;
+  const drillCam = drillFollow();
   const endCam = playing && !drillCam ? periodEndLook() : null;
   const whistleCam = playing && !drillCam && !endCam ? whistleUserLook() : null;
   fc.tx = drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : playing ? puck.x : 0;
@@ -520,7 +528,7 @@ function widenChaseForReceiver(
 
 function holdPausedCam(cam: THREE.PerspectiveCamera) {
   if (!_pauseHolding || !world.freeCam.captured) {
-    if (!world.freeCam.captured) captureFreeCam(cam);
+    if (!world.freeCam.captured) captureFreeCam(cam, true);
     _pauseHoldPos.copy(cam.position);
     _pauseHoldQuat.copy(cam.quaternion);
     _pauseHoldTheta = world.freeCam.theta;
@@ -595,6 +603,8 @@ function CameraRig() {
   const seenDrill = useRef(-1);
   const seededTitle = useRef(false);
   const seenPeriod = useRef(world.periodView);
+  const seenClock = useRef(useGame.getState().clockMode);
+  const drillOrbitFlipped = useRef(false);
 
   useFrame((state) => {
     const ui = useGame.getState();
@@ -602,7 +612,10 @@ function CameraRig() {
       _pauseHolding = false;
       return;
     }
-    if (world.replay) return;
+    if (world.replay || world.camPick) {
+      _pauseHolding = false;
+      return;
+    }
     stopPausedOrbit(state.controls);
     holdPausedCam(state.camera as THREE.PerspectiveCamera);
   }, -2);
@@ -617,27 +630,40 @@ function CameraRig() {
     const drillSnap = drillNow && world.drillView !== seenDrill.current;
     if (!playing) {
       seenPeriod.current = world.periodView;
+      seenClock.current = uiNow.clockMode;
       wasTitle.current = true;
       prevMode.current = mode;
-      if (drillNow) {
-        const look = drillFollow();
-        if (look) parkClassicAt(look.x, look.y, look.z, cam);
-        seenDrill.current = world.drillView;
-      } else {
-        cam.up.set(0, 1, 0);
-        if (!seededTitle.current) {
-          const atk = world.homeAttack > 0 ? 1 : -1;
-          cam.position.set(-atk * 13.6, 9.6, 0);
-          cam.lookAt(atk * 1.4, 0.4, 0);
-          seededTitle.current = true;
-        }
+      if ((world.camPick && mode !== "freestyle") || (_titleModeSeen !== null && _titleModeSeen !== mode && mode !== "freestyle")) {
+        _titleUserCam = false;
       }
-      writeCamBasis(cam);
-      projectUser(cam);
-      return;
+      _titleModeSeen = mode;
+      if (!world.camPick) {
+        const seedKind = drillNow ? `d${world.drillView}` : `i${world.homeAttack > 0 ? 1 : -1}`;
+        if (!_titleUserCam && _titleSeedKind !== seedKind) {
+          if (drillNow) {
+            const look = drillFollow();
+            if (look) parkClassicAt(look.x, look.y, look.z, cam);
+            seenDrill.current = world.drillView;
+          } else {
+            cam.up.set(0, 1, 0);
+            const atk = world.homeAttack > 0 ? 1 : -1;
+            cam.position.set(-atk * 13.6, 9.6, 0);
+            cam.lookAt(atk * 1.4, 0.4, 0);
+          }
+          if (!drillNow || drillFollow()) {
+            _titleSeedKind = seedKind;
+            seededTitle.current = true;
+            _titleReady = true;
+            _titleNeedsBaseline = true;
+          }
+        }
+        writeCamBasis(cam);
+        projectUser(cam);
+        return;
+      }
     }
     const fromTitle = wasTitle.current;
-    wasTitle.current = false;
+    if (playing) wasTitle.current = false;
     if (drillSnap) seenDrill.current = world.drillView;
     if (world.replay) {
       const puck = world.puck;
@@ -674,7 +700,7 @@ function CameraRig() {
       projectUser(cam);
       return;
     }
-    if (pausedNow) {
+    if (pausedNow && !world.camPick) {
       if (drillSnap) {
         world.freeCam.captured = false;
         _pauseHolding = false;
@@ -708,10 +734,15 @@ function CameraRig() {
       prevMode.current = mode;
       return;
     }
-    if (mode === "freestyle") {
-      const switchedMode = prevMode.current !== mode;
+    let activeMode = mode;
+    if (fromTitle && _titleUserCam && !world.camPick && activeMode !== "freestyle") {
+      useGame.getState().setCamMode("freestyle");
+      activeMode = "freestyle";
+    }
+    if (activeMode === "freestyle") {
+      const switchedMode = prevMode.current !== activeMode;
       if (fromTitle) {
-        captureFreeCam(cam, true);
+        if (!world.freeCam.captured) captureFreeCam(cam, true);
         world.freeCamReapply = false;
       } else if (world.freeCamReapply) {
         world.freeCamReapply = false;
@@ -720,6 +751,19 @@ function CameraRig() {
       }
       if (periodSnap && !fromTitle && !switchedMode) mirrorFreeCamEnds();
       if (periodSnap) seenPeriod.current = world.periodView;
+      const clockNow = useGame.getState().clockMode;
+      if (!fromTitle && !switchedMode) {
+        const enteredDrill = seenClock.current !== "drill" && clockNow === "drill";
+        const leftDrill = seenClock.current === "drill" && clockNow !== "drill";
+        if (enteredDrill) {
+          mirrorFreeCamEnds();
+          drillOrbitFlipped.current = true;
+        } else if (leftDrill && drillOrbitFlipped.current) {
+          mirrorFreeCamEnds();
+          drillOrbitFlipped.current = false;
+        }
+      }
+      seenClock.current = clockNow;
       if (!useGame.getState().freeCamLive) useGame.getState().setFreeCamLive(true);
       const fc = world.freeCam;
       const puck = world.puck;
@@ -736,12 +780,14 @@ function CameraRig() {
       applyFreeCam(cam);
       writeCamBasis(cam);
       projectUser(cam);
-      prevMode.current = mode;
+      prevMode.current = activeMode;
+      if (playing && !pausedNow) world.camPick = false;
       return;
     }
     const d = Math.min(dt, 0.1);
     const puck = world.puck;
-    const idle = !playing || pausedNow;
+    const preview = world.camPick && (!playing || pausedNow);
+    const idle = (!playing || pausedNow) && !preview;
     const drillCam = drillFollow();
     const endCam = !idle && !drillCam ? periodEndLook() : null;
     const whistleCam = !idle && !endCam ? whistleUserLook() : null;
@@ -751,6 +797,8 @@ function CameraRig() {
     const pz = idle ? 0 : drillCam ? drillCam.z : focus ? focus.z : puck.z;
     const py = idle ? 0.45 : drillCam ? drillCam.y : focus ? focus.y : Math.max(0.35, puck.y);
     if (periodSnap) seenPeriod.current = world.periodView;
+    if (seenClock.current === "drill" && uiNow.clockMode !== "drill") drillOrbitFlipped.current = false;
+    seenClock.current = uiNow.clockMode;
     const switched = prevMode.current !== mode || fromTitle || drillSnap || periodSnap;
     prevMode.current = mode;
 
@@ -897,6 +945,26 @@ function CameraRig() {
     if (mode === "classic") aimClassic(cam, _lookSmooth);
     writeCamBasis(state.camera);
     projectUser(state.camera);
+    if (playing && !pausedNow) world.camPick = false;
+  });
+
+  // Keep this at priority 0. A positive priority disables R3F's automatic render and the canvas stays clear.
+  useFrame((state) => {
+    const ui = useGame.getState();
+    if (ui.playing || !_titleReady || (world.camPick && ui.camMode !== "freestyle")) return;
+    const cam = state.camera as THREE.PerspectiveCamera;
+    if (_titleNeedsBaseline) {
+      _titleBaseline.copy(cam.position);
+      _titleHold.copy(cam.position);
+      _titleNeedsBaseline = false;
+      captureFreeCam(cam, true);
+      return;
+    }
+    if (!_titleUserCam && cam.position.distanceTo(_titleBaseline) > 0.08) _titleUserCam = true;
+    if (_titleUserCam && cam.position.distanceTo(_titleHold) > 1e-4) {
+      _titleHold.copy(cam.position);
+      captureFreeCam(cam, true);
+    }
   });
   return null;
 }
@@ -910,11 +978,13 @@ function FreestyleControls() {
   const ref = useRef<any>(null);
   const seenDrill = useRef(-1);
   const title = !playing;
-  const live = title || (mode === "freestyle" && !paused && !freeCamLive);
+  const live =
+    (title && !world.camPick) ||
+    (mode === "freestyle" && !paused && !freeCamLive && !world.camPick);
 
   useLayoutEffect(() => {
     if (!live || !useGame.getState().playing) return;
-    if (world.freeCam.captured || world.freeCamReapply || useGame.getState().freeCamLive) return;
+    if (world.freeCamReapply || useGame.getState().freeCamLive) return;
     seedFreestyleCam(camera as THREE.PerspectiveCamera);
   }, [live, camera]);
 
@@ -961,9 +1031,9 @@ function FreestyleControls() {
   const endCam = playing && !drillCam ? periodEndLook() : null;
   const whistleCam = playing && !drillCam && !endCam ? whistleUserLook() : null;
   const puck = world.puck;
-  const tx = !playing ? 0 : drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : puck.x;
-  const tz = !playing ? 0 : drillCam ? drillCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : puck.z;
-  const ty = !playing ? 0.55 : drillCam ? drillCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
+  const tx = drillCam ? drillCam.x : !playing ? 0 : endCam ? endCam.x : whistleCam ? whistleCam.x : puck.x;
+  const tz = drillCam ? drillCam.z : !playing ? 0 : endCam ? endCam.z : whistleCam ? whistleCam.z : puck.z;
+  const ty = drillCam ? drillCam.y : !playing ? 0.55 : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
 
   return (
     <OrbitControls

@@ -303,6 +303,8 @@ export type World = {
   freeCam: FreeCam;
   pauseDirty: boolean;
   freeCamReapply: boolean;
+  /** User picked a camera mode on the load screen or while paused. */
+  camPick: boolean;
   pauseRestoreMode: string;
   replay: boolean;
   replayT: number;
@@ -405,10 +407,12 @@ const LOWER_T = 0.28;
 const FAKE_T = 0.32;
 const DROP_FLY_T = 0.18;
 const COVER_HOLD = 2.0;
-/** Pass or shot held during the first COVER_HOLD seconds adds this long to release. */
+/** Time from a cover whistle until the faceoff. Game and roller only. */
+const COVER_STOPPAGE_S = 2.5;
+/** Pass, shot, or saucer held during the first COVER_HOLD seconds adds this long to release. */
 const GOALIE_RELEASE_EXTRA = 2.0;
 const GOALIE_HOLD = 0.5;
-/** Home goalie whose current pass or shot hold began before COVER_HOLD. */
+/** Home goalie whose current pass, shot, or saucer hold began before COVER_HOLD. */
 let goalieReleaseId = -1;
 const playLooseMem = new Map<number, { key: string; yes: boolean }>();
 /** Goalie is out for a loose puck that stops at the end-zone circle tops. */
@@ -750,6 +754,7 @@ export const world: World = {
   freeCam: { theta: Math.PI * 0.5, phi: 0.72, radius: 28, tx: 0, ty: 0.5, tz: 0, captured: false },
   pauseDirty: false,
   freeCamReapply: false,
+  camPick: false,
   pauseRestoreMode: "classic",
   replay: false,
   replayT: 0,
@@ -1061,6 +1066,7 @@ function resetSkaters(): void {
   world.shotSpeedMax = 0;
   world.windupCancel = false;
   passChargeCancel = false;
+  resetSauceWindow();
   clearWindupCommit();
   windupCommitHot = false;
   world.wrapBehind = false;
@@ -1158,7 +1164,7 @@ function markShotPlant(): void {
     shotPlantKeep = PLANT_KEEP_SKATE;
   }
 }
-/** This frame is a left/right aimed deke, so the 3s X shield must not arm. */
+/** This frame is a left/right aimed deke, so the 2s X shield must not arm. */
 let skillStickSideHold = false;
 let userStickCommit = false;
 
@@ -1236,12 +1242,13 @@ function trackSkillStick(act: Actions): void {
 }
 
 /**
- * Poke shield while A or X is held with the puck.
- * One window per button per possession, from the first frame that button is down.
+ * Poke shield while A, X, or Select (saucer) is held with the puck.
+ * One window per possession, from the first frame any of those is down.
  * The window is a hard cap: it does not auto-pass or auto-shoot, and a later press does not refresh it.
+ * Select uses the same window as A. It does not start a second timer or extend the first.
  * A Skill Stick left/right hold does not use this. That protect is skillProtectSide.
  */
-const USER_A_PROTECT_S = 3;
+const USER_A_PROTECT_S = 2;
 /**
  * Aimed-deke protect. While the right stick is held left or right the blade stays
  * on that side, and a poke from the other side does not take the puck.
@@ -1486,9 +1493,9 @@ export type DrillTarget = { col: number; row: number; pts: number };
 const DRILL_SECONDS = 60;
 const PERIOD_SECONDS = GAME_CLOCK_DISPLAY_MINUTES * 60;
 const ROLLER_PERIOD_SECONDS = ROLLER_CLOCK_DISPLAY_MINUTES * 60;
-const PERIOD_END_HOLD = 3;
-/** Real seconds of celebration after the final buzzer, then the pause screen. */
-const MATCH_END_HOLD = 10;
+const PERIOD_END_HOLD = 2;
+/** Real seconds of celebration after the final buzzer, then a new game. */
+const MATCH_END_HOLD = 12;
 let matchEndHold = 0;
 /** A counted goal in Game overtime. The post-goal flow ends the match instead of facing off. */
 let overtimeWinner = false;
@@ -2618,7 +2625,7 @@ function integrateSkater(
       s.vx *= 11 / spDive;
       s.vz *= 11 / spDive;
     }
-    if (aimed) s.yaw = turnToward(s.yaw, dx, dz, 22, dt);
+    if (aimed) s.yaw = turnToward(s.yaw, dx, dz, 4, dt);
     s.x += s.vx * dt;
     s.z += s.vz * dt;
     collideSkater(s);
@@ -2631,6 +2638,10 @@ function integrateSkater(
   if (s.dive > 0) {
     // 2.5× the old 0.78 rate: get-up after the slide, not the dive itself.
     s.dive = Math.max(0, s.dive - 1.95 * dt);
+    if (s.id === world.userId && mag > 0.12) {
+      const inv = 1 / mag;
+      s.yaw = turnToward(s.yaw, wx * inv, wz * inv, 4, dt);
+    }
     s.vx *= Math.exp(-6.2 * dt);
     s.vz *= Math.exp(-6.2 * dt);
     s.x += s.vx * dt;
@@ -7658,6 +7669,9 @@ let frameActId = -1;
 let receiveFrom: { x: number; z: number } | null = null;
 let delayOnside: number[] = [];
 let offsideFlight: OffFlight | null = null;
+/** When the current delayed offside began. The whistle waits this long, then blows. */
+const OFFSIDE_DELAY_S = 1.5;
+let offsideDelayAt = -1;
 
 function ozEdge(dir: 1 | -1): number {
   return dir * (BLUE_X + BLUE_LINE_W * 0.5);
@@ -7862,6 +7876,7 @@ function setDelayedSide(side: 0 | 1 | -1): void {
 
 function clearDelayedOffside(): void {
   if (world.delayedOffside !== 0) world.delayedOffside = 0;
+  offsideDelayAt = -1;
   delayOnside = [];
   offsideFlight = null;
   precedeId = null;
@@ -8222,6 +8237,7 @@ function freshDefendingPlay(dir: 1 | -1, cause: OffCause): boolean {
 
 function beginDelay(dir: 1 | -1, cause: OffCause): void {
   setDelayedSide(dir);
+  offsideDelayAt = world.time;
   delayOnside = [];
   for (const s of world.skaters) {
     if (s.kind === "goalie" || attackSign(s.side) !== dir) continue;
@@ -8288,6 +8304,10 @@ function checkOffside(): void {
   const was = world.puckOz;
   world.puckOz = now;
   const delay = world.delayedOffside;
+  if (delay !== 0 && offsideDelayAt >= 0 && world.time - offsideDelayAt >= OFFSIDE_DELAY_S) {
+    blowOffside(delay, "shot");
+    return;
+  }
   if (delay !== 0 && maintainDelay(delay)) return;
   if (world.delayedOffside !== 0) return;
   if (now !== 0 && now !== was) onEntry(now, was);
@@ -8391,22 +8411,57 @@ const PASS_CHECK_CUT = 0.5;
 const PASS_TAP_MPH = SKATER_PASS_LO_MPH;
 const PASS_FULL_MPH = SKATER_PASS_HI_MPH;
 const PASS_FULL_HOLD = 1.5;
-// Sauce height is Start's hold, not A's. Empty when Start goes down, full at 1s, then clamped.
+// Sauce height is Select's hold, not A's. Empty when Select goes down, full at 1s, then clamped.
 // It used to copy aHoldFor, so it could not start before A and jumped to full if the pass was already full.
-// Full sauce toward open ice is bar-down / top-row.
+// Full sauce toward the net and open ice is above the crossbar (the old high loft).
 // A board saucer used to aim over the glass (wall top + 0.28) on every full hold, and
 // containPuckBoards does not bounce a puck above wallTop, so those all reached the crowd.
-// Most board saucers now hit high on the glass and bounce. SAUCE_CROWD_P still clears.
+// Most board saucers still hit high on the glass and bounce. SAUCE_CROWD_P still clears.
+// A Select hold that stays at full for another second, with A never down, is a high clear.
 const SAUCE_FULL_HOLD = 1;
+const SAUCE_CLEAR_HOLD = 2;
 const SAUCE_LOW_Y = 0.38;
 const SAUCE_CROWD_AT = 0.8;
 const SAUCE_CROWD_P = 0.2;
+// Full saucer leaves at 86 mph. The old clear boost was 1.12 × a 95 mph pass (~106).
+const SAUCE_FULL_MPH = 86;
+const SAUCE_FULL_MPS = SAUCE_FULL_MPH / 2.23694;
+// Full sauces drop faster than a shot so a high lob still comes down inside the zone.
+const SAUCE_GRAV = 46;
 const passerCheckedAt = new Map<number, number>();
 let passSpeedCutFor = -1;
 let chargedPassPower: number | null = null;
 let chargedSauce: number | null = null;
+let chargedClear = false;
 // B during an A hold. The release must not launch. Cleared once A is up.
 let passChargeCancel = false;
+// Select sauce clock while this possession can charge. Offset drops time Select was
+// already held before the puck arrived (a goalie stays on Select). A during the window
+// keeps the saucer on the A release and blocks the high clear.
+let sauceHold = 0;
+let sauceReleaseClean = false;
+let sauceReleaseFull = false;
+let sauceCleanLive = false;
+let sauceTracking = false;
+let sauceOffset = 0;
+let sauceClean = true;
+// Sauce charge until the first ice hit. Negative means this puck is not a saucer.
+let sauceLandCharge = -1;
+
+function resetSauceWindow(): void {
+  sauceHold = 0;
+  sauceReleaseClean = false;
+  sauceReleaseFull = false;
+  sauceCleanLive = false;
+  sauceTracking = false;
+  sauceOffset = 0;
+  sauceClean = true;
+  sauceLandCharge = -1;
+}
+
+function sauceMeterWind(): string {
+  return sauceCleanLive && sauceHold >= SAUCE_CLEAR_HOLD ? "Clear" : "Saucer";
+}
 
 function passChargeMps(holdS: number, goalie = false): number {
   const t = Math.min(1, Math.max(0, holdS / PASS_FULL_HOLD));
@@ -8425,21 +8480,26 @@ function withChargedPass(
   sauceHoldS: number,
   fire: () => void,
   goalie = false,
+  clear = false,
 ): void {
   chargedPassPower = passChargeMps(holdS, goalie);
   chargedSauce = saucer ? sauceCharge01(sauceHoldS) : null;
+  chargedClear = clear;
   try {
     fire();
   } finally {
     chargedPassPower = null;
     chargedSauce = null;
+    chargedClear = false;
   }
 }
 
 function chargedHoriz(vx: number, vz: number): { vx: number; vz: number } {
-  if (chargedPassPower === null) return { vx, vz };
+  if (chargedPassPower === null && !(chargedSauce !== null && chargedSauce >= 0.999)) return { vx, vz };
+  const power =
+    chargedSauce !== null && chargedSauce >= 0.999 ? SAUCE_FULL_MPS : (chargedPassPower as number);
   const sp = Math.hypot(vx, vz) || 1;
-  const m = chargedPassPower / sp;
+  const m = power / sp;
   return { vx: vx * m, vz: vz * m };
 }
 
@@ -8672,6 +8732,7 @@ function launchPuck(s: Skater, vx: number, vz: number, vy = 0): void {
   ironResolved = null;
   clearShotShape();
   drillPipeHit = false;
+  sauceLandCharge = -1;
   const blade = passOrigin(s);
   world.puck.owner = null;
   world.puck.x = blade.x;
@@ -8698,9 +8759,11 @@ function checkedPassScale(s: Skater): number {
 }
 
 type SauceAim = { dist: number; over: boolean; bank: boolean; wall?: number };
+type SauceZone = "own" | "ownNeutral" | "attackNeutral" | "offensive";
 
 function sauceNetY(sauce: number): number {
-  const high = mouthTopY();
+  // Partial charges stay on this ramp. Full end-aimed sauces use the zone landing instead.
+  const high = mouthTopY() + 0.78;
   return SAUCE_LOW_Y + sauce * (high - SAUCE_LOW_Y);
 }
 
@@ -8709,12 +8772,83 @@ function sauceGlassY(sauce: number, wall: number): number {
   return SAUCE_LOW_Y + sauce * (high - SAUCE_LOW_Y);
 }
 
+/** High clear arrives well above a full net saucer and carries down the ice. */
+function sauceClearY(): number {
+  return mouthTopY() + 2.15;
+}
+
 /** Arrival loft. A low sauce keeps a short hop. A full sauce uses the real flight. */
-function sauceLaunchVy(dist: number, speed: number, wantY: number, sauce: number): number {
+function sauceLaunchVy(dist: number, speed: number, wantY: number, sauce: number, grav = 12): number {
   const raw = Math.max(0.1, flightSeconds(Math.max(0.55, dist), Math.max(8, speed)));
   const t = (1 - sauce) * Math.min(raw, 0.36) + sauce * raw;
-  const vy = (wantY - PUCK_Y + 6 * t * t) / Math.max(0.08, t + 0.02);
-  return Math.max(0.45, Math.min(16, vy));
+  const drop = 0.5 * grav * t * t;
+  const vy = (wantY - PUCK_Y + drop) / Math.max(0.08, t + 0.02);
+  return Math.max(0.45, Math.min(22, vy));
+}
+
+function sauceZone(s: Skater): SauceZone {
+  const along = s.x * attackDir(s.side);
+  const blue = BLUE_X + BLUE_LINE_W * 0.5;
+  if (along > blue) return "offensive";
+  if (along > 0.35) return "attackNeutral";
+  if (along >= -blue) return "ownNeutral";
+  return "own";
+}
+
+function aimingAtAttackEnd(s: Skater, ax: number, az: number): boolean {
+  const attack = attackDir(s.side);
+  if (ax * attack > 0.42) return true;
+  const from = passOrigin(s);
+  const hit = rayBoard(from.x, from.z, ax, az, 80);
+  if (!hit) return false;
+  return Math.abs(hit.nx) > 0.72 && hit.nx * attack > 0.45;
+}
+
+type FullSauceLand = { dist: number; wantY: number };
+
+/** Full charge only. Partial sauces keep the lower proportional arc. */
+function fullSauceLand(s: Skater, ax: number, az: number): FullSauceLand | null {
+  if (!aimingAtAttackEnd(s, ax, az)) return null;
+  const attack = attackDir(s.side);
+  const from = passOrigin(s);
+  const hit = rayBoard(from.x, from.z, ax, az, 90);
+  const wall = hit ? wallTop(hit.nx, hit.nz, hit.x, hit.z) : BOARD_H + GLASS_H;
+  const zone = sauceZone(s);
+  const distToX = (x: number): number | null => {
+    if (ax * attack < 0.12) return null;
+    const d = (x - from.x) / ax;
+    return d > 0.8 ? d : null;
+  };
+  if (zone === "offensive") {
+    const dist = hit ? Math.max(1.2, hit.dist) : 10;
+    const roll = Math.random();
+    // Most clear the end glass. A glass hit is next. A clip that can kick out is rare.
+    if (roll < 0.74) return { dist, wantY: wall + 0.85 };
+    if (roll < 0.94) return { dist, wantY: Math.max(1.6, wall - 0.9) };
+    return { dist, wantY: wall + 0.12 };
+  }
+  if (zone === "attackNeutral") {
+    const dist = hit ? Math.max(1.2, hit.dist) : 18;
+    const slip = (Math.random() - 0.5) * 0.2;
+    return { dist, wantY: Math.max(1.7, wall - 0.7 + slip) };
+  }
+  if (zone === "ownNeutral") {
+    const goal = attack * GOAL_LINE_X;
+    const roll = Math.random();
+    if (roll >= 0.74 && hit) {
+      return { dist: Math.max(2, hit.dist), wantY: 0.5 + Math.random() * 0.35 };
+    }
+    const landX =
+      roll < 0.42
+        ? goal - attack * (0.5 + Math.random() * 1.5)
+        : goal + attack * (0.35 + Math.random() * 2.2);
+    const dist = distToX(landX) ?? (hit ? Math.min(hit.dist * 0.9, 40) : 26);
+    return { dist, wantY: PUCK_Y + 0.03 };
+  }
+  const blue = BLUE_X + BLUE_LINE_W * 0.5;
+  const landAlong = blue + 2.2 + Math.random() * Math.max(3.5, GOAL_LINE_X - blue - 7);
+  const dist = distToX(attack * landAlong) ?? 34;
+  return { dist: Math.max(8, dist), wantY: PUCK_Y + 0.04 };
 }
 
 function inferSauceAim(s: Skater, ax: number, az: number): SauceAim {
@@ -8751,24 +8885,131 @@ function launchPass(
   const scaled = chargedHoriz(vx, vz);
   const m = checkedPassScale(s);
   let useVy = vy;
+  let sauceCharge = -1;
   if (saucer && chargedSauce !== null) {
+    sauceCharge = chargedSauce;
     const sp = Math.hypot(scaled.vx, scaled.vz) || 1;
-    const aim = sauceAim ?? inferSauceAim(s, scaled.vx / sp, scaled.vz / sp);
-    let want = sauceNetY(chargedSauce);
-    if (aim.over) {
-      const wall = aim.wall ?? BOARD_H + GLASS_H;
-      const intoCrowd = chargedSauce >= SAUCE_CROWD_AT && Math.random() < SAUCE_CROWD_P;
-      want = intoCrowd ? wall + 0.32 : sauceGlassY(chargedSauce, wall);
-    }
-    useVy = sauceLaunchVy(aim.dist, sp, want, chargedSauce);
-    if (aim.bank && !aim.over) {
-      const from = passOrigin(s);
-      useVy = bankContactVy(from.x, from.z, scaled.vx, scaled.vz, useVy);
+    const dirx = scaled.vx / sp;
+    const dirz = scaled.vz / sp;
+    const full = chargedSauce >= 0.999;
+    const grav = full ? SAUCE_GRAV : 12;
+    const zoneLand = full && !chargedClear ? fullSauceLand(s, dirx, dirz) : null;
+    if (zoneLand) {
+      useVy = sauceLaunchVy(zoneLand.dist, sp, zoneLand.wantY, 1, grav);
+    } else {
+      const aim = sauceAim ?? inferSauceAim(s, dirx, dirz);
+      let want = chargedClear ? sauceClearY() : sauceNetY(chargedSauce);
+      if (aim.over && !chargedClear) {
+        const wall = aim.wall ?? BOARD_H + GLASS_H;
+        const intoCrowd = chargedSauce >= SAUCE_CROWD_AT && Math.random() < SAUCE_CROWD_P;
+        want = intoCrowd ? wall + 0.32 : sauceGlassY(chargedSauce, wall);
+      }
+      useVy = sauceLaunchVy(aim.dist, sp, want, chargedClear ? 1 : chargedSauce, chargedClear ? SAUCE_GRAV : grav);
+      if (aim.bank && !aim.over && !zoneLand) {
+        const from = passOrigin(s);
+        useVy = bankContactVy(from.x, from.z, scaled.vx, scaled.vz, useVy);
+      }
     }
   }
   if (m < 1) passSpeedCutFor = world.time;
   launchPuck(s, scaled.vx * m, scaled.vz * m, useVy * m);
+  sauceLandCharge = sauceCharge;
   beginPassSpeedTrack(saucer);
+}
+
+function sauceWindowAllowed(): boolean {
+  const user = world.skaters[world.userId];
+  if (!user || world.puck.owner !== user.id) return false;
+  if (world.faceoff || world.faceoffA || world.lineBrawl || periodEndLive()) return false;
+  if (world.whistle && world.whistle !== "offside") return false;
+  return true;
+}
+
+/** Select hold that counts toward sauce, starting when this possession can charge. */
+function syncSauceWindow(act: Actions): void {
+  const allow = sauceWindowAllowed();
+  const down = act.viewDown;
+  sauceReleaseClean = false;
+  sauceReleaseFull = false;
+  if (down && allow) {
+    if (!sauceTracking) {
+      sauceOffset = act.viewPress ? 0 : act.selectHoldFor;
+      sauceClean = !act.aDown;
+      sauceTracking = true;
+    } else if (act.aDown) sauceClean = false;
+    sauceHold = Math.max(0, act.selectHoldFor - sauceOffset);
+    sauceCleanLive = sauceClean;
+    return;
+  }
+  if (sauceTracking && !down && allow) {
+    sauceHold = Math.max(0, act.selectHoldFor - sauceOffset);
+    sauceReleaseClean = sauceClean && !act.aDown && sauceHold >= 0.05;
+    sauceReleaseFull = sauceHold >= SAUCE_FULL_HOLD - 1e-3;
+    sauceCleanLive = false;
+    sauceTracking = false;
+    sauceClean = true;
+    sauceOffset = 0;
+    return;
+  }
+  sauceHold = 0;
+  sauceCleanLive = false;
+  sauceTracking = false;
+  sauceClean = true;
+  sauceOffset = 0;
+}
+
+/** Dump. Higher and longer than a net saucer. Does not hunt a teammate. */
+function launchHighClear(s: Skater, mx: number, my: number): void {
+  if (s.kind === "goalie" && goalieMustHoldCover(s)) return;
+  const { ax, az } = aimDir(s, mx, my);
+  const from = passOrigin(s);
+  const hit = rayBoard(from.x, from.z, ax, az, 70);
+  const dist = Math.max(28, Math.min(52, hit ? hit.dist * 0.9 : 40));
+  const speed = passChargeMps(PASS_FULL_HOLD, s.kind === "goalie");
+  launchPass(s, ax * speed, az * speed, 0, true, { dist, over: false, bank: false });
+  world.lastPass = world.time;
+  world.lastPasser = s.id;
+  world.lastPassX = s.x;
+  world.lastPassZ = s.z;
+  world.lastPassTo = null;
+  if (s.kind !== "goalie") noteDrillUserPass(s);
+}
+
+/**
+ * Select up. A full meter fires a saucer immediately. No extra second.
+ * A clean hold of SAUCE_CLEAR_HOLD is still the longer high clear.
+ * A user goalie also sends a partial saucer on a shorter clean release.
+ * A skater's partial Select hold still waits for the A release.
+ */
+function releaseSelectSauce(act: Actions): void {
+  if (!sauceReleaseClean && !sauceReleaseFull) return;
+  if (passChargeCancel) return;
+  const user = world.skaters[world.userId];
+  if (!user || world.puck.owner !== user.id) return;
+  if (world.time - world.lastPass <= 0.2) return;
+  const hold = sauceHold;
+  const full = sauceReleaseFull;
+  const high = sauceReleaseClean && hold >= SAUCE_CLEAR_HOLD;
+  const goalie = user.kind === "goalie";
+  if (!full && !high && !goalie) return;
+  if (goalie && goalieMustHoldCover(user)) return;
+  const aim = shotAim(act);
+  if (high) {
+    withChargedPass(PASS_FULL_HOLD, true, hold, () => {
+      launchHighClear(user, aim.mx, aim.my);
+    }, goalie, true);
+    return;
+  }
+  if (full) {
+    withChargedPass(PASS_FULL_HOLD, true, SAUCE_FULL_HOLD, () => {
+      if (goalie) doGoalieOutlet(user, aim.mx, aim.my, true);
+      else doPass(user, aim.mx, aim.my, true);
+    }, goalie, false);
+    return;
+  }
+  withChargedPass(hold, true, hold, () => {
+    doGoalieOutlet(user, aim.mx, aim.my, true);
+  }, true, false);
 }
 
 function passJustStarting(s: Skater): boolean {
@@ -9303,6 +9544,8 @@ function doGoalieOutlet(s: Skater, mx: number, my: number, saucer: boolean, from
     mate = clearPassTarget(s, ax, az, aimed);
     if (mate) {
       tapePass(s, mate, saucer);
+    } else if (saucer && directed) {
+      freeAimToLane(s, ax, az, true, !skipFind);
     } else if (s.side === "home") {
       goalieLengthPlay(s, farPlayFromStick(mx, my, saucer));
     } else {
@@ -11377,11 +11620,13 @@ function refreshUserStickCommit(act: Actions): void {
     return;
   }
   const holdingA = !world.faceoffA && act.aDown;
-  if (holdingA && userAProtectId !== user.id) {
+  const holdingSauce = act.viewDown;
+  const holdingProtect = holdingA || holdingSauce;
+  if (holdingProtect && userAProtectId !== user.id) {
     userAProtectId = user.id;
     userAProtectUntil = world.time + USER_A_PROTECT_S;
   }
-  const aLive = holdingA && userAProtectId === user.id && world.time < userAProtectUntil;
+  const aLive = holdingProtect && userAProtectId === user.id && world.time < userAProtectUntil;
   const skaterShot =
     user.kind !== "goalie" &&
     !world.windupCancel &&
@@ -11397,7 +11642,7 @@ function refreshUserStickCommit(act: Actions): void {
   userStickCommit = aLive || xLive;
 }
 
-/** Owned shot windup. Hard-caps at 3s and does not fire a slap. A backhand releases at SHOT_FULL_HOLD. */
+/** Owned shot windup. Hard-caps at 2s and does not fire a slap. A backhand releases at SHOT_FULL_HOLD. */
 function accumulateOwnedShotWindup(user: Skater, dt: number): void {
   if (user.kind !== "goalie") {
     if (world.shotWindupT < USER_A_PROTECT_S) {
@@ -15480,19 +15725,20 @@ function checkCover(dt: number, act: Actions): void {
         const open = !Number.isFinite(crash) || crash > 2.15;
         if (open) return;
       }
-      // No pass or shot: whistle after 2 seconds of possession.
-      // A or X held during that window adds 2 seconds to release.
+      // No pass, shot, or saucer: whistle after 2 seconds of possession.
+      // A, X, or Select held during that window adds 2 seconds to release.
       const playingPuck =
-        holder.side === "home" && ((!world.faceoffA && act.aDown) || act.xDown);
+        holder.side === "home" &&
+        ((!world.faceoffA && act.aDown) || act.xDown || act.viewDown);
       if (playingPuck && goalieReleaseId !== holder.id && world.coverT - dt < COVER_HOLD) {
         goalieReleaseId = holder.id;
       }
       if (playingPuck && goalieReleaseId === holder.id) {
-        if (world.coverT >= COVER_HOLD + GOALIE_RELEASE_EXTRA) startStoppage("cover");
+        if (world.coverT >= COVER_HOLD + GOALIE_RELEASE_EXTRA) whistleCover();
         return;
       }
       if (!playingPuck) goalieReleaseId = -1;
-      if (world.coverT >= COVER_HOLD) startStoppage("cover");
+      if (world.coverT >= COVER_HOLD) whistleCover();
       return;
     }
     goalieReleaseId = -1;
@@ -15540,7 +15786,14 @@ function checkCover(dt: number, act: Actions): void {
     return;
   }
   world.coverT = Math.max(0, world.coverT - dt * 2);
-  if (world.coverT >= COVER_HOLD) startStoppage("cover");
+  if (world.coverT >= COVER_HOLD) whistleCover();
+}
+
+/** Drill, practice, and scrimmage never whistle a goalie cover. Game and roller do. */
+function whistleCover(): void {
+  const mode = useGame.getState().clockMode;
+  if (mode === "drill" || mode === "practice" || mode === "scrimmage") return;
+  startStoppage("cover");
 }
 
 function cpuOneTimerAttempt(s: Skater): boolean {
@@ -15708,6 +15961,7 @@ function interceptGoalieFlight(puck: Puck, prevX: number, prevY: number, prevZ: 
     for (const s of world.skaters) {
       if (s.kind === "goalie" || s.id === shooter.id) continue;
       if (dekeCommitBlocks(s.id)) continue;
+      if (s.dive > 0.04) continue;
       if (!bodyTouch(s, x, y, z) && !shaftTouch(s, x, y, z)) continue;
       if (s.id === world.userId) {
         hit = s;
@@ -16227,6 +16481,112 @@ function liveShotFlight(): boolean {
   return Math.hypot(world.puck.vx, world.puck.vz) > 4;
 }
 
+/** Root plus the dive reach, mid, and tail circles from cageBodySamples. */
+function diveBlockSamples(s: Skater): { x: number; z: number; r: number }[] {
+  const { fx, fz } = heading(s.yaw);
+  const reach = 1.15;
+  return [
+    { x: s.x, z: s.z, r: s.radius },
+    { x: s.x + fx * reach * 0.62, z: s.z + fz * reach * 0.62, r: 0.32 },
+    { x: s.x + fx * reach, z: s.z + fz * reach, r: 0.26 },
+    { x: s.x + fx * 0.22, z: s.z + fz * 0.22, r: 0.28 },
+  ];
+}
+
+/** Shaft from knob to plate, same ends and radius as shaftTouch. */
+function diveStickSamples(s: Skater): { x: number; z: number; r: number }[] {
+  const hand = skaterKnobLocal();
+  const plate = skaterPlateLocal();
+  const a = skaterXZ(s, hand.x, hand.z);
+  const b = skaterXZ(s, plate.x, plate.z);
+  const rad = s.id === world.userId ? 0.28 : 0.2;
+  const span = Math.hypot(b.x - a.x, b.z - a.z);
+  const n = Math.max(2, Math.ceil(span / Math.max(0.12, rad * 0.75)));
+  const pts: { x: number; z: number; r: number }[] = [];
+  for (let i = 0; i <= n; i++) {
+    const u = i / n;
+    pts.push({ x: a.x + (b.x - a.x) * u, z: a.z + (b.z - a.z) * u, r: rad });
+  }
+  return pts;
+}
+
+/**
+ * Swept puck segment against every diving body.
+ * A hit sits just outside that sample and reflects like a stance block.
+ */
+function blockDiveBodies(
+  puck: Puck,
+  x0: number,
+  y0: number,
+  z0: number,
+  y1: number,
+): boolean {
+  if (world.whistle || world.stoppage || world.faceoff) return false;
+  const x1 = puck.x;
+  const z1 = puck.z;
+  const inBand = (y: number) => y >= 0.02 && y <= 1.82;
+  let bestT = 2;
+  let bestNx = 1;
+  let bestNz = 0;
+  let bestX = 0;
+  let bestZ = 0;
+  let bestR = 0;
+  let bestS: Skater | null = null;
+  for (const s of world.skaters) {
+    if (s.dive <= 0.04) continue;
+    for (const p of diveBlockSamples(s).concat(diveStickSamples(s))) {
+      const sx = x0 - p.x;
+      const sz = z0 - p.z;
+      const sd = Math.hypot(sx, sz);
+      if (sd <= p.r) {
+        if (!inBand(y0) && !inBand(y1)) continue;
+        if (0 < bestT) {
+          bestT = 0;
+          bestNx = sd > 1e-4 ? sx / sd : 1;
+          bestNz = sd > 1e-4 ? sz / sd : 0;
+          bestX = p.x;
+          bestZ = p.z;
+          bestR = p.r;
+          bestS = s;
+        }
+        continue;
+      }
+      const hit = segmentCircle(x0, z0, x1, z1, p.x, p.z, p.r);
+      if (!hit || hit.t >= bestT) continue;
+      const y = y0 + (y1 - y0) * hit.t;
+      if (!inBand(y)) continue;
+      bestT = hit.t;
+      bestNx = hit.nx;
+      bestNz = hit.ny;
+      bestX = p.x;
+      bestZ = p.z;
+      bestR = p.r;
+      bestS = s;
+    }
+  }
+  if (!bestS) return false;
+  const yHit = y0 + (y1 - y0) * bestT;
+  const shot = liveShotFlight();
+  const pass =
+    !shot &&
+    world.lastPasser !== null &&
+    world.lastPass >= world.lastShoot &&
+    world.time - world.lastPass < 2.2 &&
+    Math.hypot(puck.vx, puck.vz) > 4;
+  puck.x = bestX + bestNx * (bestR + 0.04);
+  puck.z = bestZ + bestNz * (bestR + 0.04);
+  puck.y = inBand(yHit) ? yHit : inBand(y1) ? y1 : y0;
+  const vn = puck.vx * bestNx + puck.vz * bestNz;
+  if (vn < 0) {
+    puck.vx -= 1.45 * vn * bestNx;
+    puck.vz -= 1.45 * vn * bestNz;
+  }
+  noteDeflect("rebound", bestS);
+  if (shot) touchFlight("shot", bestS);
+  else if (pass) touchFlight("pass", bestS);
+  return true;
+}
+
 /** Shot segment through the stance body. Bounce matches a whistle-puck body hit. */
 function blockStanceShot(puck: Puck, prevX: number, prevY: number, prevZ: number): boolean {
   if (world.whistle || world.stoppage || world.faceoff) return false;
@@ -16278,6 +16638,7 @@ function stepPuck(dt: number): void {
   }
   const puck = world.puck;
   if (puck.owner !== null) {
+    sauceLandCharge = -1;
     world.goalieShot = null;
     boardRide = null;
     boardBank = null;
@@ -16394,14 +16755,17 @@ function stepPuck(dt: number): void {
   const prevZ = puck.z;
   const prevY = puck.y;
   let stanceBlocked = false;
+  let diveBlocked = false;
   if (boardRide?.phase === "glide") {
     stepBoardGlide(dt);
   } else {
     puck.x += puck.vx * dt;
     puck.z += puck.vz * dt;
     puck.y += puck.vy * dt;
-    puck.vy -= 12 * dt;
+    const sauceGrav = sauceLandCharge >= 0.999 ? SAUCE_GRAV : 12;
+    puck.vy -= sauceGrav * dt;
     if (puck.y <= PUCK_Y) {
+      const hitIce = prevY > PUCK_Y + 0.008;
       puck.y = PUCK_Y;
       if (world.reboundSoft) {
         if (puck.vy < 0) puck.vy *= -0.06;
@@ -16412,6 +16776,13 @@ function stepPuck(dt: number): void {
         if (puck.vy < 0) puck.vy *= -0.28;
         if (Math.abs(puck.vy) < 0.4) puck.vy = 0;
       }
+      // First ice hit of a saucer. Full charge keeps the least speed. A tap barely sheds any.
+      if (hitIce && sauceLandCharge >= 0) {
+        const keep = 1 - sauceLandCharge * 0.62;
+        puck.vx *= keep;
+        puck.vz *= keep;
+        sauceLandCharge = -1;
+      }
     }
     const damp = Math.exp((world.reboundSoft ? -1.85 : -PUCK_DRAG) * dt);
     puck.vx *= damp;
@@ -16420,17 +16791,28 @@ function stepPuck(dt: number): void {
     if (!stanceBlocked) {
       const destX = puck.x;
       const destZ = puck.z;
+      const destY = puck.y;
       const step = Math.hypot(destX - prevX, destZ - prevZ);
       if (step > 0.26) {
         const n = Math.min(5, Math.ceil(step / 0.2));
         puck.x = prevX;
         puck.z = prevZ;
         for (let i = 1; i <= n; i++) {
+          const segX = prevX + (destX - prevX) * ((i - 1) / n);
+          const segZ = prevZ + (destZ - prevZ) * ((i - 1) / n);
+          const y0 = prevY + (destY - prevY) * ((i - 1) / n);
+          const y1 = prevY + (destY - prevY) * (i / n);
           puck.x = prevX + (destX - prevX) * (i / n);
           puck.z = prevZ + (destZ - prevZ) * (i / n);
+          if (blockDiveBodies(puck, segX, y0, segZ, y1)) {
+            diveBlocked = true;
+            containPuckBoards(puck);
+            break;
+          }
           if (containPuckBoards(puck)) break;
         }
       } else {
+        if (blockDiveBodies(puck, prevX, prevY, prevZ, puck.y)) diveBlocked = true;
         containPuckBoards(puck);
       }
     } else {
@@ -16481,9 +16863,9 @@ function stepPuck(dt: number): void {
     return;
   }
 
-  if (tryGoalieCatch(puck)) return;
-  if (tryGoalieSweep(puck, prevX, prevZ, prevY)) return;
-  if (trySave(puck, prevX, prevZ, prevY)) return;
+  if (!diveBlocked && tryGoalieCatch(puck)) return;
+  if (!diveBlocked && tryGoalieSweep(puck, prevX, prevZ, prevY)) return;
+  if (!diveBlocked && trySave(puck, prevX, prevZ, prevY)) return;
   if (tickScrimmage(prevX, prevY, prevZ, puck.x, puck.y, puck.z)) return;
 
   const scored = crossedGoalMouth(prevX, prevZ, prevY, puck);
@@ -16745,8 +17127,12 @@ export function startPausedNewGame(): void {
 
 export function beginPauseCam(prevMode: CamMode): void {
   clearPauseDraft();
-  world.freeCam.captured = false;
+  const ui = useGame.getState();
+  const keepLive = prevMode === "freestyle" && ui.freeCamLive && world.freeCam.captured;
+  if (!keepLive) world.freeCam.captured = false;
+  world.freeCamReapply = false;
   world.pauseDirty = false;
+  world.camPick = false;
   world.pauseRestoreMode = prevMode;
 }
 
@@ -16761,14 +17147,28 @@ export function pauseGame(): void {
 
 export function finishPauseCam(): void {
   const ui = useGame.getState();
-  if (world.pauseDirty) {
+  if (world.camPick) {
+    world.camPick = false;
+    if (ui.camMode === "freestyle") {
+      ui.setFreeCamLive(true);
+      world.freeCam.captured = true;
+      world.freeCamReapply = true;
+    } else {
+      ui.setFreeCamLive(false);
+      world.freeCamReapply = false;
+    }
+  } else if (world.pauseDirty) {
     ui.setCamMode("freestyle");
     ui.setFreeCamLive(true);
     world.freeCam.captured = true;
+    world.freeCamReapply = true;
   } else if (world.pauseRestoreMode) {
     const mode = world.pauseRestoreMode as CamMode;
     ui.setCamMode(mode);
-    if (mode !== "freestyle") ui.setFreeCamLive(false);
+    if (mode === "freestyle") {
+      ui.setFreeCamLive(true);
+      if (world.freeCam.captured) world.freeCamReapply = true;
+    } else ui.setFreeCamLive(false);
   }
   ui.setCamAdjust(false);
 }
@@ -17928,10 +18328,8 @@ function goalReactionSettled(): boolean {
 }
 
 function goalStoppageLimit(): number {
-  if (world.whistle !== "goal" || !goalReactionLive()) return 3.2;
-  const floor = goalieRageId !== null || goalRefChecks.length > 0 ? 4.4 : 3.8;
-  if (!goalReactionSettled()) return 5.2;
-  return floor;
+  if (world.whistle === "goal") return 4;
+  return 3.2;
 }
 
 function goalRageBusy(id: number): boolean {
@@ -18184,7 +18582,8 @@ function stepGoalWhistleDive(user: Skater, act: Actions): void {
   if (user.kind === "goalie") return;
   const wings = useGame.getState().controlProfile === "wings";
   const diveDown = wings ? act.rbDown : act.rtDown;
-  if (diveDown && world.puck.owner !== user.id && user.dive <= 0) {
+  const diveEdge = wings ? act.rbEdge : act.rtEdge;
+  if (diveEdge && world.puck.owner !== user.id && user.dive <= 0) {
     user.poke = 0.52;
     user.dive = 1.5;
   } else if (user.dive > 1 && !diveDown) user.dive = 0.95;
@@ -18802,7 +19201,7 @@ function stepMatchEnd(dt: number): void {
     return;
   }
   matchEndHold = Math.max(0, matchEndHold - clockDt(dt));
-  if (matchEndHold <= 0 && !useGame.getState().paused) pauseGame();
+  if (matchEndHold <= 0 && !useGame.getState().paused) resetWorld();
 }
 
 function beginPeriodBreak(): void {
@@ -18901,7 +19300,7 @@ function stepPlay(dt: number, act: Actions): void {
       return;
     }
     stepMatchEnd(dt);
-    if (useGame.getState().paused) return;
+    if (!world.periodOver || useGame.getState().paused) return;
   }
 
   if (world.periodEndT > 0) {
@@ -18989,6 +19388,9 @@ function stepPlay(dt: number, act: Actions): void {
     goalieLooseSkate.clear();
   }
 
+  syncSauceWindow(act);
+  releaseSelectSauce(act);
+
   if (world.stoppage) {
     dropWingClaims();
     world.stoppageT += dt;
@@ -19056,8 +19458,8 @@ function stepPlay(dt: number, act: Actions): void {
           (act.aTap || act.aHoldRel) &&
           world.time - world.lastPass > 0.2
         ) {
-          withChargedPass(act.aHoldFor, act.startDown, act.startHoldFor, () => {
-            doPass(user, aim.mx, aim.my, act.startDown);
+          withChargedPass(act.aHoldFor, act.viewDown, sauceHold, () => {
+            doPass(user, aim.mx, aim.my, act.viewDown);
           });
           passedThis = true;
         }
@@ -19225,17 +19627,17 @@ function stepPlay(dt: number, act: Actions): void {
       let wind: string | null = null;
       if (carrier && act.aDown && !passChargeCancel) {
         charge = Math.min(1, Math.max(0, act.aHoldFor) / PASS_FULL_HOLD);
-        if (act.startDown) {
+        if (act.viewDown) {
           kind = "saucer";
-          sauce = sauceCharge01(act.startHoldFor);
-          wind = "Saucer";
+          sauce = sauceCharge01(sauceHold);
+          wind = sauceMeterWind();
         } else {
           kind = "pass";
           wind = "Pass";
         }
-      } else if (carrier && act.startDown && !passChargeCancel) {
-        sauce = sauceCharge01(act.startHoldFor);
-        wind = "Saucer";
+      } else if (carrier && act.viewDown && !passChargeCancel) {
+        sauce = sauceCharge01(sauceHold);
+        wind = sauceMeterWind();
       }
       if (
         ui.charge !== charge ||
@@ -19252,11 +19654,15 @@ function stepPlay(dt: number, act: Actions): void {
     updateCoverPose(dt);
     if (world.whistle === "goal") recordReplay();
     if (world.whistle === "crowd") {
-      if (world.stoppageT >= 3) {
+      // Goal, offside, and cover keep their own stoppage limits.
+      if (world.stoppageT >= 2) {
         if (world.periodOver) return;
         resetWorld({ keepScore: true });
       }
-    } else if (world.stoppageT > goalStoppageLimit()) {
+    } else if (
+      (world.whistle === "cover" && world.stoppageT >= COVER_STOPPAGE_S) ||
+      (world.whistle !== "cover" && world.stoppageT > goalStoppageLimit())
+    ) {
       if (world.periodOver) return;
       if (endScrimmageMatch()) return;
       if (overtimeWinner) {
@@ -19386,8 +19792,8 @@ function stepPlay(dt: number, act: Actions): void {
         (act.aTap || act.aHoldRel) &&
         world.time - world.lastPass > 0.2
       ) {
-        withChargedPass(act.aHoldFor, act.startDown, act.startHoldFor, () => {
-          doGoalieOutlet(user, aim.mx, aim.my, act.startDown);
+        withChargedPass(act.aHoldFor, act.viewDown, sauceHold, () => {
+          doGoalieOutlet(user, aim.mx, aim.my, act.viewDown);
         }, true);
       }
       if ((act.xTap || act.xHoldRel) && world.time - world.lastShoot > 0.25) {
@@ -19402,8 +19808,8 @@ function stepPlay(dt: number, act: Actions): void {
         (act.aTap || act.aHoldRel) &&
         world.time - world.lastPass > 0.2
       ) {
-        withChargedPass(act.aHoldFor, act.startDown, act.startHoldFor, () => {
-          doPass(user, aim.mx, aim.my, act.startDown);
+        withChargedPass(act.aHoldFor, act.viewDown, sauceHold, () => {
+          doPass(user, aim.mx, aim.my, act.viewDown);
         });
         passedThis = true;
       }
@@ -19486,8 +19892,8 @@ function stepPlay(dt: number, act: Actions): void {
       world.time - world.lastPass > 0.12
     ) {
       const aim = shotAim(act);
-      withChargedPass(act.aHoldFor, act.startDown, act.startHoldFor, () => {
-        doGoalieOutlet(g, aim.mx, aim.my, act.startDown, true);
+      withChargedPass(act.aHoldFor, act.viewDown, sauceHold, () => {
+        doGoalieOutlet(g, aim.mx, aim.my, act.viewDown, true);
       }, true);
     } else if (
       goalieHas &&
@@ -19524,7 +19930,8 @@ function stepPlay(dt: number, act: Actions): void {
     // A dive already in progress is left to decay. Releasing during the lunge still drops to recovery.
     // The goalie pose is latched from this stick, left versus right in the goalie's frame.
     const diveDown = wings ? act.rbDown : act.rtDown;
-    if (diveDown && world.puck.owner !== user.id && user.dive <= 0) {
+    const diveEdge = wings ? act.rbEdge : act.rtEdge;
+    if (diveEdge && world.puck.owner !== user.id && user.dive <= 0) {
       if (user.kind !== "goalie") user.poke = 0.52;
       user.dive = 1.5;
       if (user.kind === "goalie") {
@@ -19569,7 +19976,8 @@ function stepPlay(dt: number, act: Actions): void {
       finishSkillStickHit(user, yHit);
     }
     const diveDown = wings ? act.rbDown : act.rtDown;
-    if (diveDown && world.puck.owner !== user.id && user.dive <= 0) {
+    const diveEdge = wings ? act.rbEdge : act.rtEdge;
+    if (diveEdge && world.puck.owner !== user.id && user.dive <= 0) {
       if (user.kind !== "goalie") user.poke = 0.52;
       user.dive = 1.5;
       if (user.kind === "goalie") {
@@ -19636,13 +20044,12 @@ function stepPlay(dt: number, act: Actions): void {
   trackWindupCommit(user, commitStick.mx, commitStick.my);
 
   // HUD meters. Pass speed fills from aHoldFor across PASS_FULL_HOLD, and only while A is down.
-  // Sauce used to fill from that same aHoldFor, and only inside this A branch, so Start-before-A
-  // showed nothing and Start-after-a-full-pass snapped sauce to full. Sauce now fills from
-  // startHoldFor across SAUCE_FULL_HOLD, including while A is still up. The two bars do not share a clock.
+  // Sauce fills from Select's hold across SAUCE_FULL_HOLD, including while A is still up.
+  // The two bars do not share a clock. A clean Select hold past SAUCE_CLEAR_HOLD reads Clear.
   // The shot meter used to step to 0.4, then to full once xHeld (0.28s), and the label always said Slap.
   // A release before half of SHOT_FULL_HOLD is still a wrist.
   // shotKind on the speed line stays the previous release. chargeWind is this windup.
-  // A sauce-only hold leaves chargeKind null and chargeWind "Saucer" so the pass bar stays hidden.
+  // A sauce-only hold leaves chargeKind null and chargeWind "Saucer" or "Clear" so the pass bar stays hidden.
   let charge = 0;
   let kind: "pass" | "saucer" | "shot" | null = null;
   let sauce = 0;
@@ -19650,10 +20057,10 @@ function stepPlay(dt: number, act: Actions): void {
   let mark: number | null = null;
   if (!periodEndLive() && canChargePass && act.aDown && !passChargeCancel) {
     charge = Math.min(1, Math.max(0, act.aHoldFor) / PASS_FULL_HOLD);
-    if (act.startDown) {
+    if (act.viewDown) {
       kind = "saucer";
-      sauce = sauceCharge01(act.startHoldFor);
-      wind = "Saucer";
+      sauce = sauceCharge01(sauceHold);
+      wind = sauceMeterWind();
     } else {
       kind = "pass";
       wind = "Pass";
@@ -19672,9 +20079,9 @@ function stepPlay(dt: number, act: Actions): void {
       wind = world.shotWindupT >= slapAt ? "Slap" : "Wrist";
       mark = slapAt / SHOT_FULL_HOLD;
     }
-  } else if (!periodEndLive() && canChargePass && act.startDown && !passChargeCancel) {
-    sauce = sauceCharge01(act.startHoldFor);
-    wind = "Saucer";
+  } else if (!periodEndLive() && canChargePass && act.viewDown && !passChargeCancel) {
+    sauce = sauceCharge01(sauceHold);
+    wind = sauceMeterWind();
   }
   if (act.xDown) {
     const aim = shotAim(act);

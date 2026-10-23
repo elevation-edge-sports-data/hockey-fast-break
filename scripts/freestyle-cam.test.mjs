@@ -1,6 +1,6 @@
 /**
- * Default speed is 1.00x. A freestyle orbit keeps its zoom and elevation when
- * the period puts that same view on the other end of the rink.
+ * Default slider is 1.00x and runs the sim at 0.8. A freestyle orbit keeps its
+ * zoom and elevation when the period puts that same view on the other end of the rink.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -34,8 +34,8 @@ after(() => server.close());
 
 const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
-const { mirrorFreeCamEnds, orbitFromOffset, world } = sim;
-const { useGame } = store;
+const { beginPauseCam, finishPauseCam, mirrorFreeCamEnds, orbitFromOffset, world } = sim;
+const { useGame, gameSpeedRate } = store;
 
 function place(theta, phi, radius) {
   const cam = new THREE.PerspectiveCamera(46, 16 / 9, 0.1, 240);
@@ -56,6 +56,7 @@ function ndc(cam, x) {
 test("default game speed is 1x", () => {
   assert.equal(useGame.getState().gameSpeed, 1);
   assert.equal(useGame.getState().gameSpeed.toFixed(2) + "x", "1.00x");
+  assert.equal(gameSpeedRate(useGame.getState().gameSpeed), 0.8);
 });
 
 test("a title freestyle orbit round-trips onto the puck", () => {
@@ -78,6 +79,60 @@ test("pause capture still clamps inside the pause orbit limits", () => {
   const loose = orbitFromOffset(6, 3, 2, true);
   assert.ok(Math.abs(loose.radius - 7) < 1e-9);
   assert.ok(Math.abs(loose.phi - Math.acos(3 / 7)) < 1e-9);
+});
+
+test("a live freestyle orbit is not recaptured by pause", () => {
+  const ui = useGame.getState();
+  ui.setCamMode("freestyle");
+  ui.setFreeCamLive(true);
+  world.freeCam.theta = 1.2;
+  world.freeCam.phi = 0.9;
+  world.freeCam.radius = 14;
+  world.freeCam.captured = true;
+  world.pauseDirty = false;
+  world.freeCamReapply = false;
+  beginPauseCam("freestyle");
+  assert.equal(world.freeCam.captured, true);
+  assert.equal(world.freeCam.theta, 1.2);
+  assert.equal(world.freeCam.phi, 0.9);
+  assert.equal(world.freeCam.radius, 14);
+  finishPauseCam();
+  assert.equal(useGame.getState().camMode, "freestyle");
+  assert.equal(useGame.getState().freeCamLive, true);
+  assert.equal(world.freeCamReapply, true);
+  assert.equal(world.freeCam.theta, 1.2);
+  assert.equal(world.freeCam.phi, 0.9);
+  assert.equal(world.freeCam.radius, 14);
+});
+
+test("pausing classic drops a stale freestyle capture", () => {
+  const ui = useGame.getState();
+  ui.setCamMode("classic");
+  ui.setFreeCamLive(false);
+  world.freeCam.captured = true;
+  world.pauseDirty = false;
+  beginPauseCam("classic");
+  assert.equal(world.freeCam.captured, false);
+  finishPauseCam();
+  assert.equal(useGame.getState().camMode, "classic");
+  assert.equal(useGame.getState().freeCamLive, false);
+  assert.equal(world.freeCamReapply, false);
+});
+
+test("a camera picked while paused replaces the paused mode", () => {
+  const ui = useGame.getState();
+  ui.setCamMode("classic");
+  ui.setFreeCamLive(false);
+  world.pauseDirty = true;
+  world.camPick = false;
+  beginPauseCam("classic");
+  ui.setCamMode("chase");
+  world.camPick = true;
+  finishPauseCam();
+  assert.equal(useGame.getState().camMode, "chase");
+  assert.equal(useGame.getState().freeCamLive, false);
+  assert.equal(world.freeCamReapply, false);
+  assert.equal(world.camPick, false);
 });
 
 test("switching ends keeps freestyle zoom and elevation from the other side", () => {

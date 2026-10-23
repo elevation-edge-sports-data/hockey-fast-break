@@ -1,6 +1,6 @@
 /**
  * A crowd whistle stops the clock only. The puck keeps its incoming speed,
- * bounces off crowd solids, and falls for 3 seconds. Then the saved faceoff runs.
+ * bounces off crowd solids, and falls for 2 seconds. Then the saved faceoff runs.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -89,7 +89,7 @@ function untilCrowd(limit = 180) {
   return -1;
 }
 
-test("jumbotron side keeps speed, stops the clock, and faceoffs after 3s", () => {
+test("jumbotron side keeps speed, stops the clock, and faceoffs after 2s", () => {
   liveSheet();
   launch(0, JUMBO_Y, 14, 0, 0, -30);
   const frames = untilCrowd();
@@ -117,7 +117,7 @@ test("jumbotron side keeps speed, stops the clock, and faceoffs after 3s", () =>
     stepSim(DT);
     n++;
   }
-  assert.ok(n >= 170 && n <= 190, `faceoff reset at step ${n}, want ~180`);
+  assert.ok(n >= 110 && n <= 132, `faceoff reset at step ${n}, want ~120`);
   assert.equal(world.whistle, null);
   assert.equal(world.faceoff, true);
   assert.equal(world.puck.x, faceX);
@@ -331,7 +331,7 @@ test("a puck that clears the bowl and lands whistles without touching a solid", 
     stepSim(DT);
     n++;
   }
-  assert.ok(n >= 170 && n <= 190, `faceoff reset at step ${n}, want ~180`);
+  assert.ok(n >= 110 && n <= 132, `faceoff reset at step ${n}, want ~120`);
   assert.equal(world.whistle, null);
   assert.equal(world.faceoff, true);
   assert.equal(world.puck.x, face.x);

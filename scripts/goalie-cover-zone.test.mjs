@@ -405,7 +405,7 @@ test("no input whistles after 2 seconds, and A or X in that window adds 2 second
     assert.ok(idleFrame >= 115 && idleFrame <= 125, `idle frame ${idleFrame}`);
 
     for (const attack of [1, -1]) {
-      for (const keys of [["KeyJ"], ["KeyF"], ["KeyR", "KeyJ"]]) {
+      for (const keys of [["KeyJ"], ["KeyF"], ["KeyR"], ["KeyR", "KeyJ"]]) {
         const placed = placeHeld("home", attack, "own");
         setInjectedKeys(keys);
         const mid = stepHeld(placed, 210);
@@ -448,6 +448,17 @@ test("an away goalie does not get the extra release time", () => {
     assert.ok(hit.whistled >= 0 && hit.whistled < 130, `away whistled at frame ${hit.whistled}`);
   } finally {
     setInjectedKeys([]);
+  }
+});
+
+test("drill, practice, and scrimmage do not whistle a cover", () => {
+  for (const mode of ["drill", "practice", "scrimmage"]) {
+    const placed = placeHeld("home", 1, "own");
+    useGame.getState().setClockMode(mode);
+    setInjectedKeys([]);
+    const hit = stepHeld(placed, 180);
+    assert.equal(hit.whistled, -1, `${mode} whistled at frame ${hit.whistled}`);
+    assert.notEqual(world.whistle, "cover", mode);
   }
 });
 

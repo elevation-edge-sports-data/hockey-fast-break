@@ -1,5 +1,5 @@
 /**
- * Game mode is three 20:00 periods. Real length is 1–5 minutes (default 2)
+ * Game mode is three 20:00 periods. Real length is 1, 1.5, 2, 3, 4, or 5 minutes (default 1.5)
  * and scales that countdown. Teams switch ends; the attack net stays up-screen.
  */
 import assert from "node:assert/strict";
@@ -59,6 +59,7 @@ const {
   ROLLER_CLOCK_DISPLAY_MINUTES,
   rollerClockScale,
   clampRollerMinutes,
+  gameSpeedRate,
 } = store;
 const { GOAL_LINE_X, BLUE_X } = rink;
 const { setInjectedKeys } = input;
@@ -67,6 +68,16 @@ const DT = 1 / 60;
 
 function step(n = 1) {
   for (let i = 0; i < n; i++) stepSim(DT);
+}
+
+function playFrames(n) {
+  for (let i = 0; i < n; i++) stepPlayFrame(DT);
+}
+
+/** One real second. Sim steps follow the slider; the period clock stays on real time. */
+function realSecond() {
+  resetPlayFrame();
+  playFrames(60);
 }
 
 function freshRoller() {
@@ -195,16 +206,18 @@ function assertAttackNetOnTop(attack) {
   assert.ok(awayG && awayG.x * attack > 0, "away goalie did not switch ends");
 }
 
-test("period length is 1 to 5 minutes and defaults to 1", () => {
+test("period length is 1 to 5 minutes and defaults to 1.5", () => {
   mem.set("hfb-game-length", "10");
   mem.set("hfb-game-minutes", "8");
   assert.equal(GAME_MINUTES_MIN, 1);
   assert.equal(GAME_MINUTES_MAX, 5);
-  assert.equal(GAME_MINUTES_DEFAULT, 1);
+  assert.equal(GAME_MINUTES_DEFAULT, 1.5);
   assert.equal(GAME_PERIODS, 3);
-  assert.equal(useGame.getState().gameMinutes, 1);
+  assert.equal(useGame.getState().gameMinutes, 1.5);
   assert.equal(clampGameMinutes(0), 1);
-  assert.equal(clampGameMinutes(1.4), 1);
+  assert.equal(clampGameMinutes(1.2), 1);
+  assert.equal(clampGameMinutes(1.4), 1.5);
+  assert.equal(clampGameMinutes(1.5), 1.5);
   assert.equal(clampGameMinutes(5), 5);
   assert.equal(clampGameMinutes(9), 5);
   assert.equal(gameClockScale(1), 20);
@@ -236,18 +249,18 @@ test("the 20:00 clock scales with the real period length", () => {
   world.periodClock = 1200;
   useGame.getState().setPeriodClock(1200);
   useGame.getState().setGameMinutes(2);
-  step(60);
+  realSecond();
   assert.ok(Math.abs(world.periodClock - 1190) < 0.05, `2 min scale dropped to ${world.periodClock}`);
   assert.equal(useGame.getState().periodClock, Math.floor(world.periodClock));
 
   world.periodClock = 1200;
   useGame.getState().setGameMinutes(1);
-  step(60);
+  realSecond();
   assert.ok(Math.abs(world.periodClock - 1180) < 0.02, `1 min scale dropped to ${world.periodClock}`);
 
   world.periodClock = 1200;
   useGame.getState().setGameMinutes(5);
-  step(60);
+  realSecond();
   assert.ok(Math.abs(world.periodClock - 1196) < 0.02, `5 min scale dropped to ${world.periodClock}`);
   assert.equal(world.period, 1);
   assert.equal(world.homeAttack, -1);
@@ -332,15 +345,15 @@ test("three periods switch ends and keep the attack net at the top", () => {
 test("roller is two 18:00 periods and switches ends after the first", () => {
   assert.equal(ROLLER_PERIODS, 2);
   assert.equal(ROLLER_CLOCK_DISPLAY_MINUTES, 18);
-  assert.equal(ROLLER_MINUTES_DEFAULT, 1);
-  assert.equal(useGame.getState().rollerMinutes, 1);
+  assert.equal(ROLLER_MINUTES_DEFAULT, 1.5);
+  assert.equal(useGame.getState().rollerMinutes, 1.5);
   assert.equal(useGame.getState().gameMinutes, 2);
   assert.equal(rollerClockScale(1), 18);
   assert.equal(rollerClockScale(3), 6);
   assert.equal(rollerClockScale(5), 18 / 5);
   assert.equal(clampRollerMinutes(0), 1);
   assert.equal(clampRollerMinutes(9), 5);
-  assert.equal(clampRollerMinutes(Number.NaN), 1);
+  assert.equal(clampRollerMinutes(Number.NaN), 1.5);
 
   freshRoller();
   assert.equal(world.period, 1);
@@ -349,17 +362,17 @@ test("roller is two 18:00 periods and switches ends after the first", () => {
   assertAttackNetOnTop(-1);
   liveClock();
   world.periodClock = 18 * 60;
-  step(60);
+  realSecond();
   assert.ok(Math.abs(world.periodClock - (18 * 60 - 6)) < 0.05, `3 min scale dropped to ${world.periodClock}`);
 
   world.periodClock = 18 * 60;
   useGame.getState().setRollerMinutes(1);
-  step(60);
+  realSecond();
   assert.ok(Math.abs(world.periodClock - (18 * 60 - 18)) < 0.05, `1 min scale dropped to ${world.periodClock}`);
 
   world.periodClock = 18 * 60;
   useGame.getState().setRollerMinutes(5);
-  step(60);
+  realSecond();
   assert.ok(Math.abs(world.periodClock - (18 * 60 - 3.6)) < 0.05, `5 min scale dropped to ${world.periodClock}`);
   assert.equal(useGame.getState().gameMinutes, 2);
 
@@ -422,7 +435,7 @@ test("end-of-period banner stays on game and roller, and pause or reset holds it
   step(180);
   assert.equal(useGame.getState().periodBreak, 1);
   assert.equal(world.period, 1);
-  assert.ok(world.periodEndT > 2);
+  assert.ok(world.periodEndT >= 2);
   useGame.getState().setPaused(false);
   resetWorld();
   assert.equal(useGame.getState().periodBreak, 0);
@@ -674,8 +687,16 @@ test("the game speed slider does not change the period countdown", () => {
     assert.equal(useGame.getState().gameSpeed, 0.75);
     useGame.getState().setGameSpeed(1.5);
     assert.equal(useGame.getState().gameSpeed, 1.25);
+    assert.ok(Math.abs(gameSpeedRate(0.75) - 0.6) < 1e-9);
+    assert.ok(Math.abs(gameSpeedRate(0.8) - 0.64) < 1e-9);
+    assert.equal(gameSpeedRate(1), 0.8);
+    assert.equal(gameSpeedRate(1.25), 1);
+    assert.equal(gameSpeedRate(Number.NaN), 0.8);
+    assert.equal(gameSpeedRate(0), 0.6);
+    assert.equal(gameSpeedRate(2), 1);
     const drops = [];
-    for (const speed of [0.75, 1, 1.2]) {
+    // These labels apply at 0.6, 0.8, and 1.0, each a whole number of 60 Hz steps.
+    for (const speed of [0.75, 1, 1.25]) {
       freshGame();
       liveClock();
       resetPlayFrame();
@@ -698,7 +719,7 @@ test("the game speed slider does not change the period countdown", () => {
     resetPlayFrame();
     useGame.getState().setRollerMinutes(1);
     world.periodClock = 18 * 60;
-    for (const speed of [0.75, 1.2]) {
+    for (const speed of [0.75, 1.25]) {
       useGame.getState().setGameSpeed(speed);
       world.periodClock = 18 * 60;
       resetPlayFrame();
@@ -766,7 +787,7 @@ test("period end still checks, dives, and bursts, including a referee", () => {
   assert.equal(useGame.getState().paused, false);
 });
 
-test("the final buzzer celebrates for 10 seconds, then pauses", () => {
+test("the final buzzer celebrates for 12 seconds, then starts a new game", () => {
   freshGame();
   useGame.getState().setHomeScore(2);
   useGame.getState().setAwayScore(0);
@@ -780,12 +801,16 @@ test("the final buzzer celebrates for 10 seconds, then pauses", () => {
   const away = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
   assert.ok(away);
   assert.equal(away.celebrate, 0);
-  step(599);
+  resetPlayFrame();
+  playFrames(719);
   assert.equal(useGame.getState().paused, false);
   assert.equal(world.periodOver, true);
-  step(1);
-  assert.equal(useGame.getState().paused, true);
-  assert.equal(world.periodOver, true);
+  playFrames(1);
+  assert.equal(useGame.getState().paused, false);
+  assert.equal(world.periodOver, false);
+  assert.equal(world.period, 1);
+  assert.equal(useGame.getState().homeScore, 0);
+  assert.equal(useGame.getState().awayScore, 0);
 });
 
 function countKind(side, kind) {
@@ -974,12 +999,16 @@ test("a regulation goal still faces off, and an overtime goal ends the match", (
   assert.ok(user.celebrate > 8, `celebrate ${user.celebrate}`);
   const away = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
   assert.equal(away.celebrate, 0);
-  step(599);
+  resetPlayFrame();
+  playFrames(719);
   assert.equal(useGame.getState().paused, false);
-  step(1);
-  assert.equal(useGame.getState().paused, true);
   assert.equal(world.periodOver, true);
-  assert.equal(world.faceoff, false);
+  playFrames(1);
+  assert.equal(useGame.getState().paused, false);
+  assert.equal(world.periodOver, false);
+  assert.equal(world.period, 1);
+  assert.equal(useGame.getState().homeScore, 0);
+  assert.equal(useGame.getState().awayScore, 0);
 
   freshGame();
   useGame.getState().setHomeScore(0);

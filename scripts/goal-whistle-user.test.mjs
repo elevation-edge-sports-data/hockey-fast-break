@@ -44,7 +44,7 @@ const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
 const { resetWorld, stepSim, whistleUserLook, world, rageDraw } = sim;
 const { useGame } = store;
-const { setInjectedKeys, setInjectedAim, setInjectedStart } = input;
+const { setInjectedKeys, setInjectedAim } = input;
 const { GOAL_LINE_X, GOAL_W } = rink;
 
 const DT = 1 / 60;
@@ -293,12 +293,11 @@ test("an offside whistle stays on the puck spot and keeps burst, dive, pass, and
   const sauceX = world.puck.x;
   const sauceZ = world.puck.z;
   whistleUserLook();
-  setInjectedStart(true);
-  setInjectedKeys(["KeyE"]);
+  setInjectedKeys(["KeyR", "KeyE"]);
+  stepSim(DT);
+  setInjectedKeys(["KeyR"]);
   stepSim(DT);
   setInjectedKeys([]);
-  stepSim(DT);
-  setInjectedStart(false);
   assert.equal(world.puck.owner, null);
   assert.equal(useGame.getState().shotKind, "saucer");
   assert.ok(world.puck.vy > 0.3, `saucer vy ${world.puck.vy}`);

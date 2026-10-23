@@ -101,9 +101,9 @@ type GameUi = {
   hasPuck: boolean;
   charge: number;
   chargeKind: "pass" | "saucer" | "shot" | null;
-  /** 0–1 sauce height while Start is held. 0 hides nothing by itself; the saucer kind shows the meter. */
+  /** 0–1 sauce height while Select is held. 0 hides nothing by itself; the saucer kind shows the meter. */
   sauce: number;
-  /** Live charge label: Pass, Saucer, Wrist, Slap, or Backhand. Not the previous release. */
+  /** Live charge label: Pass, Saucer, Clear, Wrist, Slap, or Backhand. Not the previous release. */
   chargeWind: string | null;
   /** Shot-meter tick, as a fraction of the full windup. Null on passes and backhands. */
   chargeMark: number | null;
@@ -314,18 +314,41 @@ function saveControlProfile(v: ControlProfile): void {
 
 export const GAME_MINUTES_MIN = 1;
 export const GAME_MINUTES_MAX = 5;
-export const GAME_MINUTES_DEFAULT = 1;
+export const GAME_MINUTES_DEFAULT = 1.5;
+/** Real period lengths. The stepper moves one entry at a time. */
+export const PERIOD_MINUTE_STEPS = [1, 1.5, 2, 3, 4, 5] as const;
 /** Each period counts down 20:00, scaled to the real length. Regulation is three of them. */
 export const GAME_CLOCK_DISPLAY_MINUTES = 20;
 export const GAME_PERIODS = 3;
 /** Each roller period counts down 18:00. A roller match is two of them. */
 export const ROLLER_CLOCK_DISPLAY_MINUTES = 18;
 export const ROLLER_PERIODS = 2;
-export const ROLLER_MINUTES_DEFAULT = 1;
+export const ROLLER_MINUTES_DEFAULT = 1.5;
+const GAME_MINUTES_KEY = "hfb-game-minutes";
+const ROLLER_MINUTES_KEY = "hfb-roller-minutes";
 
 export function clampPeriodMinutes(n: number, fallback: number): number {
   if (!Number.isFinite(n)) return fallback;
-  return Math.max(GAME_MINUTES_MIN, Math.min(GAME_MINUTES_MAX, Math.round(n)));
+  let best: number = PERIOD_MINUTE_STEPS[0];
+  let bestD = Infinity;
+  for (const step of PERIOD_MINUTE_STEPS) {
+    const d = Math.abs(step - n);
+    if (d < bestD - 1e-9) {
+      best = step;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+/** Next or previous legal period length. 1 goes to 1.5, then 2, 3, 4, and 5. */
+export function stepPeriodMinutes(current: number, dir: -1 | 1): number {
+  const cur = clampPeriodMinutes(current, GAME_MINUTES_DEFAULT);
+  let i = PERIOD_MINUTE_STEPS.findIndex((step) => Math.abs(step - cur) < 1e-6);
+  if (i < 0) i = 0;
+  const next = i + dir;
+  if (next < 0 || next >= PERIOD_MINUTE_STEPS.length) return PERIOD_MINUTE_STEPS[i];
+  return PERIOD_MINUTE_STEPS[next];
 }
 
 export function clampGameMinutes(n: number): number {
@@ -343,10 +366,13 @@ export function gameClockScale(minutes: number): number {
 
 /**
  * Sim steps per real second, relative to 60 Hz.
+ * `speed` is the slider label (0.75–1.25, default 1). Applied speed is that
+ * label times 0.8, clamped to 0.6–1.0, so 1.00x is the old display-30 rate.
  * World multiplies the frame delta by this. The period clock divides it back out.
  */
 export function gameSpeedRate(speed: number): number {
-  return Math.max(0.75, Math.min(1.25, Number.isFinite(speed) ? speed : 1));
+  const label = Number.isFinite(speed) ? speed : 1;
+  return Math.max(0.6, Math.min(1, label * 0.8));
 }
 
 /** A 1-minute roller period runs the 18:00 clock at 18×. A 3-minute period runs it at 6×. */
@@ -375,13 +401,31 @@ export function periodEndCopy(period: number, homeScore: number, awayScore: numb
   };
 }
 
-/** A full page load always starts at 1 minute for game and roller. The in-memory length survives the next visit, not a refresh. */
+/** Saved period length, or the 1.5 minute default. */
+function loadStoredMinutes(key: string, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return clampPeriodMinutes(Number(raw), fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+function saveStoredMinutes(key: string, n: number): void {
+  try {
+    localStorage.setItem(key, String(n));
+  } catch {
+    /* ignore */
+  }
+}
+
 function loadGameMinutes(): number {
-  return GAME_MINUTES_DEFAULT;
+  return loadStoredMinutes(GAME_MINUTES_KEY, GAME_MINUTES_DEFAULT);
 }
 
 function loadRollerMinutes(): number {
-  return ROLLER_MINUTES_DEFAULT;
+  return loadStoredMinutes(ROLLER_MINUTES_KEY, ROLLER_MINUTES_DEFAULT);
 }
 
 /** CPU kits already used in this sequence. The user kit is never an entry. */
@@ -627,10 +671,14 @@ export const useGame = create<GameUi>((set, get) => ({
     });
   },
   setGameMinutes: (n) => {
-    set({ gameMinutes: clampGameMinutes(n) });
+    const minutes = clampGameMinutes(n);
+    saveStoredMinutes(GAME_MINUTES_KEY, minutes);
+    set({ gameMinutes: minutes });
   },
   setRollerMinutes: (n) => {
-    set({ rollerMinutes: clampRollerMinutes(n) });
+    const minutes = clampRollerMinutes(n);
+    saveStoredMinutes(ROLLER_MINUTES_KEY, minutes);
+    set({ rollerMinutes: minutes });
   },
   setPeriod: (n) => set({ period: n }),
   setPeriodClock: (n) => set({ periodClock: n }),

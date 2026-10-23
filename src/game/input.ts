@@ -25,11 +25,14 @@ export type Actions = {
   rtEdge: boolean;
   rtDown: boolean;
   lbDown: boolean;
+  rbEdge: boolean;
   rbDown: boolean;
   viewPress: boolean;
   viewDown: boolean;
+  /** Seconds Select (view) has been held. Independent of aHoldFor. Sauce loft uses this. */
+  selectHoldFor: number;
   startDown: boolean;
-  /** Seconds Start has been held. Independent of aHoldFor. */
+  /** Seconds Start has been held. Independent of aHoldFor. Not the sauce clock. */
   startHoldFor: number;
   aimX: number;
   aimY: number;
@@ -69,6 +72,7 @@ const faceR3 = freshFace();
 const facePause = freshFace();
 const faceLt = freshFace();
 const faceRt = freshFace();
+const faceRb = freshFace();
 const faceView = freshFace();
 const faceStart = freshFace();
 let touchLt = false;
@@ -367,11 +371,11 @@ function readPad(): PadRead {
 // Pass and shot holds share this face clock (performance time, seconds).
 // A under 0.28s releases as aTap; longer is aHoldRel. xHeld flips at that same 0.28s.
 // That flip is not the wrist/slap switch. sim winds shotWindupT and slaps at half of SHOT_FULL_HOLD.
-// startDown is gamepad Start (button 9), including a standard Terios index 9. Held at the A
-// release it selects a saucer. It does not change pass speed. Select does not. No keyboard saucer.
-// startHoldFor is Start's own clock, not aHoldFor. Sauce used to read aHoldFor, so the meter
-// stayed off until A went down, and a pass that was already full snapped sauce to full.
-// The sauce meter fills from the moment Start is down, even if A is still up.
+// Select (gamepad View, button 8, also KeyR / the touch Goalie button) is the saucer.
+// selectHoldFor is that button's own clock, not aHoldFor. Held at the A release it makes a saucer.
+// It does not change pass speed. Start (button 9) does not. There is no separate saucer key.
+// Sauce used to read aHoldFor, so the meter stayed off until A went down, and a pass that was
+// already full snapped sauce to full. The meter fills from the moment Select is down, even if A is up.
 // bEdge is gamepad B, or Space on the keyboard. It already cancels a shot windup.
 // A charged pass had no cancel: A up always launched it. B during that hold now drops it.
 export function readActions(): Actions {
@@ -415,6 +419,7 @@ export function readActions(): Actions {
   track(facePause, pauseDown, now);
   track(faceLt, ltDown, now);
   track(faceRt, rtDown, now);
+  track(faceRb, rbDown, now);
   track(faceView, viewDown, now);
   track(faceStart, pad.start || injectedStart, now);
 
@@ -458,9 +463,11 @@ export function readActions(): Actions {
     rtEdge: faceRt.edge,
     rtDown: faceRt.down,
     lbDown,
+    rbEdge: faceRb.edge,
     rbDown,
     viewPress: faceView.edge,
     viewDown,
+    selectHoldFor: faceView.heldFor,
     startDown: faceStart.down,
     startHoldFor: faceStart.heldFor,
     aimX: ax,

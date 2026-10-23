@@ -30,6 +30,7 @@ import {
 import {
   GAME_MINUTES_MAX,
   GAME_MINUTES_MIN,
+  stepPeriodMinutes,
   periodEndCopy,
   periodOrdinal,
   showsPeriodClock,
@@ -431,11 +432,11 @@ function PeriodMinutes({ kind }: { kind: "game" | "roller" }) {
   const setMin = (n: number) => (kind === "roller" ? previewPausedRollerMinutes(n) : previewPausedMinutes(n));
   return (
     <div className="clock-mins">
-      <button type="button" aria-label="Fewer minutes" disabled={minutes <= GAME_MINUTES_MIN} onClick={() => setMin(minutes - 1)}>
+      <button type="button" aria-label="Fewer minutes" disabled={minutes <= GAME_MINUTES_MIN} onClick={() => setMin(stepPeriodMinutes(minutes, -1))}>
         −
       </button>
-      <b>{minutes}</b>
-      <button type="button" aria-label="More minutes" disabled={minutes >= GAME_MINUTES_MAX} onClick={() => setMin(minutes + 1)}>
+      <b>{Number.isInteger(minutes) ? minutes : minutes.toFixed(1)}</b>
+      <button type="button" aria-label="More minutes" disabled={minutes >= GAME_MINUTES_MAX} onClick={() => setMin(stepPeriodMinutes(minutes, 1))}>
         +
       </button>
       <span>minutes</span>
@@ -776,7 +777,11 @@ function MainMenus() {
                 type="button"
                 className={camMode === c.id ? "is-on" : ""}
                 title={c.blurb}
-                onClick={() => setCamMode(c.id)}
+                onClick={() => {
+                  setCamMode(c.id);
+                  const ui = useGame.getState();
+                  if (!ui.playing || ui.paused) world.camPick = true;
+                }}
               >
                 {c.label}
               </button>
@@ -851,8 +856,8 @@ function ControlsHelp() {
           <dt>With puck</dt>
           <dd>
             {stick
-              ? "A tap 55 mph, hold 1.5s 95 mph, Start saucer · right stick snap, wrist, backhand, slap · X tap wrist / hold slap · B cancel · Y deke · left stick aims"
-              : "A tap 55 mph, hold 1.5s 95 mph, Start saucer · X wrist / hold slap · B cancel slap · Y deke"}
+              ? "A tap 55 mph, hold 1.5s 95 mph, Select saucer · right stick snap, wrist, backhand, slap · X tap wrist / hold slap · B cancel · Y deke · left stick aims"
+              : "A tap 55 mph, hold 1.5s 95 mph, Select saucer · X wrist / hold slap · B cancel slap · Y deke"}
           </dd>
         </div>
         <div>
@@ -1227,11 +1232,11 @@ export function Overlay() {
               the sauce meter slid right to where the pass bar sits. The hidden slot keeps
               that pass box, so sauce stays to its left with the bottoms aligned.
             */}
-            {chargeKind || chargeWind === "Saucer" ? (
+            {chargeKind || chargeWind === "Saucer" || chargeWind === "Clear" ? (
               <span className="charge-row">
-                {chargeKind === "saucer" || chargeWind === "Saucer" ? (
+                {chargeKind === "saucer" || chargeWind === "Saucer" || chargeWind === "Clear" ? (
                   <span className="sauce" aria-label="Sauce height">
-                    Sauce
+                    {chargeWind === "Clear" ? "Clear" : "Sauce"}
                     <b>
                       <i style={{ height: `${Math.round(sauce * 100)}%` }} />
                     </b>

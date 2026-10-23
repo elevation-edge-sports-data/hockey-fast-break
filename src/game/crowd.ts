@@ -59,10 +59,10 @@ const thirdEndY = THIRD_Y0 + (THIRD_ROWS - 1) * THIRD_RISE;
 /** Boards to the outer face of the last seat. The ring is the seat center, so add half the depth. */
 const STAND_REACH = thirdEndGap + SEAT_D / 2;
 
-/** Ribbon lips keep the old offset from the deck they trim. */
-export const RIBBON_Y = lowerEndY + (5.55 - (1.28 + 20 * 0.18));
+/** Lip offset, plus two lower rows and three second-deck rows so the seats clear the fascia. */
+export const RIBBON_Y = lowerEndY + (5.55 - (1.28 + 20 * 0.18)) + 2 * LOWER_RISE;
 export const RIBBON_INSET = -(lowerEndGap - ((2.5 + 20 * 0.51) - 12.55));
-export const RIBBON_Y2 = secondEndY + (10.18 - (6.35 + 13 * 0.27));
+export const RIBBON_Y2 = secondEndY + (10.18 - (6.35 + 13 * 0.27)) + 3 * SECOND_RISE;
 export const RIBBON_INSET2 = -(secondEndGap + (21.15 - (13.8 + 13 * 0.54)));
 
 const oldDeckTop = 10.9 + 11 * 0.28;
@@ -161,18 +161,26 @@ const THIRD = buildStands(THIRD_ROWS, THIRD_GAP, THIRD_Y0, THIRD_ROW_D, THIRD_RI
   (p) => !(p.z > pressCutZ && p.x > pressCutX0 && p.x < pressCutX1 && p.y > pressCutY),
 );
 export const STANDS: SeatSpot[] = [...GLASS, ...INNER, ...LOWER, ...UPPER, ...THIRD];
-(() => {
-  const nAway = Math.round(STANDS.length * 0.05);
-  const pocket = STANDS.map((p, i) => ({ p, i }))
-    .filter(({ p }) => p.y >= THIRD_Y0 && p.x < 0 && p.z < 0)
-    .sort((a, b) => a.p.z - b.p.z || Math.abs(a.p.x + 5) - Math.abs(b.p.x + 5));
-  const away = new Set<number>();
-  for (const { i } of pocket) {
-    if (away.size >= nAway) break;
-    away.add(i);
-  }
-  for (const i of away) STANDS[i]!.awayFan = true;
-})();
+/** Full height of the bowl, directly behind the away bench (x ≈ −9.4…−0.9 on z < 0). */
+const AWAY_SECTION_X0 = -12;
+const AWAY_SECTION_X1 = -0.5;
+for (const seat of STANDS) {
+  if (seat.z < 0 && seat.x > AWAY_SECTION_X0 && seat.x < AWAY_SECTION_X1) seat.awayFan = true;
+}
+/** Same aisle up the bowl. Row pitch is 0.72, so this does not merge neighbors. */
+const AWAY_COLUMN_MATCH = 0.2;
+const columnXs: number[] = [];
+for (const seat of STANDS) {
+  if (!seat.awayFan) continue;
+  if (columnXs.some((x) => Math.abs(seat.x - x) < AWAY_COLUMN_MATCH)) continue;
+  columnXs.push(seat.x);
+}
+columnXs.sort((a, b) => a - b);
+const homeColumns = columnXs.slice(0, 3);
+for (const seat of STANDS) {
+  if (!seat.awayFan) continue;
+  if (homeColumns.some((x) => Math.abs(seat.x - x) < AWAY_COLUMN_MATCH)) seat.awayFan = false;
+}
 
 export function fasciaRing(inset: number): { x: number; z: number }[] {
   return rinkPerimeter(inset + 0.08, 48).map((p) => ({ x: p.x, z: p.z }));

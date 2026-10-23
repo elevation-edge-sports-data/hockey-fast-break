@@ -17,10 +17,10 @@ Pose Editor: https://elevation-edge-sports-data.github.io/hockey-fast-break/pose
 - **Drill**: 4, 8, 12, or 16 targets. One minute.
 - **Practice**: skater vs goalie. Power play starts off.
 - **Scrimmage**: no goalies. Home and away targets, 4, 8, 12, or 16. Untimed. First team to knock down the other team's targets wins.
-- **Roller**: 4-on-4, no offsides, roller skates. Two 18:00 periods. Each period is 1–5 real minutes (opens at 3). Teams switch ends after the first period, and the attack net stays at the top of the screen.
-- **Game**: 5-on-5, offsides on, three 20:00 periods. Each period is 1–5 real minutes (opens at 2). Teams switch ends between periods, and the attack net stays at the top of the screen.
+- **Roller**: 4-on-4, no offsides, roller skates. Two 18:00 periods. Each period is 1, 1.5, 2, 3, 4, or 5 real minutes (opens at 1.5). Teams switch ends after the first period, and the attack net stays at the top of the screen.
+- **Game**: 5-on-5, offsides on, three 20:00 periods. Each period is 1, 1.5, 2, 3, 4, or 5 real minutes (opens at 1.5). Teams switch ends between periods, and the attack net stays at the top of the screen.
 
-A puck that hits the crowd or stands stops the clock; the camera follows it for 3 seconds, then cuts to the nearest faceoff dot for the drop.
+A puck that hits the crowd or stands stops the clock; the camera follows it for 2 seconds, then cuts to the nearest faceoff dot for the drop.
 
 ## Controls
 
@@ -30,7 +30,8 @@ A puck that hits the crowd or stands stops the clock; the camera follows it for 
 |---|---|---|
 | Skate / aim pass or shot | Left stick | WASD or arrows |
 | Pass, 60 mph on a tap, 90 mph after a 1.5s hold | A | E or J |
-| Saucer pass, held as that pass releases | Start | |
+| Saucer pass, held as that pass releases | Select | |
+| High clear. Hold Select 2s with no pass, then release | Select | |
 | Wrist (hold for slap) | X | F, C, or K |
 | Cancel slap | B | Space |
 | Deke | Y | Q or I |
