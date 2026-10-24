@@ -1491,6 +1491,179 @@ function releaseDrillShotState(): void {
 export type DrillTarget = { col: number; row: number; pts: number };
 
 const DRILL_SECONDS = 60;
+
+/**
+ * Headless CPU drill accuracy sample. Stays off in play.
+ * One away shooter is held on a spot and uses the normal release.
+ * The 60s clock does not end the run, and a hit does not clear the board.
+ */
+let cpuDrillProbe = false;
+let cpuDrillWatch = false;
+let cpuDrillSpotName = "";
+let cpuDrillSpot: { x: number; z: number } | null = null;
+let cpuDrillTargetHits = 0;
+let cpuDrillOnNet = 0;
+let cpuDrillNoted = false;
+/** Watchable 0v6 scrimmage. Off unless ?cpuScrimmage= is set. Does not change shot aim. */
+let cpuScrimmageWatch = false;
+
+export function setCpuDrillProbe(on: boolean): void {
+  cpuDrillProbe = on;
+}
+
+/** Where the probe holds the shooter. Ignored while the probe is off. */
+export function setCpuDrillSpot(x: number, z: number): void {
+  cpuDrillSpot = { x, z };
+}
+
+/** True only while ?cpuScrimmage= is driving a watchable clear. */
+export function cpuScrimmageWatchOn(): boolean {
+  return cpuScrimmageWatch;
+}
+
+const CPU_DRILL_WATCH_SPOTS = {
+  dot: { name: "attacking faceoff dot", x: FACEOFF_EZ_X, z: FACEOFF_SPOT_Z },
+  blue: { name: "attacking blue line", x: BLUE_X, z: 0 },
+  center: { name: "center ice", x: 0, z: 0 },
+} as const;
+
+/**
+ * Start a watchable CPU drill from ?cpuDrill=4|8|12|16 and optional
+ * ?cpuDrillSpot=dot|blue|center. Returns a HUD label, or null when the query is absent.
+ * Off unless that query is set.
+ */
+export function startCpuDrillWatchFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const q = new URLSearchParams(window.location.search);
+  const raw = q.get("cpuDrill");
+  if (raw !== "4" && raw !== "8" && raw !== "12" && raw !== "16") return null;
+  const spotKey = q.get("cpuDrillSpot") ?? "dot";
+  const spot = CPU_DRILL_WATCH_SPOTS[spotKey as keyof typeof CPU_DRILL_WATCH_SPOTS] ?? CPU_DRILL_WATCH_SPOTS.dot;
+  const ui = useGame.getState();
+  ui.setClockMode("drill");
+  ui.setDrillTargets(Number(raw) as 4 | 8 | 12 | 16);
+  ui.setHomeLineup({ g: 0, d: 0, o: 0 });
+  ui.setAwayLineup({ g: 0, d: 0, o: 1 });
+  ui.setGameSpeed(1.25);
+  ui.setCpuOffense(2);
+  ui.setCpuDefense(2);
+  ui.setCpuGoalie(1.6);
+  ui.setOffsides(false);
+  ui.setPaused(false);
+  ui.setPlaying(true);
+  cpuDrillWatch = true;
+  cpuDrillSpotName = spot.name;
+  setCpuDrillProbe(true);
+  setCpuDrillSpot(spot.x, spot.z);
+  resetWorld();
+  const meters = Math.abs(GOAL_LINE_X - spot.x).toFixed(1);
+  return `CPU drill · ${spot.name} · ${meters} m`;
+}
+
+/**
+ * Watch a 0v6 scrimmage clear from ?cpuScrimmage=4|8|12|16.
+ * Home is empty. Away is 0G/2D/4F. Off unless that query is set.
+ * ?cpuDrill= wins when both are present.
+ */
+export function startCpuScrimmageWatchFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const q = new URLSearchParams(window.location.search);
+  if (q.get("cpuDrill") === "4" || q.get("cpuDrill") === "8" || q.get("cpuDrill") === "12" || q.get("cpuDrill") === "16") {
+    return null;
+  }
+  const raw = q.get("cpuScrimmage");
+  if (raw !== "4" && raw !== "8" && raw !== "12" && raw !== "16") return null;
+  const ui = useGame.getState();
+  ui.setClockMode("scrimmage");
+  ui.setHomeLineup({ g: 0, d: 0, o: 0 });
+  ui.setAwayLineup({ g: 0, d: 2, o: 4 });
+  ui.setScrimmageHomeTargets(Number(raw) as 4 | 8 | 12 | 16);
+  ui.setScrimmageAwayTargets(Number(raw) as 4 | 8 | 12 | 16);
+  ui.setGameSpeed(1.25);
+  ui.setCpuOffense(2);
+  ui.setCpuDefense(2);
+  ui.setCpuGoalie(1.6);
+  ui.setOffsides(false);
+  ui.setPaused(false);
+  ui.setPlaying(true);
+  cpuScrimmageWatch = true;
+  resetWorld();
+  return `CPU scrimmage · 0v6 · ${raw} targets`;
+}
+
+/** Camera look for the watchable drill. Null in normal play. */
+export function cpuDrillWatchLook(): { x: number; y: number; z: number } | null {
+  if (!cpuDrillWatch || !cpuDrillActive()) return null;
+  const s = cpuDrillShooter();
+  if (!s) return null;
+  return { x: s.x, y: 1.05, z: s.z };
+}
+
+export function resetCpuDrillAccuracy(): void {
+  cpuDrillTargetHits = 0;
+  cpuDrillOnNet = 0;
+  cpuDrillNoted = false;
+}
+
+export function cpuDrillAccuracy(): { targetHits: number; onNet: number } {
+  return { targetHits: cpuDrillTargetHits, onNet: cpuDrillOnNet };
+}
+
+/** One result per release. A target hit is also on net. Ghosts do not count. */
+function noteCpuDrillShot(targetHit: boolean): void {
+  if (!cpuDrillProbe || cpuDrillNoted || steppingGhost) return;
+  cpuDrillNoted = true;
+  cpuDrillOnNet += 1;
+  if (targetHit) cpuDrillTargetHits += 1;
+}
+
+function cpuDrillActive(): boolean {
+  return cpuDrillProbe && useGame.getState().clockMode === "drill";
+}
+
+function cpuDrillShooter(): Skater | undefined {
+  if (!cpuDrillActive()) return undefined;
+  return world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
+}
+
+/** Cell center of the first target still up. CPU_SHOT_ERR still scatters the release. */
+function cpuDrillCellLock(): { tZ: number; wantY: number } | null {
+  if (!cpuDrillActive()) return null;
+  const list = drillTargetList();
+  const i = world.drillGone.findIndex((gone) => !gone);
+  const t = i >= 0 ? list[i] : undefined;
+  if (!t) return null;
+  const { cols, rows } = drillGrid();
+  const hw = GOAL_W / 2;
+  const z = -hw + (t.col + 0.5) * (GOAL_W / cols);
+  const y = (t.row + 0.5) * (GOAL_H / rows);
+  return {
+    tZ: z,
+    wantY: Math.max(PUCK_Y + 0.08, Math.min(mouthTopY() - 0.03, y)),
+  };
+}
+
+/** Held spot, facing the +X target net. The same place for every release. */
+function holdCpuDrillSpot(s: Skater): void {
+  s.x = cpuDrillSpot ? cpuDrillSpot.x : GOAL_LINE_X - 8;
+  s.z = cpuDrillSpot ? cpuDrillSpot.z : 0;
+  s.vx = 0;
+  s.vz = 0;
+  s.yaw = drillFaceYaw();
+}
+
+function parkCpuDrillBystanders(): void {
+  const shooter = cpuDrillShooter();
+  if (!shooter) return;
+  for (const s of world.skaters) {
+    if (s.id === shooter.id) continue;
+    s.x = -GOAL_LINE_X + 1.5;
+    s.z = 0;
+    s.vx = 0;
+    s.vz = 0;
+  }
+}
+
 const PERIOD_SECONDS = GAME_CLOCK_DISPLAY_MINUTES * 60;
 const ROLLER_PERIOD_SECONDS = ROLLER_CLOCK_DISPLAY_MINUTES * 60;
 const PERIOD_END_HOLD = 2;
@@ -1881,6 +2054,24 @@ function stepDrillCards(dt: number): void {
 }
 
 function giveUserPuck(): void {
+  const cpu = cpuDrillShooter();
+  if (cpu) {
+    const b = stickBlade(cpu);
+    world.puck.owner = cpu.id;
+    world.puck.x = b.x;
+    world.puck.z = b.z;
+    world.puck.y = PUCK_Y;
+    world.puck.vx = 0;
+    world.puck.vz = 0;
+    world.puck.vy = 0;
+    drillPuckLive = false;
+    drillFromPass = false;
+    drillPassSide = false;
+    drillSettledUntil.delete(world.puck);
+    if (!drillGhostScoring()) world.drillShot = false;
+    useGame.getState().setHasPuck(false);
+    return;
+  }
   const u =
     world.skaters.find((s) => s.id === world.userId) ??
     world.skaters.find((s) => s.side === "home");
@@ -1949,8 +2140,10 @@ function buryDrillScore(puck: Puck, i: number): void {
 }
 
 function hitDrillTarget(i: number, puck?: Puck): void {
-  if (i < 0 || world.drillGone[i]) return;
-  world.drillGone[i] = true;
+  const sample = cpuDrillProbe && !cpuDrillWatch;
+  if (i < 0 || (!sample && world.drillGone[i])) return;
+  if (sample) noteCpuDrillShot(true);
+  else world.drillGone[i] = true;
   spawnDrillCard(i);
   const pts = drillTargetList()[i]!.pts;
   const ui = useGame.getState();
@@ -1960,11 +2153,11 @@ function hitDrillTarget(i: number, puck?: Puck): void {
   world.drillCheer = 0.48;
   ui.setGoalSide("home");
   let wonNow = false;
-  if (world.drillGone.length > 0 && world.drillGone.every(Boolean)) {
+  if (!sample && world.drillGone.length > 0 && world.drillGone.every(Boolean)) {
     world.drillWon = true;
     wonNow = true;
-    drillPromote = true;
-    world.drillElapsed = Math.max(0, DRILL_SECONDS - world.periodClock);
+    if (!cpuDrillProbe) drillPromote = true;
+    world.drillElapsed = cpuDrillProbe ? world.time : Math.max(0, DRILL_SECONDS - world.periodClock);
     world.goalTicker = 8;
     world.drillCheer = 8;
     const u = world.skaters[world.userId];
@@ -2019,7 +2212,7 @@ function strikeDrillMouth(
   shotY: number,
   shotZ: number,
   puck?: Puck,
-): { crossed: boolean; hit: boolean } {
+): { crossed: boolean; hit: boolean; onNet: boolean } {
   const grid = targetBoard(useGame.getState().drillTargets);
   const board = strikeTargetBoard(
     1,
@@ -2039,11 +2232,18 @@ function strikeDrillMouth(
     const corner = drill16EnteredCorner(prevX, prevY, prevZ, shotX, shotY, shotZ);
     if (corner >= 0 && !world.drillGone[corner]) i = corner;
   }
+  let onNet = i >= 0;
+  if (!onNet && board.crossed && x !== prevX) {
+    const t = (GOAL_LINE_X - prevX) / (x - prevX || 1);
+    const hy = prevY + (y - prevY) * t;
+    const hz = prevZ + (z - prevZ) * t;
+    onNet = hy >= 0 && hy <= GOAL_H && Math.abs(hz) <= GOAL_W / 2;
+  }
   if (i >= 0) {
     hitDrillTarget(i, puck);
-    return { crossed: board.crossed, hit: true };
+    return { crossed: board.crossed, hit: true, onNet: true };
   }
-  return { crossed: board.crossed, hit: false };
+  return { crossed: board.crossed, hit: false, onNet };
 }
 
 function teamOnMouth(mouth: 1 | -1): "home" | "away" {
@@ -2187,6 +2387,7 @@ function tickDrill(
       puck,
     );
     if (strike.crossed || strike.hit) settled = true;
+    if (strike.onNet && !strike.hit) noteCpuDrillShot(false);
   }
   if (pipe || resolved !== null) settled = true;
   if (crossedFar) settled = true;
@@ -4199,6 +4400,40 @@ function thinkCpuRush(s: Skater, attack: number, mouth: number, distMouth: numbe
   return null;
 }
 
+/** Higher is a straighter look at the net. Sharp corners and traffic score lower. */
+function cpuLook(s: Skater, attack: number): number {
+  const from = passOrigin(s);
+  const sharp = cpuReleaseSharp(from.x, from.z, attack);
+  const depth = (attack * GOAL_LINE_X - from.x) * attack;
+  const slot = depth > 3.2 && depth < 13 && Math.abs(from.z) < 4.2 ? 0.28 : 0;
+  const traffic = nearestFoe(s).d < 2.2 ? 0.22 : defendersInLane(s) > 0 ? 0.12 : 0;
+  return 1 - sharp + slot - traffic;
+}
+
+/** Teammate with a clearly better angle. A slot look is not given up for a small edge. */
+function cpuBetterLookMate(s: Skater, attack: number): Skater | null {
+  const from = passOrigin(s);
+  const sharp = cpuReleaseSharp(from.x, from.z, attack);
+  const margin = sharp < 0.28 ? 0.38 : 0.16;
+  let best: Skater | null = null;
+  let bestScore = cpuLook(s, attack) + margin;
+  const mouth = attack * GOAL_LINE_X;
+  for (const m of teammatesOf(s)) {
+    if (m.stun > 0.3 || m.struck > 0.35 || m.dive > 0 || m.tumble !== 0) continue;
+    const depth = (mouth - m.x) * attack;
+    if (depth < 2.2 || depth > 18 || Math.abs(m.z) > 10) continue;
+    const md = Math.hypot(m.x - s.x, m.z - s.z);
+    if (md < 3.2 || md > 18) continue;
+    if (laneBlocked(s.x, s.z, m.x, m.z, s.side)) continue;
+    const score = cpuLook(m, attack);
+    if (score > bestScore) {
+      bestScore = score;
+      best = m;
+    }
+  }
+  return best;
+}
+
 function thinkCarrier(s: Skater): CarrierWish {
   const attack = attackDir(s.side);
   const mouth = attack * GOAL_LINE_X;
@@ -4227,6 +4462,13 @@ function thinkCarrier(s: Skater): CarrierWish {
       Math.random() <
         (idle ? 0.52 : 0.28) + cpuMul("off") * (idle ? 0.5 : 0.72) + (whiffHot() ? 0.42 : 0);
     if (wantShot && shootOk && !(s.side === "home" && s.id !== world.userId)) {
+      if (s.side === "away" && s.id !== world.userId) {
+        const mate = cpuBetterLookMate(s, attack);
+        if (mate) {
+          aiPass(s, mate);
+          return { wx: 0, wz: 0, mag: 0.2, burst: false };
+        }
+      }
       shootAtNet(s);
       return { wx: 0, wz: 0, mag: 0.15, burst: false };
     }
@@ -7127,6 +7369,15 @@ function thinkAi(s: Skater, dt: number): { wx: number; wz: number; mag: number; 
   }
   if (s.kind === "goalie") {
     thinkGoalie(s, dt);
+    return { wx: 0, wz: 0, mag: 0, burst: false };
+  }
+  const drillCpu = cpuDrillShooter();
+  if (drillCpu && s.id === drillCpu.id) {
+    holdCpuDrillSpot(s);
+    if (world.puck.owner === s.id && !world.drillWon && !world.faceoff && !world.stoppage) {
+      shootAtNet(s);
+    }
+    holdCpuDrillSpot(s);
     return { wx: 0, wz: 0, mag: 0, burst: false };
   }
   const bitten = dekeMissWish(s);
@@ -10036,6 +10287,7 @@ function doPass(s: Skater, mx: number, my: number, saucer: boolean): void {
 
 function armDrillShot(): void {
   if (useGame.getState().clockMode !== "drill") return;
+  cpuDrillNoted = false;
   drillFromPass = false;
   drillPassSide = false;
   world.drillShot = true;
@@ -10445,6 +10697,53 @@ function holdMeshRest(): void {
   if (puck.vy < 0) puck.vy = 0;
 }
 
+/**
+ * Share of the old CPU aim error that remains. Tightened again from 0.28 to 0.14.
+ * Independent of the six skill sliders — do not fold this into cpuMul or userMul.
+ * cpuReleaseSharp scales this down on poor angles and pulls the aim inside the mouth.
+ * Distance falloff stays. A miss that remains sits near the post or the bar.
+ */
+const CPU_SHOT_ERR = 0.14;
+
+function cpuShotRelease(s: Skater): boolean {
+  return s.side === "away" && s.id !== world.userId && s.kind !== "goalie";
+}
+
+/** 0 straight on, 1 in the corner or just below the goal line. Continuous in |z| and depth. */
+function cpuReleaseSharp(x: number, z: number, attack: number): number {
+  const fromLine = (attack * GOAL_LINE_X - x) * attack;
+  const depth = Math.max(0.45, fromLine);
+  const ang = Math.atan(Math.abs(z) / depth) / (Math.PI / 2);
+  const behind = fromLine < 0.6 ? Math.min(1, (0.6 - fromLine) / 2.2) : 0;
+  const look = Math.max(0, ang * 1.2 - 0.22);
+  return Math.max(0, Math.min(1, Math.max(look, sharpGeometry(x, z, attack).sharp, behind)));
+}
+
+function cpuAimErr(sharp: number): number {
+  const u = Math.max(0, Math.min(1, sharp));
+  return CPU_SHOT_ERR * (1 - 0.7 * u);
+}
+
+/**
+ * Pull a CPU goal-line target inside the mouth.
+ * A sharp look that was aimed at the near post fades toward center.
+ */
+function cpuInsideTarget(tZ: number, sharp: number, shooterZ: number, openSign: number): number {
+  const half = GOAL_W / 2;
+  const u = Math.max(0, Math.min(1, sharp));
+  const near = Math.sign(shooterZ) || 1;
+  const prefer = openSign === 0 ? Math.sign(tZ) || -near : openSign;
+  const intoNear = prefer === near && Math.abs(shooterZ) > half * 0.9;
+  const side = intoNear ? prefer * (1 - u) : prefer;
+  const pocket = side * half * (0.4 - 0.26 * u);
+  const pull = 0.22 + 0.74 * u;
+  let z = tZ + (pocket - tZ) * pull;
+  const limit = half * (0.78 - 0.46 * u);
+  if (z > limit) z = limit;
+  else if (z < -limit) z = -limit;
+  return z;
+}
+
 function launchShotAtNet(
   s: Skater,
   mx: number,
@@ -10455,6 +10754,7 @@ function launchShotAtNet(
   lock?: { tZ: number; wantY: number },
 ): number {
   const drillAim = useGame.getState().clockMode === "drill";
+  const cpuDrillErr = drillAim && cpuDrillProbe && cpuShotRelease(s);
   const attack = drillAim ? drillAttackSide() : attackDir(s.side);
   const netX = attack * GOAL_LINE_X;
   const zSign = aimZSign(s.side);
@@ -10494,11 +10794,13 @@ function launchShotAtNet(
   world.lastShotCorner = lowCorner || geo.sharp > 0.45;
   world.lastShotCornerSide = world.lastShotCorner ? Math.sign(from.z || 1) : 0;
   shotIron = null;
-  if (geo.below && !drillAim && !lock && !bodyAim) {
+  if (geo.below && !drillAim && !lock && !bodyAim && !cpuShotRelease(s)) {
     return launchBelowLineShot(s, attack, power);
   }
-  tZ = Math.max(-half + 0.12, Math.min(half - 0.12, tZ));
-  wantY = Math.max(PUCK_Y, Math.min(mouthTopY(), wantY));
+  const cpuClear = !!lock && cpuShotRelease(s) && lock.wantY > mouthTopY();
+  const cpuWide = !!lock && cpuShotRelease(s) && Math.abs(lock.tZ) > half - 0.02;
+  tZ = cpuWide ? lock.tZ : Math.max(-half + 0.12, Math.min(half - 0.12, tZ));
+  wantY = Math.max(PUCK_Y, Math.min(cpuClear ? mouthTopY() + 0.55 : mouthTopY(), wantY));
   if (geo.sharp > 0.08 && !lock && !bodyAim && !drillAim) {
     const farZ = -geo.near * half;
     const nearZ = geo.near * half;
@@ -10535,15 +10837,46 @@ function launchShotAtNet(
       ironKind = iron.kind;
     }
   }
+  if (cpuShotRelease(s) && !drillAim) {
+    const sharp = cpuReleaseSharp(from.x, from.z, attack);
+    if (!lock) {
+      const side = g ? -Math.sign(g.z || 1) : -geo.near;
+      tZ = cpuInsideTarget(tZ, sharp, from.z, side);
+    } else if (Math.abs(tZ) > half - 0.02) {
+      const signZ = Math.sign(tZ) || 1;
+      const past = Math.abs(tZ) - (half - 0.02);
+      tZ = signZ * (half + 0.03 + Math.min(0.2, past));
+    }
+    if (wantY <= mouthTopY() + 0.02) {
+      const midY = PUCK_Y + (mouthTopY() - PUCK_Y) * 0.5;
+      // A chosen top-shelf pocket stays under the bar. Sharp angles ease it in, they do not drop it to the middle.
+      const shelfKeep =
+        cpuShotRelease(s) &&
+        !drillAim &&
+        wantY > midY + (mouthTopY() - midY) * 0.55 &&
+        cpuStandingCells(s)?.top.length;
+      const pull = shelfKeep ? 0.16 * sharp : 0.7 * sharp;
+      wantY += (midY - wantY) * pull;
+      wantY = Math.max(PUCK_Y + 0.04, Math.min(mouthTopY(), wantY));
+    } else {
+      wantY = Math.min(wantY, mouthTopY() + 0.12 + 0.4 * (1 - sharp));
+    }
+    if (Math.abs(tZ) < half - 0.16 && wantY < GOAL_H - 0.05) shotIron = null;
+  }
   const dx = netX - from.x;
   const dz = tZ - from.z;
   const dist = Math.hypot(dx, dz) || 1;
   const ax = dx / dist;
   const az = dz / dist;
-  if (drillAim) sprayAmt = 0;
+  if (drillAim && !cpuDrillErr) sprayAmt = 0;
   else if (geo.sharp > 0.2) sprayAmt *= 0.2;
   else sprayAmt = Math.min(1.5, sprayAmt + 0.045 * dist);
-  const spray = ironKind || drillAim || shotIron ? 0 : (Math.random() - 0.5) * sprayAmt;
+  // Same CPU factor as shootAtNet / cpuOneTimerShot. Sharp angles spray even less. User spray is left alone.
+  if (cpuShotRelease(s)) {
+    const sharp = cpuReleaseSharp(from.x, from.z, attack);
+    sprayAmt *= cpuAimErr(sharp) * (1 - 0.55 * sharp);
+  }
+  const spray = ironKind || (drillAim && !cpuDrillErr) || shotIron ? 0 : (Math.random() - 0.5) * sprayAmt;
   const flight = Math.max(0.14, dist / Math.max(8, power));
   if (drillAim) {
     drillRecastAt = world.time + drillArriveTime(dist, power);
@@ -10561,6 +10894,17 @@ function launchShotAtNet(
     drillCorner || ironKind === "bar"
       ? cornerArriveVy(wantY, dist, power)
       : arriveVy(wantY, flight, loft);
+  // Top-shelf scrimmage looks were landing a row low. Use the corner arrival so they reach under the bar.
+  if (
+    cpuShotRelease(s) &&
+    !drillAim &&
+    !drillCorner &&
+    ironKind === null &&
+    wantY > PUCK_Y + (mouthTopY() - PUCK_Y) * 0.72 &&
+    cpuStandingCells(s)?.top.length
+  ) {
+    vy = Math.max(vy, cornerArriveVy(Math.min(wantY, mouthTopY() - 0.02), dist, power));
+  }
   if (!drillCorner && ironKind === null && wantY > mouthTopY()) {
     const dragK = PUCK_DRAG;
     let travel = Math.max(0.14, dist / Math.max(8, power));
@@ -10718,7 +11062,7 @@ function kickOneTimerZ(dz: number): void {
   puck.vz += dvz;
 }
 
-function pushOneTimerMiss(lines: number): void {
+function pushOneTimerMiss(lines: number, err = 1): void {
   if (lines < 1 || useGame.getState().clockMode === "drill") return;
   const puck = world.puck;
   const along = Math.sign(puck.vx || 1) * GOAL_LINE_X - puck.x;
@@ -10730,13 +11074,13 @@ function pushOneTimerMiss(lines: number): void {
       Math.random() < 0.9
         ? side * (1.55 + Math.random() * 1.7)
         : zAt + side * (0.4 + Math.random() * 0.35);
-    kickOneTimerZ(want - zAt);
-    if (Math.random() < 0.6) puck.vy += 3.6 + Math.random() * 4.2;
+    kickOneTimerZ((want - zAt) * err);
+    if (Math.random() < 0.6 * err) puck.vy += (3.6 + Math.random() * 4.2) * err;
     return;
   }
   if (Math.abs(zAt) < 0.42)
-    kickOneTimerZ((Math.random() < 0.5 ? -1 : 1) * (0.04 + Math.random() * 0.1));
-  else kickOneTimerZ(Math.sign(zAt) * (0.08 + Math.random() * 0.62));
+    kickOneTimerZ((Math.random() < 0.5 ? -1 : 1) * (0.04 + Math.random() * 0.1) * err);
+  else kickOneTimerZ(Math.sign(zAt) * (0.08 + Math.random() * 0.62) * err);
 }
 
 function fireOneTimer(t: Skater): void {
@@ -11158,9 +11502,247 @@ function doShot(
   finishUserShot(s);
 }
 
+/** Standing cells on the net this shooter is attacking. Top row is listed separately. */
+function cpuStandingCells(s: Skater): {
+  top: { z: number; y: number }[];
+  rest: { z: number; y: number }[];
+  colW: number;
+  rowH: number;
+} | null {
+  const ui = useGame.getState();
+  if (ui.clockMode !== "scrimmage") return null;
+  const mouth: 1 | -1 = attackDir(s.side) > 0 ? 1 : -1;
+  const team = teamOnMouth(mouth);
+  const count = team === "home" ? ui.scrimmageHomeTargets : ui.scrimmageAwayTargets;
+  if (count <= 0) return null;
+  const board = targetBoard(count);
+  const gone = scrimmageGone(team);
+  const topRow = board.rows - 1;
+  const hw = GOAL_W / 2;
+  const colW = GOAL_W / board.cols;
+  const rowH = GOAL_H / board.rows;
+  const top: { z: number; y: number }[] = [];
+  const rest: { z: number; y: number }[] = [];
+  for (let i = 0; i < board.list.length; i++) {
+    if (gone[i]) continue;
+    const t = board.list[i]!;
+    const cell = {
+      z: -hw + (t.col + 0.5) * colW,
+      y: Math.min(mouthTopY() - 0.04, Math.max(PUCK_Y + 0.12, (t.row + 0.55) * rowH)),
+    };
+    if (t.row === topRow) top.push(cell);
+    else rest.push(cell);
+  }
+  if (!top.length && !rest.length) return null;
+  return { top, rest, colW, rowH };
+}
+
+/**
+ * Pocket toward targets that are still up. The top shelf wins while any of it remains,
+ * on the side that still has more of those cells. Jitter keeps it off a perfect cell lock.
+ * `p` is how often to take this look instead of the usual lower middle.
+ */
+function cpuShelfPocket(s: Skater): { tZ: number; wantY: number; p: number } | null {
+  const board = cpuStandingCells(s);
+  if (!board) return null;
+  const shelf = board.top.length > 0;
+  const cells = shelf ? board.top : board.rest;
+  const hw = GOAL_W / 2;
+  let pos = 0;
+  let neg = 0;
+  for (const c of cells) {
+    if (c.z >= 0) pos += 1;
+    else neg += 1;
+  }
+  const side: 1 | -1 = pos === neg ? ((-Math.sign(s.z) || 1) as 1 | -1) : pos > neg ? 1 : -1;
+  const onSide = cells.filter((c) => (Math.sign(c.z) || side) === side);
+  const pool = onSide.length ? onSide : cells;
+  const pick = pool[Math.floor(Math.random() * pool.length)]!;
+  const tZ = Math.max(-hw + 0.12, Math.min(hw - 0.12, pick.z + (Math.random() - 0.5) * board.colW * 0.45));
+  const wantY = Math.max(
+    PUCK_Y + 0.2,
+    Math.min(mouthTopY() - 0.03, pick.y + (Math.random() - 0.35) * board.rowH * 0.22),
+  );
+  const p = shelf ? (board.rest.length === 0 ? 0.9 : 0.72) : 0.84;
+  return { tZ, wantY, p };
+}
+
+/**
+ * Intended spot in the net, chosen before CPU_SHOT_ERR.
+ * A skilled stick uses the goalie's body and stick, plus anyone screening a side,
+ * and tucks the puck just inside the post or just under the bar when that pocket is the shot.
+ * Residual spray stays on CPU_SHOT_ERR in the release.
+ */
+function cpuSkilledTarget(
+  s: Skater,
+  from: { x: number; z: number },
+  g: Skater | undefined,
+  sharp: number,
+  juice: boolean,
+): { tZ: number; wantY: number } {
+  const half = GOAL_W / 2;
+  const postZ = half - 0.18;
+  const attack = attackDir(s.side);
+  const mouth = attack * GOAL_LINE_X;
+  if (!g) {
+    const far = (-Math.sign(from.z) || 1) as 1 | -1;
+    const tZ = sharp > 0.35 ? far * postZ * 0.42 : 0;
+    return { tZ, wantY: shotHeight(0.32).wantY };
+  }
+  const gZ = Math.max(-half + 0.15, Math.min(half - 0.15, g.z));
+  const blocker: 1 | -1 = attackDir(g.side) > 0 ? 1 : -1;
+  const body = (0.46 + Math.min(0.14, g.coverPose * 0.18)) * (juice ? 0.82 : 1);
+  const stick = 0.2;
+  const gapOf = (side: 1 | -1) => {
+    const cover = gZ + side * body + (side === blocker ? side * stick : 0);
+    return side * (side * postZ - cover);
+  };
+  let clogPos = 0;
+  let clogNeg = 0;
+  const fromAlong = (mouth - from.x) * attack;
+  for (const o of world.skaters) {
+    if (o.side === s.side || o.kind === "goalie") continue;
+    const along = (mouth - o.x) * attack;
+    if (along < 0.35 || along > fromAlong - 0.25) continue;
+    if (o.z > 0.2) clogPos += 1;
+    else if (o.z < -0.2) clogNeg += 1;
+    else {
+      clogPos += 0.35;
+      clogNeg += 0.35;
+    }
+  }
+  const score = (side: 1 | -1) => {
+    const gap = gapOf(side);
+    const clog = side > 0 ? clogPos : clogNeg;
+    return Math.max(-0.15, gap) * 1.85 - clog * 0.42 + (side === -blocker ? 0.07 : 0);
+  };
+  let side: 1 | -1 = score(1) >= score(-1) ? 1 : -1;
+  if (Math.abs(gZ) > 0.22) {
+    const open: 1 | -1 = gZ > 0 ? -1 : 1;
+    if (gapOf(open) > gapOf((open === 1 ? -1 : 1) as 1 | -1) + 0.1) side = open;
+  }
+  const gap = gapOf(side);
+  const coverEdge =
+    side > 0 ? gZ + body + (blocker > 0 ? stick : 0) : gZ - body - (blocker < 0 ? stick : 0);
+  const post = side * postZ;
+  let tZ = gap > 0.38 ? post : gap > 0.14 ? (coverEdge + post) * 0.5 : coverEdge + side * 0.06;
+  tZ = Math.max(-postZ, Math.min(postZ, tZ));
+  const onStick = side === blocker;
+  let hgt = gap > 0.32 ? (onStick ? 0.8 : 0.92) : onStick ? 0.74 : 0.84;
+  if (clogPos > 0.6 && clogNeg > 0.6) hgt = Math.min(0.96, hgt + 0.08);
+  hgt = Math.max(0.2, hgt - sharp * 0.22);
+  return { tZ, wantY: shotHeight(Math.min(0.96, hgt)).wantY };
+}
+
+function cpuShotChoice(
+  s: Skater,
+  sharp: number,
+  oneTimer: boolean,
+): { kind: ShotKind; power: number; slap: boolean } {
+  const spd = Math.hypot(s.vx, s.vz);
+  const distMouth = (attackDir(s.side) * GOAL_LINE_X - passOrigin(s).x) * attackDir(s.side);
+  const pressure = nearestFoe(s).d;
+  if (!oneTimer && pressure > 3.4 && distMouth > 8.5 && sharp < 0.42) {
+    const held = Math.max(0.55, Math.min(1, 0.5 + (pressure - 3.4) * 0.12));
+    const built = shotFromHold(held, spd);
+    return { kind: built.slap ? "slap" : "wrist", power: built.power, slap: built.slap };
+  }
+  if (oneTimer || distMouth < 5.5 || pressure < 2.2) {
+    return { kind: "snap", power: snapMph(spd) / MPH, slap: false };
+  }
+  return {
+    kind: "wrist",
+    power: wristMph(Math.min(1, distMouth / 14), spd) / MPH,
+    slap: false,
+  };
+}
+
+/**
+ * CPU net release. The pocket is chosen first, the way a skilled stick would
+ * place it. CPU_SHOT_ERR still supplies the residual spray afterward.
+ * Height, kind, and follow-through stay on the user shot path.
+ */
+function cpuFinishOnNet(s: Skater, oneTimer: boolean): void {
+  if (periodEndLive() || world.drillWon || s.kind === "goalie") return;
+  const attack = attackDir(s.side);
+  const g = world.skaters.find((p) => p.kind === "goalie" && p.side !== s.side);
+  const from = passOrigin(s);
+  const sharp = cpuReleaseSharp(from.x, from.z, attack);
+  const err = cpuAimErr(sharp);
+  const juice = !oneTimer && s.side === "away" && whiffHot();
+  const half = GOAL_W / 2;
+  const probeAim = cpuDrillActive() ? cpuDrillCellLock() : null;
+  if (cpuDrillActive() && !probeAim) return;
+  const aim = probeAim ?? cpuSkilledTarget(s, from, g, sharp, juice);
+  let tZ = aim.tZ;
+  let wantY = aim.wantY;
+  // High targets still up: lift toward the shelf and the open side, not the low slot or the body.
+  let shelfShot = false;
+  if (!probeAim) {
+    const shelf = cpuShelfPocket(s);
+    if (shelf && Math.random() < shelf.p) {
+      tZ = shelf.tZ;
+      wantY = shelf.wantY;
+      shelfShot = true;
+    }
+  }
+  const lines = oneTimer ? passLinesCrossed(world.lastPassX, s.x) : 0;
+  const roll = Math.random();
+  const wideAt = oneTimer
+    ? (lines >= 2 ? 0.58 : lines >= 1 ? 0.36 : 0.2) * err
+    : 0.045 + sharp * 0.04;
+  const distMouth = (attack * GOAL_LINE_X - from.x) * attack;
+  const overAt = oneTimer
+    ? (lines >= 2 ? 0.88 : lines >= 1 ? 0.52 : 0.34) * err
+    : wideAt + 0.03 + (distMouth > 12 ? 0.035 : 0);
+  const side = Math.sign(tZ) || (g ? -Math.sign(g.z || 1) : 1);
+  if (roll < wideAt) {
+    tZ = (side || 1) * (half + 0.05 + Math.random() * (lines >= 2 ? 0.55 : 0.22) * err);
+  } else if (roll < overAt) {
+    wantY = mouthTopY() + 0.06 + Math.random() * (lines >= 2 ? 0.28 : 0.12);
+    if (sharp > 0.18 && !shelfShot) tZ = cpuInsideTarget(tZ, sharp, from.z, side);
+  } else if (sharp > 0.18 && !shelfShot) {
+    tZ = cpuInsideTarget(tZ, sharp, from.z, side);
+  }
+  const choice = cpuShotChoice(s, sharp, oneTimer);
+  const spray = shotSpray(choice.kind, s, oneTimer, false);
+  const dist = launchShotAtNet(s, 0, 0, choice.power, spray, false, {
+    tZ,
+    wantY,
+  });
+  if (probeAim) armDrillShot();
+  if (oneTimer) {
+    pushOneTimerMiss(lines, err);
+    rememberOneTimerLines(s.id, lines);
+    if (lines >= 1) world.lastOneTimerDanger = 0;
+  }
+  if (world.time - world.goalieSaveT > 1.35 || dist > 12) {
+    world.reboundN = 0;
+    world.reboundSoft = false;
+  }
+  world.lastShoot = world.time;
+  world.lastShotSlap = choice.slap;
+  world.lastShotBackhand = false;
+  world.lastShotKind = choice.kind;
+  world.lastShotOneTimer = oneTimer;
+  world.lastShotRedirect = false;
+  world.lastShotCorner = false;
+  world.lastShotCornerSide = 0;
+  world.lastShooter = s.id;
+  world.lastShotDist = dist;
+  world.shotWindupT = 0;
+  s.windup = 0;
+  s.follow = shotFollowTime(choice.kind, choice.slap);
+  beginShotSpeedTrack();
+}
+
 function shootAtNet(s: Skater): void {
   if (periodEndLive()) return;
   if (world.drillWon) return;
+  if (cpuShotRelease(s)) {
+    cpuFinishOnNet(s, false);
+    return;
+  }
   const attack = attackDir(s.side);
   const netX = attack * GOAL_LINE_X;
   const g = world.skaters.find((p) => p.kind === "goalie" && p.side !== s.side);
@@ -15826,52 +16408,7 @@ function cpuOneTimerAttempt(s: Skater): boolean {
 }
 
 function cpuOneTimerShot(s: Skater): void {
-  if (periodEndLive()) return;
-  const attack = attackDir(s.side);
-  const netX = attack * GOAL_LINE_X;
-  const lines = passLinesCrossed(world.lastPassX, s.x);
-  const g = world.skaters.find((p) => p.kind === "goalie" && p.side !== s.side);
-  const half = GOAL_W / 2;
-  let tZ = g
-    ? -Math.sign(g.z || 1) * (0.28 + Math.random() * 0.5)
-    : (Math.random() * 2 - 1) * (half * 0.7);
-  let wantY = PUCK_Y + 0.12 + Math.random() * (GOAL_H * 0.72);
-  const roll = Math.random();
-  const wideAt = lines >= 2 ? 0.58 : lines >= 1 ? 0.36 : 0.2;
-  const overAt = lines >= 2 ? 0.88 : lines >= 1 ? 0.52 : 0.34;
-  if (roll < wideAt)
-    tZ = (Math.sign(tZ) || 1) * (half + 0.22 + Math.random() * (lines >= 2 ? 1.15 : 0.48));
-  else if (roll < overAt) wantY = GOAL_H + 0.12 + Math.random() * (lines >= 2 ? 0.85 : 0.4);
-  const from = stickBlade(s);
-  const dx = netX - from.x;
-  const dz = tZ - from.z;
-  const dist = Math.hypot(dx, dz) || 1;
-  const spd = Math.hypot(s.vx, s.vz);
-  const power = 18 + spd * 0.45 + Math.min(8, dist * 0.22);
-  const flight = Math.max(0.12, dist / Math.max(8, power));
-  const vy = wantY > PUCK_Y + 0.1 ? arriveVy(wantY, flight, 1) : 0.05;
-  launchPuck(s, (dx / dist) * power, (dz / dist) * power, vy);
-  pushOneTimerMiss(lines);
-  rememberOneTimerLines(s.id, lines);
-  if (lines >= 1) world.lastOneTimerDanger = 0;
-  if (world.time - world.goalieSaveT > 1.35 || dist > 12) {
-    world.reboundN = 0;
-    world.reboundSoft = false;
-  }
-  world.lastShoot = world.time;
-  world.lastShotSlap = false;
-  world.lastShotBackhand = false;
-  world.lastShotKind = null;
-  world.lastShotOneTimer = true;
-  world.lastShotRedirect = false;
-  world.lastShotCorner = false;
-  world.lastShotCornerSide = 0;
-  world.lastShooter = s.id;
-  world.lastShotDist = dist;
-  world.shotWindupT = 0;
-  s.follow = shotFollowTime("wrist");
-  s.windup = 0;
-  beginShotSpeedTrack();
+  cpuFinishOnNet(s, true);
 }
 
 function maybeLoadedSlap(s: Skater): boolean {
@@ -18328,6 +18865,7 @@ function goalReactionSettled(): boolean {
 }
 
 function goalStoppageLimit(): number {
+  if (cpuScrimmageWatch && world.whistle === "goal") return 0;
   if (world.whistle === "goal") return 4;
   return 3.2;
 }
@@ -19157,6 +19695,12 @@ export function whistleUserLook(): { x: number; y: number; z: number } | null {
   }
   offsideLook = null;
   if (world.whistle !== "goal") return null;
+  if (cpuScrimmageWatch) {
+    const holder = world.puck.owner !== null ? world.skaters[world.puck.owner] : undefined;
+    const cpu = holder ?? world.skaters.find((p) => p.side === "away" && p.kind !== "goalie");
+    if (cpu) return { x: cpu.x, y: 1.05, z: cpu.z };
+    return { x: world.puck.x, y: 0.55, z: world.puck.z };
+  }
   const s = world.userId >= 0 ? world.skaters[world.userId] : undefined;
   if (!s) return null;
   return { x: s.x, y: 1.05, z: s.z };
@@ -19231,6 +19775,28 @@ function startNextPeriod(): void {
   ui.setPeriod(world.period);
   ui.setPeriodClock(seconds);
   ui.setPeriodOver(false);
+}
+
+/** Viewable CPU drill with no home skater. The away shooter is held and released as usual. */
+function stepCpuDrillWatch(dt: number): void {
+  if (world.faceoff) stepDrillDrop(dt);
+  const dropping = world.faceoff;
+  for (const s of world.skaters) {
+    const ai = thinkAi(s, dt);
+    if (s.kind !== "goalie") {
+      integrateSkater(s, ai.wx, ai.wz, ai.mag, ai.burst, dt);
+      keepInBowl(s);
+    }
+  }
+  if (dropping) {
+    stepRef(dt);
+    recordReplay();
+    return;
+  }
+  separateSkaters();
+  stepPuck(dt);
+  stepRef(dt);
+  recordReplay();
 }
 
 function stepOpenIce(dt: number, act: Actions): void {
@@ -19321,7 +19887,13 @@ function stepPlay(dt: number, act: Actions): void {
     return;
   }
 
-  if (ui.clockMode === "drill" && !world.stoppage && !world.drillWon && !drillDropLive()) {
+  if (
+    ui.clockMode === "drill" &&
+    !cpuDrillProbe &&
+    !world.stoppage &&
+    !world.drillWon &&
+    !drillDropLive()
+  ) {
     world.periodClock = Math.max(0, world.periodClock - clockDt(dt));
     const shown = Math.floor(world.periodClock);
     if (shown !== ui.periodClock) ui.setPeriodClock(shown);
@@ -19679,7 +20251,8 @@ function stepPlay(dt: number, act: Actions): void {
   const user = world.skaters[world.userId];
   if (!user) {
     dropWingClaims();
-    if (ui.clockMode === "practice" || ui.clockMode === "scrimmage") stepOpenIce(dt, act);
+    if (cpuDrillWatch && ui.clockMode === "drill") stepCpuDrillWatch(dt);
+    else if (ui.clockMode === "practice" || ui.clockMode === "scrimmage") stepOpenIce(dt, act);
     return;
   }
 
@@ -19753,6 +20326,8 @@ function stepPlay(dt: number, act: Actions): void {
     restoreFaceoffLock?.();
     return;
   }
+
+  if (cpuDrillActive()) parkCpuDrillBystanders();
 
   const hasPuck = world.puck.owner === user.id;
   const homeGoalie = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");

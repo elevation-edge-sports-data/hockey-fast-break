@@ -16,6 +16,8 @@ import {
   replayFootagePct,
   subscribeReplayPct,
   drillMaxScore,
+  startCpuDrillWatchFromUrl,
+  startCpuScrimmageWatchFromUrl,
   previewPausedMode,
   previewPausedTargets,
   previewPausedScrimmage,
@@ -1060,6 +1062,11 @@ export function Overlay() {
       ? periodEndCopy(periodBreak, homeScore, awayScore)
       : null;
   const setPlaying = useGame((s) => s.setPlaying);
+  const [cpuDrillNote, setCpuDrillNote] = useState<string | null>(null);
+  useEffect(() => {
+    const note = startCpuDrillWatchFromUrl() ?? startCpuScrimmageWatchFromUrl();
+    if (note) setCpuDrillNote(note);
+  }, []);
   const setHomeKit = useGame((s) => s.setHomeKit);
   const setAwayKit = useGame((s) => s.setAwayKit);
   const setHomeLineup = useGame((s) => s.setHomeLineup);
@@ -1174,6 +1181,7 @@ export function Overlay() {
                   <b>{drillScore}</b>
                   <span key={drillTargets}>/ {drillMaxScore()}</span>
                   <span className="period-clock">{fmtClock(periodClock)}</span>
+                  {cpuDrillNote ? <span className="period-clock">{cpuDrillNote}</span> : null}
                 </>
               ) : clockMode === "scrimmage" ? (
                 <>
@@ -1192,6 +1200,7 @@ export function Overlay() {
                     CPU
                     <UniStripe kit={awayUni} />
                   </span>
+                  {cpuDrillNote ? <span className="period-clock">{cpuDrillNote}</span> : null}
                 </>
               ) : (
                 <>

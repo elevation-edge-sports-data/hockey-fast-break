@@ -6,7 +6,7 @@ import { Arena } from "./Arena";
 import { Rink } from "./Rink.tsx";
 import { PlayerMesh, PUCK_MARK_INNER, PuckMesh, RefereeMesh, USER_MARK_INNER } from "./PlayerMesh";
 import { attachInput } from "./input";
-import { installControlsProbe, mirrorFreeCamEnds, orbitFromOffset, periodEndLook, replayLockKind, stepPlayFrame, whistleUserLook, world } from "./sim";
+import { cpuDrillWatchLook, cpuScrimmageWatchOn, installControlsProbe, mirrorFreeCamEnds, orbitFromOffset, periodEndLook, replayLockKind, stepPlayFrame, whistleUserLook, world } from "./sim";
 import { useGame, type CamMode } from "./store";
 import { BOARD_H, BLUE_X, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
 
@@ -149,7 +149,10 @@ const CLASSIC_UP_COS = Math.cos((25 * Math.PI) / 180);
 /** Screen-up along the rink. Drill keeps the +X target net at the top. */
 function screenUpX(): 1 | -1 {
   if (useGame.getState().clockMode === "drill") return 1;
-  return world.homeAttack > 0 ? 1 : -1;
+  const homeUp: 1 | -1 = world.homeAttack > 0 ? 1 : -1;
+  // Watchable 0v6 puts the CPU attacking net at the top.
+  if (cpuScrimmageWatchOn()) return homeUp === 1 ? -1 : 1;
+  return homeUp;
 }
 
 function aimClassic(camera: THREE.PerspectiveCamera, look: THREE.Vector3): void {
@@ -291,6 +294,8 @@ function projectUser(camera: THREE.Camera) {
 
 function drillFollow(): { x: number; y: number; z: number } | null {
   if (useGame.getState().clockMode !== "drill") return null;
+  const watch = cpuDrillWatchLook();
+  if (watch) return watch;
   const s = world.skaters[world.userId];
   if (!s) return null;
   return { x: s.x, y: 1.05, z: s.z };
