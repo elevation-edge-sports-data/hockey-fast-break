@@ -12,6 +12,7 @@ import {
   stopPauseReplay,
   orbitReplayPointer,
   zoomReplayPointer,
+  pickReplayLock,
   replayHasFootage,
   replayFootagePct,
   subscribeReplayPct,
@@ -965,6 +966,7 @@ function PauseOrbit() {
   const paused = useGame((s) => s.paused);
   const dragging = useRef(false);
   const last = useRef({ x: 0, y: 0 });
+  const down = useRef({ x: 0, y: 0 });
   if (!paused) return null;
   return (
     <div
@@ -972,6 +974,7 @@ function PauseOrbit() {
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         dragging.current = true;
+        down.current = { x: e.clientX, y: e.clientY };
         last.current = { x: e.clientX, y: e.clientY };
         e.stopPropagation();
         (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
@@ -997,8 +1000,17 @@ function PauseOrbit() {
         world.pauseDirty = true;
       }}
       onPointerUp={(e) => {
+        const moved = Math.hypot(e.clientX - down.current.x, e.clientY - down.current.y);
         dragging.current = false;
         e.stopPropagation();
+        if (moved > 6 || !world.replay || world.replayKind !== "pause") return;
+        const canvas = document.querySelector("canvas");
+        if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) return;
+        const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const ndcY = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+        pickReplayLock(ndcX, ndcY, rect.width / rect.height);
       }}
       onPointerCancel={() => {
         dragging.current = false;
@@ -1015,6 +1027,62 @@ function PauseOrbit() {
         world.pauseDirty = true;
       }}
     />
+  );
+}
+
+const PRACTICE_SHOT_ROWS = [
+  ["backhand", "Backhand"],
+  ["snap", "Snap"],
+  ["wrist", "Wrist"],
+  ["slap", "Slap"],
+] as const;
+
+function TeamShotLines() {
+  const shots = useGame((s) => s.teamShots);
+  return (
+    <div className="team-shots" aria-label="Team shots">
+      <span>Shots on goal</span>
+      <b>{shots.home.onGoal}</b>
+      <b>{shots.away.onGoal}</b>
+      <span>Shot attempts</span>
+      <b>{shots.home.attempts}</b>
+      <b>{shots.away.attempts}</b>
+    </div>
+  );
+}
+
+function PracticeShotProfile() {
+  const shots = useGame((s) => s.practiceShots);
+  return (
+    <table className="shot-profile" aria-label="Practice shots">
+      <thead>
+        <tr>
+          <th scope="col" />
+          <th scope="col" title="Shot attempts">
+            Att
+          </th>
+          <th scope="col" title="Shots on goal">
+            SOG
+          </th>
+          <th scope="col" title="Goals">
+            Goal
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {PRACTICE_SHOT_ROWS.map(([kind, label]) => {
+          const row = shots[kind];
+          return (
+            <tr key={kind}>
+              <th scope="row">{label}</th>
+              <td>{row.attempts}</td>
+              <td>{row.onGoal}</td>
+              <td>{row.goals}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
@@ -1200,6 +1268,7 @@ export function Overlay() {
                     CPU
                     <UniStripe kit={awayUni} />
                   </span>
+                  <span className="period-clock">{fmtClock(periodClock)}</span>
                   {cpuDrillNote ? <span className="period-clock">{cpuDrillNote}</span> : null}
                 </>
               ) : (
@@ -1223,6 +1292,8 @@ export function Overlay() {
                 </>
               )}
             </span>
+            <TeamShotLines />
+            {clockMode === "practice" ? <PracticeShotProfile /> : null}
             {/*
               Speed line is the previous release. Under it this column used to add
               "Puck on stick" / "Loose puck" from hasPuck, then pad ("Keyboard" or "Gamepad").
@@ -1257,9 +1328,9 @@ export function Overlay() {
                     {chargeKind === "shot" ? (
                       <b className="charge-track">
                         <i style={{ width: `${Math.round(charge * 100)}%` }} />
-                        {chargeMark !== null ? (
-                          <em style={{ left: `${chargeMark * 100}%` }} />
-                        ) : null}
+                        {chargeMark?.map((at) => (
+                          <em key={at} style={{ left: `${at * 100}%` }} />
+                        ))}
                       </b>
                     ) : (
                       <i style={{ width: `${Math.round(charge * 100)}%` }} />
@@ -1292,7 +1363,8 @@ export function Overlay() {
             <p>
               <b>Replay</b>
               <span>
-                Drag to look · wheel zooms · A pause/play · tap Y lock · stick pan · hold Y+stick orbit ·
+                Drag to look · wheel zooms · A pause/play · tap Y or click to lock · stick pan · X on a body locks ·
+                hold Y+stick orbit ·
                 X/B zoom · LB/RB slow · LT/RT fast · R3 or Select exits
               </span>
             </p>
@@ -1378,8 +1450,7 @@ export function Overlay() {
               if (paused && e.code === "Space") e.preventDefault();
             }}
             onClick={() => {
-              useGame.getState().rerollAwayKit();
-              useGame.getState().rerollClockMode();
+              useGame.getState().applyCornerReset();
               if (playing && paused) {
                 resetPausedGame();
                 return;
@@ -1396,7 +1467,7 @@ export function Overlay() {
       {replay ? (
         <div className="whistle replay-hint">
           {paused
-            ? "Drag · wheel · A pause · Y lock · stick pan · LB/RB slow · LT/RT fast · R3 exits"
+            ? "Drag · wheel · A pause · Y or click locks · X on a body locks · stick pan · LB/RB slow · LT/RT fast · R3 exits"
             : "A/B/X/Y skip"}
         </div>
       ) : periodEnd ? (

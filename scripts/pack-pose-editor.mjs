@@ -79,11 +79,11 @@ if (isPublic) {
     stripped.includes(token),
   );
   if (leak) throw new Error(`pack-pose-editor: public bundle references the private gallery (${leak})`);
-  for (const token of ["goalieUpright", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGloveSave", "goalieDivingGloveSave", "goalieProtectLeft", "goalieProtectRight", "goalieDivingStickSave", "goalieGetUp", "backSkate", "divePoke", "speedPuckLeft", "speedPuckRight", "wristFollow", "slapFollow", "backhandFollow", "snapFollow", "shoulderCheck1", "shoulderCheck2", "autoDeke1", "autoDeke2"]) {
+  for (const token of ["goalieUpright", "goalieUprightGlove", "goalieUprightBlocker", "goaliePokeCheck", "goaliePlayPuck1", "goaliePlayPuck2", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGloveSave", "goalieDivingGloveSave", "goalieProtectLeft", "goalieProtectRight", "goalieDivingStickSave", "goalieGetUp", "backSkate", "divePoke", "speedPuckLeft", "speedPuckRight", "wristFollow", "slapFollow", "backhandFollow", "snapFollow", "shoulderCheck1", "shoulderCheck2", "autoDeke1", "autoDeke2"]) {
     if (!stripped.includes(token)) throw new Error(`pack-pose-editor: public bundle is missing ${token}`);
   }
 } else {
-  for (const token of ["bench", "goalieUpright", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGetUp", "goalieGloveSave", "goalieDivingGloveSave", "goalieDivingStickSave", "goalieProtectLeft", "goalieProtectRight", "backSkate", "divePoke", "speedPuckLeft", "speedPuckRight", "wristFollow", "slapFollow", "backhandFollow", "snapFollow", "shoulderCheck1", "shoulderCheck2", "autoDeke1", "autoDeke2"]) {
+  for (const token of ["bench", "goalieUpright", "goalieUprightGlove", "goalieUprightBlocker", "goaliePokeCheck", "goaliePlayPuck1", "goaliePlayPuck2", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGetUp", "goalieGloveSave", "goalieDivingGloveSave", "goalieDivingStickSave", "goalieProtectLeft", "goalieProtectRight", "backSkate", "divePoke", "speedPuckLeft", "speedPuckRight", "wristFollow", "slapFollow", "backhandFollow", "snapFollow", "shoulderCheck1", "shoulderCheck2", "autoDeke1", "autoDeke2"]) {
     if (!js.includes(token)) throw new Error(`pack-pose-editor: private bundle is missing ${token}`);
   }
 }

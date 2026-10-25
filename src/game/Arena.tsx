@@ -689,7 +689,7 @@ function StadiumRibbon({
       ticker: world.time,
       goal: lit,
       clock:
-        showsPeriodClock(clockMode)
+        clockMode === "scrimmage" || showsPeriodClock(clockMode)
           ? `${Math.floor(Math.max(0, periodClock) / 60)}:${String(Math.floor(Math.max(0, periodClock) % 60)).padStart(2, "0")}`
           : null,
     };
@@ -1004,9 +1004,11 @@ function Jumbotron() {
       ticker: world.time,
       goal: lit,
       clock:
-        showsPeriodClock(clockMode)
-          ? `${periodOrdinal(period).toUpperCase()}  ${Math.floor(Math.max(0, periodClock) / 60)}:${String(Math.floor(Math.max(0, periodClock) % 60)).padStart(2, "0")}`
-          : "—",
+        clockMode === "scrimmage"
+          ? `${Math.floor(Math.max(0, periodClock) / 60)}:${String(Math.floor(Math.max(0, periodClock) % 60)).padStart(2, "0")}`
+          : showsPeriodClock(clockMode)
+            ? `${periodOrdinal(period).toUpperCase()}  ${Math.floor(Math.max(0, periodClock) / 60)}:${String(Math.floor(Math.max(0, periodClock) % 60)).padStart(2, "0")}`
+            : "—",
       puckX: replay?.puckX ?? world.puck.x,
       puckZ: replay?.puckZ ?? world.puck.z,
       players: replay?.players ?? world.skaters.map((s) => ({ x: s.x, z: s.z, home: s.side === "home" })),

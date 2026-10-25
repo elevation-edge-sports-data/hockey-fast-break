@@ -45,7 +45,7 @@ const input = await server.ssrLoadModule("/src/game/input.ts");
 const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
-const { resetWorld, stepSim, world, rageDraw, checkedCyclePose, defendDir, installControlsProbe, armStickRage, stepRagePreview } = sim;
+const { resetWorld, stepSim, world, rageDraw, checkedCyclePose, defendDir, installControlsProbe, armStickRage, stepRagePreview, beginPauseReplay, stopPauseReplay } = sim;
 const { GOAL_LINE_X } = rink;
 const { inferNamedPose } = poses;
 const { useGame } = store;
@@ -339,21 +339,25 @@ test("CPU goal: one home teammate rages and the user does not", () => {
   assert.equal(user.smashKind, 0);
 });
 
-test("practice user goal: the CPU goalie scoops, then holds goalie rage 1", () => {
+test("practice user goal: goalie rage 1, rage 2, then upright", () => {
   sheet("practice");
   assert.equal(world.skaters.filter((s) => s.side === "away" && s.kind !== "goalie").length, 0);
   score(world.homeAttack);
   const g = goalie("away");
   assert.ok(g);
-  seconds(0.4);
+  seconds(1.0);
   assert.equal(g.smashKind, 0);
-  assert.equal(g.smashHit, 0);
-  assert.ok(g.coverPose > 0.3);
-  seconds(2.2);
+  assert.notEqual(inferNamedPose(g, g.id), "goalieRage1");
+  assert.notEqual(inferNamedPose(g, g.id), "goalieRage2");
+  seconds(0.62);
+  assert.equal(inferNamedPose(g, g.id), "goalieRage1");
+  seconds(1);
   assert.equal(g.smashKind, 0);
   assert.equal(g.smash, 0);
   assert.equal(g.smashHit, 0);
-  assert.equal(inferNamedPose(g, g.id), "goalieRage1");
+  assert.equal(inferNamedPose(g, g.id), "goalieRage2");
+  seconds(1);
+  assert.equal(inferNamedPose(g, g.id), "goalieUpright");
   assert.equal(stickRagers("away").length, 0);
   assert.equal(stickRagers("home").length, 0);
 });
@@ -400,6 +404,70 @@ test("scrimmage knockdown: the other team rages without a goalie", () => {
   } finally {
     Math.random = orig;
   }
+});
+
+test("scored-on goalie settles on a saved stance, not the pad splay", () => {
+  sheet("game");
+  score(-world.homeAttack);
+  seconds(2.4);
+  const g = goalie("home");
+  assert.ok(g);
+  assert.equal(g.smashKind, 0);
+  assert.ok(stickRagers("home").length > 0);
+  const pose = inferNamedPose(g, g.id);
+  assert.notEqual(pose, null);
+  assert.notEqual(pose, "goalieRage1");
+  assert.notEqual(pose, "goalieRage2");
+  assert.ok(
+    pose === "goalieCover" ||
+      pose === "goalieButterfly" ||
+      pose === "goalieMid" ||
+      pose === "goalieUpright" ||
+      pose === "goaliePerimeter",
+    `pose ${pose} cover ${g.coverPose}`,
+  );
+});
+
+function poseAtReplay(g, t) {
+  world.replayPlaying = false;
+  world.replayT = t;
+  stepSim(DT);
+  return inferNamedPose(g, g.id);
+}
+
+test("replay shows goalie rage 1, rage 2, then upright only after the goal", () => {
+  sheet("practice");
+  world.puck.vx = 6;
+  world.puck.vz = 1.2;
+  seconds(0.5);
+  const g = goalie("away");
+  assert.ok(g);
+  assert.notEqual(inferNamedPose(g, g.id), "goalieRage1");
+  score(world.homeAttack);
+  seconds(3.6);
+  assert.equal(world.whistle, "goal");
+  assert.equal(inferNamedPose(g, g.id), "goalieUpright");
+  useGame.getState().setPaused(true);
+  assert.equal(beginPauseReplay(), true);
+  assert.equal(world.whistle, "goal");
+  const early = poseAtReplay(g, 0);
+  assert.notEqual(early, "goalieRage1");
+  assert.notEqual(early, "goalieRage2");
+  const maxT = globalThis.window.__controlsTest.getReplay().maxT;
+  const seen = [];
+  for (let t = 0; t <= maxT + 1e-6; t += 0.05) seen.push(poseAtReplay(g, t));
+  const i1 = seen.indexOf("goalieRage1");
+  const i2 = seen.indexOf("goalieRage2");
+  const iUp = seen.findIndex((p, i) => i > i2 && p === "goalieUpright");
+  assert.ok(i1 > 0, "rage 1 never appeared");
+  assert.ok(i2 > i1, "rage 2 did not follow rage 1");
+  assert.ok(iUp > i2, "upright did not follow rage 2");
+  assert.ok(seen.slice(0, i1).every((p) => p !== "goalieRage1" && p !== "goalieRage2"));
+  const rage1n = seen.filter((p) => p === "goalieRage1").length;
+  const rage2n = seen.filter((p) => p === "goalieRage2").length;
+  assert.ok(rage1n >= 16 && rage1n <= 24, `rage 1 samples ${rage1n}`);
+  assert.ok(rage2n >= 16 && rage2n <= 24, `rage 2 samples ${rage2n}`);
+  stopPauseReplay();
 });
 
 test("held rage1 and goalieRage1 do not advance the preview clock", () => {

@@ -93,7 +93,7 @@ const leak = PRIVATE_LEAKS.find((token) => pub.js.includes(token));
 if (leak) {
   throw new Error(`pack-galleries: public bundle references the private gallery (${leak})`);
 }
-for (const token of ["goalieUpright", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGloveSave", "goalieDivingGloveSave", "goalieProtectLeft", "goalieProtectRight", "goalieDivingStickSave", "goalieGetUp", "backSkate", "divePoke", "speedPuckLeft", "speedPuckRight", "wristFollow", "slapFollow", "backhandFollow", "snapFollow", "shoulderCheck1", "shoulderCheck2", "autoDeke1", "autoDeke2"]) {
+for (const token of ["goalieUpright", "goalieUprightGlove", "goalieUprightBlocker", "goaliePokeCheck", "goaliePlayPuck1", "goaliePlayPuck2", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGloveSave", "goalieDivingGloveSave", "goalieProtectLeft", "goalieProtectRight", "goalieDivingStickSave", "goalieGetUp", "backSkate", "divePoke", "speedPuckLeft", "speedPuckRight", "wristFollow", "slapFollow", "backhandFollow", "snapFollow", "shoulderCheck1", "shoulderCheck2", "autoDeke1", "autoDeke2"]) {
   if (!pub.js.includes(token)) throw new Error(`pack-galleries: public bundle is missing ${token}`);
 }
 const publicHtml = page(
@@ -114,7 +114,7 @@ if (existsSync(fullSource)) {
     GALLERY_OUT: "dist-gallery-full",
   });
   const full = bundleFrom(fullDir);
-  for (const token of ["goalieBench", "goalieUpright", "bench", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGetUp", "goalieGloveSave", "goalieDivingGloveSave", "goalieDivingStickSave", "goalieProtectLeft", "goalieProtectRight", "backSkate", "divePoke", "speedPuckLeft", "speedPuckRight", "wristFollow", "slapFollow", "backhandFollow", "snapFollow", "shoulderCheck1", "shoulderCheck2", "autoDeke1", "autoDeke2"]) {
+  for (const token of ["goalieBench", "goalieUpright", "goalieUprightGlove", "goalieUprightBlocker", "goaliePokeCheck", "goaliePlayPuck1", "goaliePlayPuck2", "bench", "goalieRage", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGetUp", "goalieGloveSave", "goalieDivingGloveSave", "goalieDivingStickSave", "goalieProtectLeft", "goalieProtectRight", "backSkate", "divePoke", "speedPuckLeft", "speedPuckRight", "wristFollow", "slapFollow", "backhandFollow", "snapFollow", "shoulderCheck1", "shoulderCheck2", "autoDeke1", "autoDeke2"]) {
     if (!full.js.includes(token)) throw new Error(`pack-galleries: private bundle is missing ${token}`);
   }
   const cssBoot = `(function(){var s=document.createElement("style");s.textContent=${JSON.stringify(full.css)};document.head.appendChild(s);})();\n`;

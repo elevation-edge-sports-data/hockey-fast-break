@@ -48,7 +48,7 @@ test("the public editor can save idle and deke", async () => {
   const dir = mkdtempSync(join(tmpdir(), "hfb-pose-save-"));
   mkdirSync(join(dir, "src", "game"), { recursive: true });
   writeFileSync(join(dir, "src", "game", "poseOverrides.json"), "{}\n");
-  for (const poseName of ["coast", "puckPossess1", "puckPossess2", "forehandDeke", "backhandShot", "backhandDeke", "autoDeke1", "autoDeke2", "shoulderCheck1", "shoulderCheck2", "absorb", "knockout", "fight", "celebrate", "speedPuckLeft", "speedPuckRight", "recover", "bench", "goalieUpright", "goalieRage1", "goalieRage2", "rage1", "rage2", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGloveSave", "goalieDivingGloveSave", "goalieProtectLeft", "goalieProtectRight", "goalieDivingStickSave", "goalieGetUp", "backSkate", "divePoke", "wristFollow", "slapFollow", "backhandFollow", "snap", "snapFollow"]) {
+  for (const poseName of ["coast", "puckPossess1", "puckPossess2", "forehandDeke", "backhandShot", "backhandDeke", "autoDeke1", "autoDeke2", "shoulderCheck1", "shoulderCheck2", "absorb", "knockout", "fight", "celebrate", "speedPuckLeft", "speedPuckRight", "recover", "bench", "goalieUpright", "goalieUprightGlove", "goalieUprightBlocker", "goaliePokeCheck", "goaliePlayPuck1", "goaliePlayPuck2", "goalieRage1", "goalieRage2", "rage1", "rage2", "strideLeft", "strideRight", "goalieCover", "goalieBlockerSave", "goalieGloveSave", "goalieDivingGloveSave", "goalieProtectLeft", "goalieProtectRight", "goalieDivingStickSave", "goalieGetUp", "backSkate", "divePoke", "wristFollow", "slapFollow", "backhandFollow", "snap", "snapFollow"]) {
     const result = await saveAndRebuild(
       { poseName, joints: { body: [0.1, 0, 0] }, publicOnly: true },
       async () => {},

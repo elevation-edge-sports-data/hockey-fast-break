@@ -156,6 +156,44 @@ function speed() {
   return Math.hypot(s.vx, s.vz);
 }
 
+test("a goal whistle looks at the scorer, not the controlled skater", () => {
+  sheet();
+  park();
+  const u = user();
+  u.x = 0;
+  u.z = 0;
+  const mate = world.skaters.find((s) => s.side === "home" && s.id !== u.id && s.kind !== "goalie");
+  assert.ok(mate);
+  mate.x = 14;
+  mate.z = -6;
+  world.lastShooter = mate.id;
+  goal("home");
+  const look = whistleUserLook();
+  assert.ok(look);
+  assert.equal(look.x, mate.x);
+  assert.equal(look.z, mate.z);
+  assert.equal(look.y, 1.05);
+  assert.ok(Math.hypot(look.x - u.x, look.z - u.z) > 8);
+
+  world.lastShooter = u.id;
+  u.x = 3;
+  u.z = -2;
+  const own = whistleUserLook();
+  assert.ok(own);
+  assert.equal(own.x, u.x);
+  assert.equal(own.z, u.z);
+
+  const goalie = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  assert.ok(goalie);
+  goalie.x = -18;
+  goalie.z = 4;
+  world.lastShooter = goalie.id;
+  const gLook = whistleUserLook();
+  assert.ok(gLook);
+  assert.equal(gLook.x, goalie.x);
+  assert.equal(gLook.z, goalie.z);
+});
+
 test("holding B after either goal bursts, and a tap still skips", () => {
   for (const side of ["home", "away"]) {
     sheet();

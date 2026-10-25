@@ -357,7 +357,7 @@ test("the left stick aims and the right stick does not", () => {
   centerBlade();
   setInjectedAim(1, 0);
   setInjectedKeys(["KeyF"]);
-  step(2);
+  step(12);
   setInjectedKeys([]);
   step(1);
   const classic = world.puck.vz;
@@ -371,11 +371,11 @@ test("the left stick aims and the right stick does not", () => {
   centerBlade();
   setInjectedKeys([]);
   step(1);
-  assert.equal(world.lastShotKind, "wrist");
+  assert.equal(world.lastShotKind, "snap");
   assert.ok(Math.abs(world.puck.vz) < classic * 0.45, `stick x vz ${world.puck.vz}`);
 });
 
-test("X tap is a wrist, X hold is a slap, and a held backhand releases as a backhand", async () => {
+test("a tap under 0.1s is a snap, a long X hold is a slap, and a held backhand stays a backhand", async () => {
   fresh();
   setInjectedKeys(["KeyF"]);
   step(1);
@@ -383,7 +383,7 @@ test("X tap is a wrist, X hold is a slap, and a held backhand releases as a back
   setInjectedKeys([]);
   step(1);
   const tap = shotOf();
-  assert.equal(tap.kind, "wrist");
+  assert.equal(tap.kind, "snap");
   assert.equal(tap.slap, false);
   assert.ok(tap.mph >= 73 && tap.mph < 84, `tap ${tap.mph}`);
 
@@ -1179,7 +1179,7 @@ test("classic up on the right stick does not snap", () => {
   assert.equal(world.puck.owner, user().id);
   assert.equal(world.lastShotKind, null);
   setInjectedKeys(["KeyF"]);
-  step(1);
+  step(12);
   assert.equal(world.puck.owner, user().id);
   setInjectedKeys([]);
   step(1);

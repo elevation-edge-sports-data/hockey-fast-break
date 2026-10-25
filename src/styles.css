@@ -764,6 +764,27 @@ h2 {
   color: var(--color-muted);
 }
 
+.team-shots {
+  display: grid;
+  grid-template-columns: auto minmax(1.2rem, auto) minmax(1.2rem, auto);
+  column-gap: 0.55rem;
+  row-gap: 1px;
+  justify-content: end;
+  align-items: baseline;
+  font-family: var(--font-display);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.hud-stats .team-shots b {
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: right;
+  color: var(--color-foreground);
+}
+
 .uni-stripe {
   width: 12px;
   height: 22px;
@@ -1256,6 +1277,35 @@ h2 {
 
 .hud-release {
   text-transform: uppercase;
+}
+
+.shot-profile {
+  border-collapse: collapse;
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.shot-profile th,
+.shot-profile td {
+  padding: 0 0.28rem;
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.shot-profile thead th {
+  font-size: 0.58rem;
+  color: var(--color-accent);
+  font-weight: 500;
+}
+
+.shot-profile tbody th {
+  text-align: left;
+  padding-left: 0;
+  color: var(--color-foreground);
 }
 
 .charge-row {

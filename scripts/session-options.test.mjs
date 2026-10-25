@@ -88,6 +88,12 @@ test("scrimmage spawns a goalie only on the side that asked", () => {
   assert.equal(world.skaters.filter((s) => s.side === "home" && s.kind !== "goalie").length, 5);
 });
 
+function assertLivePractice() {
+  assert.equal(world.stoppage, false);
+  assert.equal(world.faceoff, false);
+  assert.equal(world.whistle, null);
+}
+
 test("practice gives a new puck after a goal and does not face off", () => {
   boot("practice", { g: 0, d: 0, o: 1 }, { g: 0, d: 0, o: 0 });
   const user = world.skaters[world.userId];
@@ -106,11 +112,82 @@ test("practice gives a new puck after a goal and does not face off", () => {
   world.puck.vz = 0;
   world.puck.vy = 0;
   for (let i = 0; i < 40 && useGame.getState().homeScore === 0; i++) stepSim(DT);
+  const scoredAt = world.time;
   assert.equal(useGame.getState().homeScore, 1);
-  assert.equal(world.stoppage, false);
-  assert.equal(world.faceoff, false);
-  assert.equal(world.whistle, null);
+  assertLivePractice();
+  assert.equal(world.puck.owner, null);
+  for (let i = 0; i < 27; i++) stepSim(DT);
+  assert.equal(world.puck.owner, null);
+  assert.ok(world.time - scoredAt < 0.5);
+  while (world.puck.owner === null && world.time - scoredAt < 0.7) stepSim(DT);
+  const waited = world.time - scoredAt;
+  assert.ok(waited >= 0.5 - 1e-4, `puck returned at ${waited}`);
+  assert.ok(waited < 0.55, `puck returned at ${waited}`);
   assert.equal(world.puck.owner, user.id);
+  assert.equal(useGame.getState().homeScore, 1);
+  assertLivePractice();
+});
+
+test("practice waits 0.5s, then gives a goalie goal to that goalie", () => {
+  boot("practice", { g: 1, d: 0, o: 1 }, { g: 0, d: 0, o: 0 });
+  const user = world.skaters[world.userId];
+  const goalie = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  assert.ok(goalie);
+  assert.equal(user.kind, "winger");
+  assert.notEqual(user.id, goalie.id);
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.puck.owner = null;
+  world.lastShooter = goalie.id;
+  world.goalieShot = "score";
+  world.puck.x = -GOAL_LINE_X + 0.05;
+  world.puck.z = 0;
+  world.puck.y = 0.042;
+  world.puck.vx = -1.5;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  for (let i = 0; i < 20 && useGame.getState().homeScore === 0; i++) stepSim(DT);
+  const scoredAt = world.time;
+  assert.equal(useGame.getState().homeScore, 1);
+  assertLivePractice();
+  assert.equal(world.puck.owner, null);
+  while (world.puck.owner === null && world.time - scoredAt < 0.7) stepSim(DT);
+  const waited = world.time - scoredAt;
+  assert.ok(waited >= 0.5 - 1e-4, `puck returned at ${waited}`);
+  assert.ok(waited < 0.55, `puck returned at ${waited}`);
+  assert.equal(world.puck.owner, goalie.id);
+  assert.notEqual(world.puck.owner, user.id);
+  assert.equal(useGame.getState().hasPuck, false);
+  assert.equal(useGame.getState().homeScore, 1);
+  assertLivePractice();
+});
+
+test("the corner reset keeps the away kit and a saved offsides choice", () => {
+  boot("practice", { g: 0, d: 0, o: 1 }, { g: 1, d: 0, o: 0 });
+  const ui = useGame.getState();
+  const away = (ui.homeKit + 1) % UNIFORMS.length;
+  ui.setAwayKit(away);
+  ui.setOffsides(false);
+  ui.applyCornerReset();
+  assert.equal(useGame.getState().awayKit, away);
+  assert.equal(useGame.getState().offsides, false);
+  assert.equal(useGame.getState().clockMode, "game");
+  assert.equal(localStorage.getItem("hfb-offsides"), "0");
+
+  ui.setOffsides(true);
+  ui.setClockMode("roller");
+  ui.applyCornerReset();
+  assert.equal(useGame.getState().awayKit, away);
+  assert.equal(useGame.getState().offsides, true);
+  assert.equal(useGame.getState().clockMode, "game");
+
+  localStorage.removeItem("hfb-offsides");
+  ui.setClockMode("practice");
+  assert.equal(useGame.getState().offsides, false);
+  ui.applyCornerReset();
+  assert.equal(useGame.getState().awayKit, away);
+  assert.equal(useGame.getState().clockMode, "game");
+  assert.equal(useGame.getState().offsides, true);
 });
 
 test("practice and scrimmage keep stepping with no user skaters", () => {

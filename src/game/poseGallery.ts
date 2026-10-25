@@ -41,14 +41,19 @@ export const PUBLIC_POSES = [
   "fight",
   "bench",
   "goalieUpright",
+  "goalieUprightGlove",
+  "goalieUprightBlocker",
   "goalieRage1",
   "goalieRage2",
   "goalieButterfly",
+  "goaliePokeCheck",
   "goalieMid",
   "goaliePerimeter",
   "goalieCheer",
   "goalieBench",
   "goaliePlay",
+  "goaliePlayPuck1",
+  "goaliePlayPuck2",
   "goalieCover",
   "goalieGloveSave",
   "goalieBlockerSave",
@@ -201,6 +206,8 @@ function goalieSkater(): Skater {
     gloveFlash: 0,
     backskate: false,
     stickPull: 0,
+    comX: 0,
+    comZ: 0,
   };
   world.skaters.push(g);
   return g;
@@ -289,9 +296,12 @@ export function holdShotFollow(s: Skater, kind: ShotKind = "wrist"): void {
 function publicGoalie(pose: PublicPoseId): boolean {
   return (
     pose === "goalieUpright" ||
+    pose === "goalieUprightGlove" ||
+    pose === "goalieUprightBlocker" ||
     pose === "goalieRage1" ||
     pose === "goalieRage2" ||
     pose === "goalieButterfly" ||
+    pose === "goaliePokeCheck" ||
     pose === "goalieGloveSave" ||
     pose === "goalieBlockerSave" ||
     pose === "goalieProtectLeft" ||
@@ -304,6 +314,8 @@ function publicGoalie(pose: PublicPoseId): boolean {
     pose === "goalieCheer" ||
     pose === "goalieBench" ||
     pose === "goaliePlay" ||
+    pose === "goaliePlayPuck1" ||
+    pose === "goaliePlayPuck2" ||
     pose === "goalieCover"
   );
 }
@@ -428,6 +440,8 @@ export function applyPose(pose: PublicPoseId): number {
     case "bench":
       break;
     case "goalieUpright":
+    case "goalieUprightGlove":
+    case "goalieUprightBlocker":
     case "goalieRage1":
     case "goalieRage2": {
       const end = defendDir(s.side) > 0 ? 1 : -1;
@@ -436,6 +450,7 @@ export function applyPose(pose: PublicPoseId): number {
       break;
     }
     case "goalieButterfly":
+    case "goaliePokeCheck":
     case "goalieGloveSave":
     case "goalieBlockerSave":
     case "goalieProtectLeft":
@@ -463,6 +478,8 @@ export function applyPose(pose: PublicPoseId): number {
     case "goalieBench":
       break;
     case "goaliePlay":
+    case "goaliePlayPuck1":
+    case "goaliePlayPuck2":
       ownPuck(s.id, 0.2, -0.95);
       break;
     case "goalieCover":

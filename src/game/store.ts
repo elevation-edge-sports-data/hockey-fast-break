@@ -11,6 +11,33 @@ export type ControlProfile = "classic" | "wings" | "stick";
 export type ShotKind = "wrist" | "snap" | "slap" | "backhand";
 export type HudRelease = ShotKind | "pass" | "saucer";
 
+/** One row of the practice shot profile. Attempts, shots on goal, and goals. */
+export type ShotTally = { attempts: number; onGoal: number; goals: number };
+export type PracticeShotProfile = Record<ShotKind, ShotTally>;
+export type TeamShotCounts = { attempts: number; onGoal: number };
+export type TeamShots = { home: TeamShotCounts; away: TeamShotCounts };
+
+export function emptyTeamShots(): TeamShots {
+  return {
+    home: { attempts: 0, onGoal: 0 },
+    away: { attempts: 0, onGoal: 0 },
+  };
+}
+
+export function emptyPracticeShots(): PracticeShotProfile {
+  return {
+    backhand: { attempts: 0, onGoal: 0, goals: 0 },
+    snap: { attempts: 0, onGoal: 0, goals: 0 },
+    wrist: { attempts: 0, onGoal: 0, goals: 0 },
+    slap: { attempts: 0, onGoal: 0, goals: 0 },
+  };
+}
+
+/** A released wrist, snap, slap, or backhand. Passes, saucers, and unlabeled clears are not attempts. */
+export function isShotAttemptKind(kind: HudRelease | null): kind is ShotKind {
+  return kind === "wrist" || kind === "snap" || kind === "slap" || kind === "backhand";
+}
+
 export function hudReleaseName(kind: HudRelease | null): string {
   if (kind === "slap") return "slap shot";
   if (kind === "snap") return "snap shot";
@@ -95,6 +122,10 @@ type GameUi = {
   chaos: boolean;
   speed: number;
   shotKind: HudRelease | null;
+  /** Practice only. Wrist, snap, slap, and backhand attempts, shots on goal, and goals. */
+  practiceShots: PracticeShotProfile;
+  /** Both teams. Shot attempts and shots on goal for the scoreboard. */
+  teamShots: TeamShots;
   quality: "high" | "low";
   arenaLook: ArenaLook;
   pad: "Keyboard" | "Gamepad";
@@ -103,10 +134,10 @@ type GameUi = {
   chargeKind: "pass" | "saucer" | "shot" | null;
   /** 0–1 sauce height while Select is held. 0 hides nothing by itself; the saucer kind shows the meter. */
   sauce: number;
-  /** Live charge label: Pass, Saucer, Clear, Wrist, Slap, or Backhand. Not the previous release. */
+  /** Live charge label: Pass, Saucer, Clear, Snap, Wrist, Slap, Shot, or Backhand. Not the previous release. */
   chargeWind: string | null;
-  /** Shot-meter tick, as a fraction of the full windup. Null on passes and backhands. */
-  chargeMark: number | null;
+  /** Shot-meter ticks, fractions of the full windup. Empty when the bar has no sections. */
+  chargeMark: readonly number[] | null;
   homeScore: number;
   awayScore: number;
   whistle: WhistleKind;
@@ -155,6 +186,7 @@ type GameUi = {
   setAwayKit: (id: number) => void;
   rerollAwayKit: () => void;
   rerollClockMode: () => void;
+  applyCornerReset: () => void;
   setHomeLineup: (l: Lineup) => void;
   setAwayLineup: (l: Lineup) => void;
   setLiveHome: (l: Lineup) => void;
@@ -164,6 +196,10 @@ type GameUi = {
   setChaos: (v: boolean) => void;
   setSpeed: (n: number) => void;
   setShotKind: (k: HudRelease | null) => void;
+  notePracticeShot: (kind: ShotKind, field: keyof ShotTally) => void;
+  resetPracticeShots: () => void;
+  noteTeamShot: (side: "home" | "away", field: keyof TeamShotCounts) => void;
+  resetTeamShots: () => void;
   setQuality: (q: "high" | "low") => void;
   setArenaLook: (v: ArenaLook) => void;
   setPad: (s: "Keyboard" | "Gamepad") => void;
@@ -173,7 +209,7 @@ type GameUi = {
     kind: "pass" | "saucer" | "shot" | null,
     sauce?: number,
     wind?: string | null,
-    mark?: number | null,
+    mark?: readonly number[] | null,
   ) => void;
   setHomeScore: (n: number) => void;
   setAwayScore: (n: number) => void;
@@ -531,6 +567,8 @@ export const useGame = create<GameUi>((set, get) => ({
   chaos: loadFlag("hfb-chaos", false),
   speed: 0,
   shotKind: null,
+  practiceShots: emptyPracticeShots(),
+  teamShots: emptyTeamShots(),
   quality: "high",
   arenaLook: loadLook(),
   pad: "Keyboard",
@@ -594,6 +632,18 @@ export const useGame = create<GameUi>((set, get) => ({
   rerollClockMode: () => {
     get().setClockMode(rollClockMode());
   },
+  applyCornerReset: () => {
+    let saved: boolean | null = null;
+    try {
+      const raw = localStorage.getItem("hfb-offsides");
+      if (raw === "0") saved = false;
+      else if (raw === "1") saved = true;
+    } catch {
+      /* ignore */
+    }
+    get().rerollClockMode();
+    if (saved !== null) get().setOffsides(saved);
+  },
   rerollAwayKit: () => {
     const home = get().homeKit;
     const away = get().awayKit;
@@ -622,6 +672,29 @@ export const useGame = create<GameUi>((set, get) => ({
   },
   setSpeed: (n) => set({ speed: n }),
   setShotKind: (k) => set({ shotKind: k }),
+  notePracticeShot: (kind, field) => {
+    if (get().clockMode !== "practice") return;
+    const cur = get().practiceShots;
+    const line = cur[kind];
+    set({
+      practiceShots: {
+        ...cur,
+        [kind]: { ...line, [field]: line[field] + 1 },
+      },
+    });
+  },
+  resetPracticeShots: () => set({ practiceShots: emptyPracticeShots() }),
+  noteTeamShot: (side, field) => {
+    const cur = get().teamShots;
+    const line = cur[side];
+    set({
+      teamShots: {
+        ...cur,
+        [side]: { ...line, [field]: line[field] + 1 },
+      },
+    });
+  },
+  resetTeamShots: () => set({ teamShots: emptyTeamShots() }),
   setQuality: (q) => set({ quality: q }),
   setArenaLook: (v) => {
     saveLook(v);
@@ -653,7 +726,9 @@ export const useGame = create<GameUi>((set, get) => ({
         : !quiet(m) && quiet(prev)
           ? loadFlag("hfb-power-play", true)
           : undefined;
+    const enterPractice = m === "practice" && prev !== "practice";
     set({
+      ...(enterPractice ? { practiceShots: emptyPracticeShots() } : {}),
       clockMode: m,
       homeLineup: { ...lu.home },
       awayLineup: { ...lu.away },
@@ -664,7 +739,7 @@ export const useGame = create<GameUi>((set, get) => ({
       periodBreak: 0,
       period: 1,
       periodClock:
-        m === "drill" ? 60 : m === "roller" ? ROLLER_CLOCK_DISPLAY_MINUTES * 60 : GAME_CLOCK_DISPLAY_MINUTES * 60,
+        m === "drill" ? 60 : m === "scrimmage" ? 0 : m === "roller" ? ROLLER_CLOCK_DISPLAY_MINUTES * 60 : GAME_CLOCK_DISPLAY_MINUTES * 60,
       drillScore: 0,
       offsides: m === "game",
       ...(powerPlay === undefined ? {} : { powerPlay }),

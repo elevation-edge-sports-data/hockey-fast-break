@@ -615,7 +615,7 @@ export function poseGoalieButterflyLimbs(
  * the head finishes under mid. Thighs stay on the sockets.
  * Skates tilt up off the ice. The pad is the contact.
  */
-const BUTTERFLY_STANCE_DROP = -0.2;
+export const BUTTERFLY_STANCE_DROP = -0.2;
 /** Knee offset from the hip before it is normalized onto the thigh. x is inward. */
 const BUTTERFLY_STANCE_KNEE = { x: -0.11, y: 0.14, z: 0.46 };
 /** Boot toe, root frame. y > 0 lifts the toe so the blade is not flat. */

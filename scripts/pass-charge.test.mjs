@@ -44,11 +44,13 @@ const server = await createServer({
 });
 
 const sim = await server.ssrLoadModule("/src/game/sim.ts");
+const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
 const { resetWorld, stepSim, world, stickBlade } = sim;
+const { inferNamedPose } = poses;
 const { useGame, hudReleaseName } = store;
 const { setInjectedKeys, setInjectedAim, setInjectedStart } = input;
 const { GOAL_H, GOAL_LINE_X, BOARD_H, GLASS_H, RINK_W, RINK_L, BLUE_X } = rink;
@@ -582,31 +584,44 @@ test("B cancels a charged pass and does not release it", () => {
   assert.equal(world.puck.owner, user().id);
 });
 
-test("shot charge fills continuously and the label previews wrist then slap", () => {
+test("shot charge fills continuously and the label previews snap, wrist, then slap", () => {
   fresh();
   setInjectedKeys(["KeyF"]);
   step(2);
   setInjectedKeys([]);
   step(1);
-  assert.equal(useGame.getState().shotKind, "wrist");
+  assert.equal(useGame.getState().shotKind, "snap");
 
   settleUser();
   setInjectedKeys(["KeyF"]);
-  step(8);
+  step(3);
   const brief = useGame.getState();
-  assert.equal(brief.shotKind, "wrist");
   assert.equal(brief.chargeKind, "shot");
-  assert.equal(brief.chargeWind, "Wrist");
-  assert.equal(brief.chargeMark, 0.5);
-  assert.ok(brief.charge < 0.5, `brief charge ${brief.charge}`);
-  assert.ok(Math.abs(brief.charge - 8 / 60 / 1.5) < 0.04, `brief fill ${brief.charge}`);
+  assert.equal(brief.chargeWind, "Snap");
+  assert.deepEqual(brief.chargeMark, [0.1 / 1.5, 0.5]);
+  assert.ok(brief.charge < 0.1 / 1.5, `snap fill ${brief.charge}`);
 
-  step(42);
+  step(9);
+  const mid = useGame.getState();
+  assert.equal(mid.chargeWind, "Wrist");
+  assert.ok(mid.charge >= 0.1 / 1.5 && mid.charge < 0.5, `wrist fill ${mid.charge}`);
+
+  step(40);
   const loaded = useGame.getState();
-  assert.equal(loaded.shotKind, "wrist");
   assert.equal(loaded.chargeWind, "Slap");
+  assert.deepEqual(loaded.chargeMark, [0.1 / 1.5, 0.5]);
   assert.ok(loaded.charge >= 0.5, `slap fill ${loaded.charge}`);
   assert.equal(world.puck.owner, user().id);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(useGame.getState().shotKind, "slap");
+
+  settleUser();
+  setInjectedKeys(["KeyF"]);
+  step(12);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(useGame.getState().shotKind, "wrist");
 
   fresh();
   useGame.getState().setControlProfile("stick");
@@ -619,6 +634,139 @@ test("shot charge fills continuously and the label previews wrist then slap", ()
   assert.equal(back.chargeWind, "Backhand");
   assert.equal(back.chargeMark, null);
   assert.equal(world.puck.owner, user().id);
+});
+
+test("a goalie shot charge is one bar with no tick", () => {
+  const g = ownGoalie();
+  setInjectedKeys(["KeyF"]);
+  step(8);
+  const brief = useGame.getState();
+  assert.equal(brief.chargeKind, "shot");
+  assert.equal(brief.chargeWind, "Shot");
+  assert.equal(brief.chargeMark, null);
+  assert.ok(Math.abs(brief.charge - 8 / 60 / 1.5) < 0.04, `goalie fill ${brief.charge}`);
+  assert.equal(world.puck.owner, g.id);
+  step(42);
+  const full = useGame.getState();
+  assert.equal(full.chargeWind, "Shot");
+  assert.equal(full.chargeMark, null);
+  assert.ok(full.charge >= 0.5, `goalie hold ${full.charge}`);
+  assert.equal(world.puck.owner, g.id);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(useGame.getState().chargeKind, null);
+  assert.equal(useGame.getState().charge, 0);
+});
+
+test("X while the home goalie has the puck shows the same one-section meter", () => {
+  fresh();
+  const ui = useGame.getState();
+  ui.setClockMode("roller");
+  ui.setHomeLineup({ g: 1, d: 1, o: 3 });
+  ui.setAwayLineup({ g: 1, d: 1, o: 3 });
+  resetWorld();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  world.periodOver = false;
+  const g = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  assert.ok(g);
+  assert.notEqual(world.userId, g.id);
+  g.vx = 0;
+  g.vz = 0;
+  g.stun = 0;
+  g.windup = 0;
+  g.coverPose = 0;
+  world.coverT = 0;
+  world.puck.owner = g.id;
+  world.puck.x = g.x;
+  world.puck.z = g.z;
+  world.puck.y = 0.042;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastPass = -10;
+  world.lastShoot = -10;
+  world.shotWindupT = 0;
+  world.windupCancel = false;
+  setInjectedKeys(["KeyF"]);
+  step(8);
+  const brief = useGame.getState();
+  assert.equal(world.userId === g.id, false);
+  assert.equal(brief.chargeKind, "shot");
+  assert.equal(brief.chargeWind, "Shot");
+  assert.equal(brief.chargeMark, null);
+  assert.ok(Math.abs(brief.charge - 8 / 60 / 1.5) < 0.04, `direct fill ${brief.charge}`);
+  assert.equal(world.puck.owner, g.id);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(useGame.getState().chargeKind, null);
+});
+
+test("a goalie shot on the mouth counts on goal and a wide miss does not", () => {
+  const g = ownGoalie();
+  const side = g.side;
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(useGame.getState().teamShots[side].attempts, 1);
+  const launched = useGame.getState().teamShots[side].onGoal;
+  world.puck.owner = null;
+  world.puck.x = 0;
+  world.puck.z = 0;
+  world.puck.y = 0.2;
+  world.puck.vx = 0;
+  world.puck.vz = 28;
+  world.puck.vy = 0;
+  step(25);
+  assert.equal(useGame.getState().teamShots[side].onGoal, launched);
+  assert.equal(launched, 0, "the release frame is not already on goal");
+
+  const g2 = ownGoalie();
+  const attack2 = g2.side === "home" ? world.homeAttack : -world.homeAttack;
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  setInjectedKeys([]);
+  step(1);
+  const mouth = attack2 * GOAL_LINE_X;
+  for (const s of world.skaters) {
+    if (s.kind !== "goalie" || s.id === g2.id) continue;
+    s.x = 0;
+    s.z = 18;
+    s.vx = 0;
+    s.vz = 0;
+  }
+  world.puck.owner = null;
+  world.puck.x = mouth - attack2 * 0.35;
+  world.puck.z = 0;
+  world.puck.y = 0.3;
+  world.puck.vx = attack2 * 14;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  step(40);
+  assert.equal(useGame.getState().teamShots[g2.side].attempts, 1);
+  assert.equal(useGame.getState().teamShots[g2.side].onGoal, 1);
+});
+
+test("a goalie shot counts as an attempt and a goalie pass does not", () => {
+  const g = ownGoalie();
+  const side = g.side;
+  setInjectedKeys(["KeyF"]);
+  step(2);
+  setInjectedKeys([]);
+  step(1);
+  const shots = useGame.getState().teamShots;
+  assert.equal(shots[side].attempts, 1, "goalie shot attempt");
+  assert.equal(shots[side === "home" ? "away" : "home"].attempts, 0);
+
+  const g2 = ownGoalie();
+  pressPass();
+  releasePass();
+  assert.equal(world.lastPasser, g2.id);
+  assert.equal(useGame.getState().teamShots[g2.side].attempts, 0, "goalie pass is not a shot");
+  assert.equal(useGame.getState().shotKind, "pass");
 });
 
 function ownGoalie() {
@@ -892,6 +1040,139 @@ test("full sauce landing follows the zone, and the ice takes speed with charge",
   }
   assert.ok(tapSeen, `tap sauce never landed, peak ${tapAir}`);
   assert.ok(tapKeep > 0.9, `tap keep ${tapKeep}`);
+});
+
+test("a cpu goalie saucer arcs up and keeps its pass speed", () => {
+  function release(withMate) {
+    fresh();
+    useGame.getState().setClockMode("game");
+    useGame.getState().setOffsides(false);
+    resetWorld();
+    world.homeAttack = 1;
+    resetWorld({ keepScore: true });
+    world.faceoff = false;
+    world.faceoffPhase = "live";
+    world.stoppage = false;
+    world.whistle = null;
+    world.periodOver = false;
+    world.replay = false;
+    const g = world.skaters.find((s) => s.kind === "goalie" && s.side === "away");
+    assert.ok(g);
+    g.x = GOAL_LINE_X - 1.1;
+    g.z = 0;
+    g.vx = 0;
+    g.vz = 0;
+    g.yaw = Math.PI / 2;
+    g.stun = 0;
+    g.coverPose = 0;
+    g.gloveFlash = 0;
+    world.userId = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie").id;
+    world.puck.owner = g.id;
+    world.puck.x = g.x;
+    world.puck.z = 0;
+    world.puck.y = 0.042;
+    world.puck.vx = 0;
+    world.puck.vz = 0;
+    world.puck.vy = 0;
+    world.coverT = 0.8;
+    world.lastPass = -10;
+    world.lastShoot = -10;
+    world.faceoffA = false;
+    let mateParked = false;
+    for (const s of world.skaters) {
+      if (s.id === g.id) continue;
+      if (withMate && !mateParked && s.side === "away" && s.kind !== "goalie") {
+        s.x = g.x - 12;
+        s.z = 2;
+        mateParked = true;
+      } else {
+        s.x = -58;
+        s.z = (s.id % 7) * 3 - 9;
+      }
+      s.vx = 0;
+      s.vz = 0;
+    }
+    const real = Math.random;
+    Math.random = () => 0.05;
+    try {
+      step(1);
+    } finally {
+      Math.random = real;
+    }
+  }
+  release(true);
+  assert.equal(useGame.getState().shotKind, "saucer");
+  assert.ok(world.puck.vy > 8, `mate saucer vy ${world.puck.vy}`);
+  const mateMph = Math.hypot(world.puck.vx, world.puck.vz) * 2.23694;
+  assert.ok(mateMph < 55, `mate saucer speed ${mateMph}`);
+  release(false);
+  assert.equal(useGame.getState().shotKind, "saucer");
+  assert.ok(world.puck.vy > 8, `open saucer vy ${world.puck.vy}`);
+});
+
+test("a goalie winds up on play puck 1 and releases on play puck 2", () => {
+  const g = ownGoalie();
+  parkOthers();
+  step(1);
+  assert.equal(world.puck.owner, g.id);
+  assert.equal(inferNamedPose(g, g.id), "goaliePlay");
+
+  pressPass();
+  assert.equal(world.puck.owner, g.id);
+  assert.equal(inferNamedPose(g, g.id), "goaliePlayPuck1");
+  releasePass();
+  assert.equal(world.puck.owner, null);
+  assert.equal(inferNamedPose(g, g.id), "goaliePlayPuck2");
+  step(14);
+  assert.notEqual(inferNamedPose(g, g.id), "goaliePlayPuck2");
+
+  const g2 = ownGoalie();
+  parkOthers();
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  assert.equal(world.puck.owner, g2.id);
+  assert.equal(inferNamedPose(g2, g2.id), "goaliePlayPuck1");
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(world.puck.owner, null);
+  assert.equal(inferNamedPose(g2, g2.id), "goaliePlayPuck2");
+
+  const g3 = ownGoalie();
+  parkOthers();
+  holdSelect(true);
+  step(1);
+  clockMs += 80;
+  step(1);
+  assert.equal(world.puck.owner, g3.id);
+  assert.equal(inferNamedPose(g3, g3.id), "goaliePlayPuck1");
+  holdSelect(false);
+  step(1);
+  assert.equal(world.puck.owner, null);
+  assert.equal(inferNamedPose(g3, g3.id), "goaliePlayPuck2");
+});
+
+test("a goalie A release is an ice pass on the first release", () => {
+  const g = ownGoalie();
+  g.x = GOAL_LINE_X - 1.1;
+  g.z = 0.4;
+  world.puck.x = g.x;
+  world.puck.z = g.z;
+  world.coverT = 0.08;
+  for (const s of world.skaters) {
+    if (s.id === g.id) continue;
+    s.x = -58;
+    s.z = (s.id % 7) * 3 - 9;
+    s.vx = 0;
+    s.vz = 0;
+  }
+  pressPass();
+  assert.equal(world.puck.owner, g.id);
+  releasePass();
+  assert.equal(world.puck.owner, null);
+  assert.equal(world.lastPasser, g.id);
+  assert.ok(world.puck.vy < 0.35, `ice pass loft ${world.puck.vy}`);
+  assert.equal(useGame.getState().shotKind, "pass");
+  assert.ok(Math.hypot(world.puck.vx, world.puck.vz) > 8, "the pass left the stick");
 });
 
 test("a goalie pass is 45 to 85 mph and a goalie shot is 55 to 87", () => {

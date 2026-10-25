@@ -44,8 +44,27 @@ const store = await server.ssrLoadModule("/src/game/store.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
 const { GOALIE_STICK_LEN, GOALIE_Z, GOALIE_SOCKET_X, GOALIE_SOCKET_Y, poseGoaliePlay, poseGoalieZLimbs } = stance;
-const { goalieButterflyPose, goaliePlaysPuck, goalieShotSave, goalieZKind, resetWorld, stepSim, world } =
-  sim;
+const {
+  defendDir,
+  deflectIronIn,
+  faceYaw,
+  goalieBlockerHand,
+  goalieButterflyPose,
+  goaliePokeCheckPose,
+  goaliePlaysPuck,
+  goalieShotSave,
+  goalieZKind,
+  ironDefensePose,
+  ironWasWatched,
+  planBlockerRebound,
+  planLowStickRebound,
+  resetWorld,
+  stepSim,
+  stickBlade,
+  world,
+} = sim;
+const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
+const { inferNamedPose } = poses;
 const { useGame } = store;
 const { FACEOFF_EZ_X, FACEOFF_R, GOAL_H, GOAL_LINE_X, GOAL_PIPE_R, GOAL_W } = rink;
 
@@ -760,17 +779,24 @@ function vyAimedAtPost(x, z, vx, end) {
   return best.vy;
 }
 
-function inSaveStance(g) {
-  return goalieButterflyPose(g) || goalieZKind(g) === "butterfly";
+const IRON_POSES = new Set([
+  "goalieUpright",
+  "goalieGloveSave",
+  "goalieBlockerSave",
+  "goalieUprightGlove",
+  "goalieUprightBlocker",
+]);
+
+function playingIron(g) {
+  return IRON_POSES.has(ironDefensePose(g)) && goalieZKind(g) !== "butterfly";
 }
 
 function placeLongShot(end, z, vy) {
   live();
   const mouth = end * GOAL_LINE_X;
-  const g = goalie(end > 0 ? "away" : "home");
-  const shooter = world.skaters.find(
-    (s) => s.side === (end > 0 ? "home" : "away") && s.kind !== "goalie",
-  );
+  const g = world.skaters.find((s) => s.kind === "goalie" && defendDir(s.side) === end);
+  assert.ok(g);
+  const shooter = world.skaters.find((s) => s.side !== g.side && s.kind !== "goalie");
   assert.ok(shooter);
   world.userId = shooter.id;
   g.x = mouth - end * 0.9;
@@ -822,6 +848,7 @@ test("a long shot at the crossbar leaves idle and plays the save", () => {
     let leftIdle = false;
     let challenged = false;
     let stillSaving = false;
+    let pose = null;
     for (let i = 0; i < 200; i++) {
       const along = (mouth - world.puck.x) * end;
       if (along < 0.35) break;
@@ -829,13 +856,23 @@ test("a long shot at the crossbar leaves idle and plays the save", () => {
       stepSim(1 / 60);
       const alongAfter = (mouth - world.puck.x) * end;
       const toward = (g.x - x0) * end;
-      if (inSaveStance(g)) leftIdle = true;
+      const now = ironDefensePose(g);
+      if (now) pose = now;
+      if (playingIron(g)) leftIdle = true;
       if (toward > 0.2) challenged = true;
-      if (alongAfter < 4 && alongAfter > 0.2 && inSaveStance(g) && g.lean > 0.22 && toward > 0.2) {
+      if (
+        alongAfter < 4 &&
+        alongAfter > 0.2 &&
+        now === "goalieUpright" &&
+        goalieButterflyPose(g) === false &&
+        g.lean > 0.22 &&
+        toward > 0.2
+      ) {
         stillSaving = true;
       }
       if (alongAfter < 0.2) break;
     }
+    assert.equal(pose, "goalieUpright", `end ${end} center bar pose`);
     assert.equal(leftIdle, true, `end ${end} stayed idle`);
     assert.equal(challenged, true, `end ${end} watched from the crease`);
     assert.equal(stillSaving, true, `end ${end} dropped the save before the puck arrived`);
@@ -892,7 +929,7 @@ test("a long shot at the post still slides off the crease", () => {
         if (along < 0.35) break;
         parkExcept(g.id);
         stepSim(1 / 60);
-        if (inSaveStance(g)) leftIdle = true;
+        if (playingIron(g)) leftIdle = true;
         if ((g.z - 0) * zSign > 0.25 && g.lean > 0.22) slid = true;
         if ((mouth - world.puck.x) * end < 0.2) break;
       }
@@ -900,4 +937,190 @@ test("a long shot at the post still slides off the crease", () => {
       assert.equal(slid, true, `end ${end} post ${zSign} did not slide`);
     }
   }
+});
+
+test("a goalie standing off the iron is watching", () => {
+  live();
+  const end = defendDir("home");
+  const g = goalie("home");
+  const mouth = end * GOAL_LINE_X;
+  g.x = mouth - end * 0.9;
+  g.z = 0;
+  g.lean = 0.08;
+  g.dive = 0;
+  g.tumble = 0;
+  g.struck = 0;
+  const zBar = (GOAL_W / 2) * 0.8;
+  assert.equal(ironWasWatched(end, "bar", zBar), true);
+  g.x = mouth - end * 0.62;
+  g.z = Math.max(-(GOAL_W / 2 - 0.2), Math.min(GOAL_W / 2 - 0.2, zBar));
+  g.lean = 0.26;
+  assert.equal(ironWasWatched(end, "bar", zBar), false);
+});
+
+test("a long blocker save is placed and a zone one is not", () => {
+  live();
+  const end = defendDir("home") >= 0 ? 1 : -1;
+  const g = goalie("home");
+  const mouth = end * GOAL_LINE_X;
+  g.x = mouth - end * 1.05;
+  g.z = 0;
+  g.yaw = faceYaw("home");
+  const mate = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie");
+  const foe = world.skaters.find((s) => s.side !== "home" && s.kind !== "goalie");
+  assert.ok(mate && foe);
+  mate.x = g.x - end * 6;
+  mate.z = 2.2;
+  foe.x = g.x - end * 4.5;
+  foe.z = -3.2;
+  for (const s of world.skaters) {
+    if (s.id === g.id || s.id === mate.id || s.id === foe.id) continue;
+    s.x = -end * 40;
+    s.z = 18;
+  }
+  world.lastShotDist = 28;
+  const placed = planBlockerRebound(g, g.x, 0.45, g.z + 0.35, 0.15);
+  assert.equal(placed.controlled, true);
+  const toMate = (mate.x - g.x) * placed.vx + (mate.z - g.z) * placed.vz;
+  assert.ok(toMate > 0, "a long blocker save should go toward a teammate");
+  assert.ok(placed.vy < 1.3, `placed rebound loft ${placed.vy}`);
+  const away = planBlockerRebound(g, g.x, 0.45, g.z + 0.35, 0.9);
+  assert.equal(away.controlled, true);
+  assert.ok(away.vz * (foe.z - g.z) < 0, "a long blocker save should leave the opponent");
+  assert.ok(away.vy < 1.3);
+
+  world.lastShotDist = 8;
+  const endGlass = planBlockerRebound(g, g.x, 0.45, g.z + 0.35, 0.05);
+  const sideGlass = planBlockerRebound(g, g.x, 0.45, g.z + 0.35, 0.25);
+  const corner = planBlockerRebound(g, g.x, 0.45, g.z + 0.35, 0.42);
+  const over = planBlockerRebound(g, g.x, 0.45, g.z + 0.35, 0.62);
+  const fromMate = planBlockerRebound(g, g.x, 0.45, g.z + 0.35, 0.78);
+  const atFoe = planBlockerRebound(g, g.x, 0.45, g.z + 0.35, 0.95);
+  for (const plan of [endGlass, sideGlass, corner, over, fromMate, atFoe]) {
+    assert.equal(plan.controlled, false);
+  }
+  assert.ok(endGlass.vx * end > 0.3, "zone rebound can hit the end glass");
+  assert.ok(endGlass.vy > 1.4);
+  assert.ok(Math.abs(sideGlass.vz) > Math.abs(sideGlass.vx), "zone rebound can hit the side glass");
+  assert.ok(corner.vx * end > 0.2 && Math.abs(corner.vz) > 1, "zone rebound can hit the corner");
+  assert.ok(over.vy > endGlass.vy, "a zone rebound can clear the glass");
+  assert.ok(fromMate.vz * (mate.z - g.z) < 0, "a zone rebound can leave a teammate");
+  const towardFoe = (foe.x - g.x) * atFoe.vx + (foe.z - g.z) * atFoe.vz;
+  assert.ok(towardFoe > 0, "a zone rebound can go toward the other team");
+});
+
+test("a low stick rebound stays on the ice or goes back", () => {
+  live();
+  const end = defendDir("home") >= 0 ? 1 : -1;
+  const g = goalie("home");
+  const mouth = end * GOAL_LINE_X;
+  g.x = mouth - end * 1.05;
+  g.z = 0.15;
+  g.yaw = faceYaw("home");
+  const blade = stickBlade(g);
+  const low = planLowStickRebound(end, blade.x, 0.12, blade.z, 0.1, 0.4);
+  assert.equal(low.net, false);
+  assert.ok(low.vy < 1.2, `low rebound left the ice at vy ${low.vy}`);
+  assert.ok(low.vx * -end > 1, "low rebound should stay in front of the goal line");
+  const net = planLowStickRebound(end, blade.x, 0.12, blade.z, 0.8, 0.05);
+  assert.equal(net.net, true);
+  assert.ok(net.vx * end > 1, "a stick kick into the net goes back");
+  assert.ok(net.vy > 1.5, "a stick kick into the net is lifted");
+  const board = planLowStickRebound(end, blade.x, 0.12, blade.z, 0.8, 0.3);
+  const glass = planLowStickRebound(end, blade.x, 0.12, blade.z, 0.8, 0.6);
+  const crowd = planLowStickRebound(end, blade.x, 0.12, blade.z, 0.8, 0.9);
+  for (const plan of [board, glass, crowd]) {
+    assert.equal(plan.net, false);
+    assert.ok(plan.vx * end > 0.4, "high stick kick should travel back");
+  }
+  assert.ok(glass.vy > board.vy + 0.4, "glass is above the boards");
+  assert.ok(crowd.vy > glass.vy + 0.4, "the crowd kick clears the glass");
+});
+
+test("a low shot on the goalie stick does not pop up in front", () => {
+  let saw = 0;
+  let popped = 0;
+  for (let n = 0; n < 12; n++) {
+    live();
+    const end = defendDir("home") >= 0 ? 1 : -1;
+    const g = goalie("home");
+    g.stun = 0.3;
+    g.yaw = faceYaw("home");
+    g.vx = 0;
+    g.vz = 0;
+    const blade = stickBlade(g);
+    const shooter = world.skaters.find((s) => s.side !== "home" && s.kind !== "goalie");
+    world.userId = shooter.id;
+    world.lastUserActT = world.time;
+    world.lastShooter = shooter.id;
+    world.lastShoot = world.time;
+    world.lastPass = -10;
+    world.puck.owner = null;
+    world.puck.x = blade.x - end * 0.15;
+    world.puck.z = blade.z;
+    world.puck.y = 0.14;
+    world.puck.vx = end * 18;
+    world.puck.vy = 0;
+    world.puck.vz = 0;
+    world.reboundN = 0;
+    parkExcept(g.id);
+    stepSim(1 / 60);
+    if (world.reboundN < 1 || world.puck.owner !== null) continue;
+    saw++;
+    const forward = world.puck.vx * -end;
+    if (world.puck.vy > 1.6 && forward > 0.8) popped++;
+  }
+  assert.ok(saw > 0, "the stick never played the low shot");
+  assert.equal(popped, 0);
+});
+
+test("a passive iron watch can deflect in", () => {
+  assert.equal(deflectIronIn(true, "out", 0.1), "in");
+  assert.equal(deflectIronIn(true, "back", 0.2), "in");
+  assert.equal(deflectIronIn(true, "lodge", 0.37), "in");
+  assert.equal(deflectIronIn(true, "out", 0.5), "out");
+  assert.equal(deflectIronIn(true, "in", 0.1), "in");
+  assert.equal(deflectIronIn(false, "out", 0.1), "out");
+});
+
+test("an opposing carrier within a stick length of the blocker is a poke check", () => {
+  live();
+  const g = goalie("home");
+  const end = defendDir("home") > 0 ? 1 : -1;
+  g.x = end * (GOAL_LINE_X - 1.4);
+  g.z = 0.2;
+  g.yaw = faceYaw("home");
+  g.vx = 0;
+  g.vz = 0;
+  g.dive = 0;
+  g.tumble = 0;
+  g.celebrate = 0;
+  g.coverPose = 0;
+  g.struck = 0;
+  g.stun = 0;
+  const foe = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
+  const mate = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie");
+  assert.ok(foe && mate);
+  const hand = goalieBlockerHand(g);
+  world.puck.owner = foe.id;
+  world.puck.x = hand.x;
+  world.puck.y = hand.y;
+  world.puck.z = hand.z;
+  world.puck.vx = 0;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+  assert.equal(goaliePokeCheckPose(g), true);
+  assert.equal(inferNamedPose(g, g.id), "goaliePokeCheck");
+
+  world.puck.z = hand.z + GOALIE_STICK_LEN + 0.08;
+  assert.equal(goaliePokeCheckPose(g), false);
+  assert.notEqual(inferNamedPose(g, g.id), "goaliePokeCheck");
+
+  world.puck.z = hand.z;
+  world.puck.owner = g.id;
+  assert.equal(goaliePokeCheckPose(g), false);
+  world.puck.owner = null;
+  assert.equal(goaliePokeCheckPose(g), false);
+  world.puck.owner = mate.id;
+  assert.equal(goaliePokeCheckPose(g), false);
 });

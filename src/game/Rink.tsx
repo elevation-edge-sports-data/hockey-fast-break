@@ -610,7 +610,7 @@ function DrillCards() {
   useFrame(() => {
     const parent = root.current;
     if (!parent) return;
-    const cards = mode === "drill" ? world.drillCards : [];
+    const cards = mode === "drill" || mode === "scrimmage" ? world.drillCards : [];
     while (pool.current.length < cards.length) {
       const mat = new THREE.MeshBasicMaterial({
         color: "#236192",

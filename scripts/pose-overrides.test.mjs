@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import * as THREE from "three";
 import { isPoseOverrideHotFile, mergePoseOverride, parsePoseSave, writePoseOverride } from "./pose-overrides-plugin.mjs";
@@ -30,6 +31,26 @@ test("parse accepts a named pose and drops unknown joints", () => {
   });
   assert.equal(saved.pose, "wristFollow");
   assert.deepEqual(saved.joints, { lLeg: [0.41, 0, 0], head: [0, 0.2, 0] });
+});
+
+test("goalie play puck poses start as copies of goalie play", () => {
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  const poses = JSON.parse(readFileSync(join(root, "src", "game", "poseOverrides.json"), "utf8"));
+  assert.deepEqual(poses.goaliePlayPuck1, poses.goaliePlay);
+  assert.deepEqual(poses.goaliePlayPuck2, poses.goaliePlay);
+});
+
+test("goalie poke check starts as a copy of goalie butterfly", () => {
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  const poses = JSON.parse(readFileSync(join(root, "src", "game", "poseOverrides.json"), "utf8"));
+  assert.deepEqual(poses.goaliePokeCheck, poses.goalieButterfly);
+});
+
+test("upright glove and blocker start as copies of goalie upright", () => {
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  const poses = JSON.parse(readFileSync(join(root, "src", "game", "poseOverrides.json"), "utf8"));
+  assert.deepEqual(poses.goalieUprightGlove, poses.goalieUpright);
+  assert.deepEqual(poses.goalieUprightBlocker, poses.goalieUpright);
 });
 
 test("parse accepts camelCase gallery ids", () => {

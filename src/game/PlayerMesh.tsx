@@ -82,6 +82,7 @@ const armStripeGeo = new THREE.BoxGeometry(0.135, 0.055, 0.155);
 const armSideStripeGeo = new THREE.BoxGeometry(0.01, 0.065, 0.145);
 const armEndStripeGeo = new THREE.BoxGeometry(0.14, 0.065, 0.01);
 const forearmGeo = new THREE.BoxGeometry(0.11, 0.26, 0.13);
+/** Skater, blocker, and referee fists. The goalie catcher is goalieCatcherGeo. */
 const gloveGeo = new THREE.BoxGeometry(0.14, 0.12, 0.16);
 /** Blocker glove center in the forearm. Rx(0.12) applied to the glove offset [-0.058, 0, -0.01]. */
 const GOALIE_BLOCKER_POS: [number, number, number] = [-0.058, -0.2788, 0.02007];
@@ -224,76 +225,87 @@ const catcherRimYGeo = new THREE.BoxGeometry(0.16, 0.04, 0.092);
 /** Rim corner. Local Y is the cylinder axis; the mesh turns it along pocket depth. */
 const catcherRimCornerGeo = new THREE.CylinderGeometry(0.032, 0.032, 0.086, 6);
 /**
- * Leather frame beside the glove on local +X, meeting the front face (z = 0.08).
- * Opening is 0.102 × 0.087 around the 0.10 × 0.085 net and still faces +Z.
+ * Goalie catcher shell. Skater fists stay on gloveGeo.
+ * 0.20 × 0.08 × 0.16 (X × Y × Z). The +X/+Z corner is the pocket through
+ * the full Y thickness. Both ±Y faces show the net. The opening is
+ * 0.08 × 0.06. The outer lips scale from the old 0.005 border on the
+ * 0.035 × 0.055 opening, so the +X lip and the +Z lip stay the same
+ * fraction of the mesh. The other sides of the tunnel are solid glove:
+ * inner walls are the rest of the shell, outer lips are that frame.
+ * Check: +Y normal is (0, 1, 0), +X normal is (1, 0, 0), hole wall at
+ * openX0 points into the hole along +X.
  */
-const CATCHER_TRIM_T = 0.015;
-const CATCHER_TRIM_D = 0.034;
-const CATCHER_TRIM_W = 0.132;
-const CATCHER_TRIM_H = 0.117;
-const catcherTrimSideGeo = new THREE.BoxGeometry(CATCHER_TRIM_T, CATCHER_TRIM_H, CATCHER_TRIM_D);
-const catcherTrimCapGeo = new THREE.BoxGeometry(CATCHER_TRIM_W, CATCHER_TRIM_T, CATCHER_TRIM_D);
-const CATCHER_TRIM_X = CATCHER_TRIM_W / 2 - CATCHER_TRIM_T / 2;
-const CATCHER_TRIM_Y = CATCHER_TRIM_H / 2 - CATCHER_TRIM_T / 2;
-/** Opening's near edge is 2 mm inside the +X face (x = 0.07). Back of the frame is 6 mm inside the front face. */
-const CATCHER_POCKET_X = 0.07 - 0.002 + (CATCHER_TRIM_W / 2 - CATCHER_TRIM_T);
-const CATCHER_POCKET_Z = 0.08 - 0.006 + CATCHER_TRIM_D / 2;
-const CATCHER_NET_Z = CATCHER_POCKET_Z + CATCHER_TRIM_D / 2 - 0.008;
+const GOALIE_GLOVE_X = 0.2;
+const GOALIE_GLOVE_Y = 0.08;
+const GOALIE_GLOVE_Z = 0.16;
+const GOALIE_NET_X = 0.08;
+const GOALIE_NET_Z = 0.06;
+/** Same lip-to-opening ratio as 0.005 on the old 0.035 × 0.055 mesh. */
+const GOALIE_FRAME_X = 0.005 * (GOALIE_NET_X / 0.035);
+const GOALIE_FRAME_Z = 0.005 * (GOALIE_NET_Z / 0.055);
+const GOALIE_POCKET_X = GOALIE_NET_X + GOALIE_FRAME_X;
+const GOALIE_POCKET_Z = GOALIE_NET_Z + GOALIE_FRAME_Z;
+const GOALIE_HALF_X = GOALIE_GLOVE_X / 2;
+const GOALIE_HALF_Y = GOALIE_GLOVE_Y / 2;
+const GOALIE_HALF_Z = GOALIE_GLOVE_Z / 2;
+const GOALIE_OPEN_X0 = GOALIE_HALF_X - GOALIE_POCKET_X;
+const GOALIE_OPEN_X1 = GOALIE_HALF_X - GOALIE_FRAME_X;
+const GOALIE_OPEN_Z0 = GOALIE_HALF_Z - GOALIE_POCKET_Z;
+const GOALIE_OPEN_Z1 = GOALIE_HALF_Z - GOALIE_FRAME_Z;
+const GOALIE_NET_CX = (GOALIE_OPEN_X0 + GOALIE_OPEN_X1) / 2;
+const GOALIE_NET_CZ = (GOALIE_OPEN_Z0 + GOALIE_OPEN_Z1) / 2;
 /** Visual center of the catcher in the forearm. The left-hand joint sits here. */
 const CATCHER_PIVOT_LIVE: [number, number, number] = [0.03928, -0.2928, 0.08468];
 const CATCHER_PIVOT_SEAT: [number, number, number] = [0.04101, -0.28971, 0.06544];
 /** Same white as the goal-net mesh in Rink.tsx. */
 const NET_WHITE = "#e8eef4";
 
-/**
- * Pocket shell, built like the goal cage: a quad grid the net texture sits on.
- * The center bows toward local -Z, into the glove. Winding faces +Z (the shooter).
- * Check: the center vertex normal is (0, 0, 1).
- */
-function makeCatcherPocketNet() {
-  const w = 0.1;
-  const h = 0.085;
-  const segs = 6;
+function makeGoalieCatcherGeo(): THREE.BufferGeometry {
+  const x0 = -GOALIE_HALF_X;
+  const x1 = GOALIE_HALF_X;
+  const y0 = -GOALIE_HALF_Y;
+  const y1 = GOALIE_HALF_Y;
+  const z0 = -GOALIE_HALF_Z;
+  const z1 = GOALIE_HALF_Z;
+  const hx0 = GOALIE_OPEN_X0;
+  const hx1 = GOALIE_OPEN_X1;
+  const hz0 = GOALIE_OPEN_Z0;
+  const hz1 = GOALIE_OPEN_Z1;
   const pos: number[] = [];
-  const uv: number[] = [];
-  const idx: number[] = [];
-  for (let j = 0; j <= segs; j++) {
-    const v = j / segs;
-    const y = (v - 0.5) * h;
-    for (let i = 0; i <= segs; i++) {
-      const u = i / segs;
-      const x = (u - 0.5) * w;
-      const dx = u - 0.5;
-      const dy = v - 0.5;
-      const z = -0.014 * (1 - 4 * dx * dx) * (1 - 4 * dy * dy);
-      pos.push(x, y, z);
-      uv.push(u, v);
-    }
+  const nor: number[] = [];
+  const yRegions: Array<[number, number, number, number]> = [
+    [x0, hx0, z0, z1],
+    [hx0, x1, z0, hz0],
+    [hx1, x1, hz0, z1],
+    [hx0, hx1, hz1, z1],
+  ];
+  for (const [xa, xb, zc, zd] of yRegions) {
+    goaliePadQuad(pos, nor, [xa, y1, zc], [xa, y1, zd], [xb, y1, zd], [xb, y1, zc]);
+    goaliePadQuad(pos, nor, [xa, y0, zc], [xb, y0, zc], [xb, y0, zd], [xa, y0, zd]);
   }
-  const cols = segs + 1;
-  for (let j = 0; j < segs; j++) {
-    for (let i = 0; i < segs; i++) {
-      const a = j * cols + i;
-      const b = a + 1;
-      const c0 = a + cols;
-      const d = c0 + 1;
-      idx.push(a, b, c0, b, d, c0);
-    }
-  }
+  goaliePadQuad(pos, nor, [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]);
+  goaliePadQuad(pos, nor, [x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]);
+  goaliePadQuad(pos, nor, [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]);
+  goaliePadQuad(pos, nor, [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]);
+  goaliePadQuad(pos, nor, [hx0, y0, hz0], [hx0, y1, hz0], [hx0, y1, hz1], [hx0, y0, hz1]);
+  goaliePadQuad(pos, nor, [hx1, y0, hz0], [hx1, y0, hz1], [hx1, y1, hz1], [hx1, y1, hz0]);
+  goaliePadQuad(pos, nor, [hx0, y0, hz0], [hx1, y0, hz0], [hx1, y1, hz0], [hx0, y1, hz0]);
+  goaliePadQuad(pos, nor, [hx0, y0, hz1], [hx0, y1, hz1], [hx1, y1, hz1], [hx1, y0, hz1]);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
-  geo.setIndex(idx);
-  geo.computeVertexNormals();
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3));
+  geo.computeBoundingSphere();
   return geo;
 }
 
-const catcherPocketNetGeo = makeCatcherPocketNet();
+const goalieCatcherGeo = makeGoalieCatcherGeo();
+/** Net sheet for one 0.08 × 0.06 face. The mesh turns it onto ±Y. */
+const goalieCatcherNetGeo = new THREE.PlaneGeometry(GOALIE_NET_X, GOALIE_NET_Z);
 let pocketNetTex: THREE.CanvasTexture | null = null;
 
 /**
- * Catcher webbing. The goal net is 14 by 14 cells with a 2.1 px cord.
- * This pocket keeps 60% of the horizontal cords and 50% of the vertical cords, 50% thicker.
+ * Catcher webbing for the 0.08 × 0.06 opening.
+ * Three by five cords, thick enough to read on that small face.
  */
 function pocketNetTexture(): THREE.CanvasTexture {
   if (!pocketNetTex) {
@@ -307,9 +319,9 @@ function pocketNetTexture(): THREE.CanvasTexture {
     g.fillStyle = "rgba(196, 206, 216, 0.16)";
     g.fillRect(0, 0, size, size);
     g.strokeStyle = "rgba(236, 242, 246, 0.92)";
-    g.lineWidth = 2.1 * 1.5;
-    const cols = Math.round(14 * 0.5);
-    const rows = Math.round(14 * 0.6);
+    g.lineWidth = 9;
+    const cols = 3;
+    const rows = 5;
     const xStep = size / cols;
     const yStep = size / rows;
     for (let i = 0; i <= cols; i++) {
@@ -325,7 +337,7 @@ function pocketNetTexture(): THREE.CanvasTexture {
       g.stroke();
     }
     g.strokeStyle = "rgba(168, 180, 192, 0.55)";
-    g.lineWidth = 0.9 * 1.5;
+    g.lineWidth = 4;
     for (let i = 0; i < cols; i++) {
       g.beginPath();
       g.moveTo(i * xStep, 0);
@@ -4016,7 +4028,7 @@ function poseBrawl(kind: 0 | 1, swing: number, body: THREE.Group, lArm: THREE.Gr
   if (!goalie && stick) poseStickOneHand(stick, root, lFore, layout);
 }
 
-/** Teammate glove plus a pocket. The palm group is the pose attachment. */
+/** Catcher shell plus the corner pocket. The palm group is the pose attachment. */
 function Catcher({ mats, seated = false }: { mats: KitMats; seated?: boolean }) {
   const glovePos = seated ? ([-0.01, -0.28, 0.05] as const) : ([-0.01, -0.28, 0.07] as const);
   const gloveRot = seated ? ([0.4, -0.08, -0.06] as const) : ([0.5, -0.1, -0.08] as const);
@@ -4025,13 +4037,11 @@ function Catcher({ mats, seated = false }: { mats: KitMats; seated?: boolean }) 
   const palmLocal: [number, number, number] = [0.02 - pivot[0], -0.32 - pivot[1], 0.02 - pivot[2]];
   return (
     <>
-      <mesh geometry={gloveGeo} material={mats.gloves} position={gloveLocal} rotation={gloveRot} castShadow>
-        <mesh geometry={catcherTrimSideGeo} material={mats.gloves} position={[CATCHER_POCKET_X - CATCHER_TRIM_X, 0, CATCHER_POCKET_Z]} castShadow />
-        <mesh geometry={catcherTrimSideGeo} material={mats.gloves} position={[CATCHER_POCKET_X + CATCHER_TRIM_X, 0, CATCHER_POCKET_Z]} castShadow />
-        <mesh geometry={catcherTrimCapGeo} material={mats.gloves} position={[CATCHER_POCKET_X, -CATCHER_TRIM_Y, CATCHER_POCKET_Z]} castShadow />
-        <mesh geometry={catcherTrimCapGeo} material={mats.gloves} position={[CATCHER_POCKET_X, CATCHER_TRIM_Y, CATCHER_POCKET_Z]} castShadow />
-        <mesh geometry={catcherPocketNetGeo} material={mats.catcherMesh} position={[CATCHER_POCKET_X, 0, CATCHER_NET_Z]} renderOrder={1} />
-      </mesh>
+      <group position={gloveLocal} rotation={gloveRot}>
+        <mesh geometry={goalieCatcherGeo} material={mats.gloves} castShadow />
+        <mesh geometry={goalieCatcherNetGeo} material={mats.catcherMesh} position={[GOALIE_NET_CX, GOALIE_HALF_Y, GOALIE_NET_CZ]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={1} />
+        <mesh geometry={goalieCatcherNetGeo} material={mats.catcherMesh} position={[GOALIE_NET_CX, -GOALIE_HALF_Y, GOALIE_NET_CZ]} rotation={[Math.PI / 2, 0, 0]} renderOrder={1} />
+      </group>
       {/* Palm axis in the forearm. Pose aims this point. */}
       <group position={palmLocal} rotation={[0.1, 0.16, 0.22]} />
     </>
@@ -4290,14 +4300,15 @@ export function PlayerMesh({
     const cheer = !goalie && s.celebrate > 0.05;
     const goalieCheer = goalie && !tumbling && s.celebrate > 0.05;
     // Rage is only the saved rage1/rage2 or goalieRage1/goalieRage2 joints. No stick aim, dip, or IK.
-    // A scored-on goalie with no smash clock still stamps goalieRage1, so the stick plant stays off.
+    // A scored-on goalie with no smash clock stamps one rage still at a time, so the stick plant stays off.
+    const goalieNamed = namedPoseFor(s, index);
     const goalieRageStill =
       goalie &&
       !world.poseHold &&
       !tumbling &&
       s.dive <= 0.04 &&
       !checkedCyclePose(s.struck, s.tumble) &&
-      namedPoseFor(s, index) === "goalieRage1";
+      (goalieNamed === "goalieRage1" || goalieNamed === "goalieRage2");
     const rage =
       (!goalie && !!rageDraw(s.id)) ||
       (goalie && s.smashKind > 0 && !tumbling && s.dive <= 0.04 && !checkedCyclePose(s.struck, s.tumble)) ||
@@ -5295,9 +5306,14 @@ export function PlayerMesh({
     // Slap aim, arm IK, the lead leg, and the torso plant all run above. Stamp again
     // so every saved rotation and position is the last joint write of the frame.
     // Skater rage blends rage1 into rage2. A goalie smash blends goalieRage1 into goalieRage2.
-    // A scored-on goalie with no smash clock stamps goalieRage1 and does not blend.
+    // A scored-on goalie with no smash clock stamps goalieRage1, then goalieRage2, and does not blend.
     // Puck possess blends puckPossess1 into puckPossess2 on the stride clock.
     stampPoseOverride(index, s, poseGroups());
+    if (body.current) {
+      playerShadowCom(body.current, _shadowCom);
+      s.comX = _shadowCom.x;
+      s.comZ = _shadowCom.z;
+    }
   });
 
   const selectPoseJoint = (event: ThreeEvent<MouseEvent>) => {

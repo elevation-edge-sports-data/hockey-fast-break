@@ -214,7 +214,7 @@ function bodyVisualCenter(body: THREE.Object3D, out: THREE.Vector3): boolean {
 /** Put the anchor on the swapped center, oriented with the joint. */
 function placeGizmoAnchor(anchor: THREE.Object3D, joint: THREE.Object3D, id: string, lastPos: THREE.Vector3, lastQuat: THREE.Quaternion, pose: string): boolean {
   joint.updateWorldMatrix(true, false);
-  if (id === "body" && (pose === "goalieButterfly" || pose === "goalieGloveSave" || pose === "goalieBlockerSave" || pose === "goalieDivingGloveSave" || pose === "goalieDivingStickSave" || pose === "goalieProtectLeft" || pose === "goalieProtectRight" || pose === "goalieCover")) {
+  if (id === "body" && (pose === "goalieButterfly" || pose === "goaliePokeCheck" || pose === "goalieGloveSave" || pose === "goalieBlockerSave" || pose === "goalieDivingGloveSave" || pose === "goalieDivingStickSave" || pose === "goalieProtectLeft" || pose === "goalieProtectRight" || pose === "goalieCover")) {
     if (!bodyVisualCenter(joint, _gizmoLocal)) return false;
   } else {
     if (!swappedGizmoOffset(id, joint, _gizmoLocal)) return false;

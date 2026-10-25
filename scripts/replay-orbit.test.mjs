@@ -57,7 +57,7 @@ after(() => server.close());
 const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
-const { orbitReplayPointer, zoomReplayPointer, resetWorld, stepSim, world } = sim;
+const { orbitReplayPointer, zoomReplayPointer, resetWorld, stepSim, world, beginPauseReplay, stopPauseReplay, pickReplayLock, replayLockKind } = sim;
 const { useGame } = store;
 const { setInjectedKeys } = input;
 
@@ -252,5 +252,153 @@ test("pause orbits from the left stick and arrows only while they are held", () 
     pads = [];
     setInjectedKeys([]);
     useGame.getState().setPaused(false);
+  }
+});
+
+function bootReplay() {
+  const dt = 1 / 60;
+  useGame.getState().setClockMode("practice");
+  useGame.getState().setPlaying(true);
+  useGame.getState().setPaused(false);
+  resetWorld();
+  useGame.getState().setPlaying(true);
+  useGame.getState().setPaused(false);
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  world.puck.owner = null;
+  world.puck.vx = 3;
+  world.puck.vz = 0;
+  setInjectedKeys([]);
+  pads = [];
+  for (let i = 0; i < 20; i++) stepSim(dt);
+  useGame.getState().setPaused(true);
+  if (!beginPauseReplay()) throw new Error("replay did not start");
+  world.replayPlaying = false;
+}
+
+test("opening replay stays free while the X sits on the puck", () => {
+  bootReplay();
+  try {
+    for (let i = 0; i < 8; i++) stepSim(1 / 60);
+    assert.equal(replayLockKind(), "free");
+    assert.ok(Math.hypot(world.replayCam.lx - world.puck.x, world.replayCam.lz - world.puck.z) < 0.05);
+  } finally {
+    stopPauseReplay();
+    setInjectedKeys([]);
+  }
+});
+
+test("a click on a skater or the puck locks that target", () => {
+  bootReplay();
+  try {
+    const lookX = world.replayCam.lx;
+    const lookZ = world.replayCam.lz;
+    for (const s of world.skaters) {
+      s.x = 40;
+      s.z = 40;
+      s.comX = 40;
+      s.comZ = 40;
+    }
+    world.puck.x = lookX;
+    world.puck.z = lookZ;
+    world.puck.y = world.replayCam.ly;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayLockKind(), "puck");
+    assert.ok(Math.hypot(world.replayCam.lx - lookX, world.replayCam.lz - lookZ) < 1e-6);
+
+    world.puck.x = 30;
+    world.puck.z = 30;
+    world.puck.y = 0.04;
+    const skater = world.skaters[0];
+    skater.x = lookX;
+    skater.z = lookZ;
+    skater.comX = lookX;
+    skater.comZ = lookZ;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayLockKind(), "skater");
+    assert.equal(world.replayCam.lx, skater.x);
+    assert.equal(world.replayCam.lz, skater.z);
+
+    skater.x = 25;
+    skater.z = 25;
+    world.puck.x = 28;
+    world.puck.z = 28;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayLockKind(), "skater");
+  } finally {
+    stopPauseReplay();
+  }
+});
+
+test("the ice X locks a nearby center of mass and ignores a far one", () => {
+  bootReplay();
+  const dt = 1 / 60;
+  try {
+    const lx = world.replayCam.lx;
+    const lz = world.replayCam.lz;
+    for (const s of world.skaters) {
+      s.comX = lx + 2.2;
+      s.comZ = lz;
+    }
+    setInjectedKeys(["ArrowUp"]);
+    stepSim(dt);
+    stepSim(dt);
+    setInjectedKeys([]);
+    stepSim(dt);
+    assert.equal(replayLockKind(), "puck");
+    stopPauseReplay();
+
+    bootReplay();
+    const lx2 = world.replayCam.lx;
+    const lz2 = world.replayCam.lz;
+    for (const s of world.skaters) {
+      s.comX = lx2 + 2.2;
+      s.comZ = lz2;
+    }
+    world.skaters[0].comX = lx2 + 0.7;
+    world.skaters[0].comZ = lz2;
+    setInjectedKeys(["ArrowUp"]);
+    stepSim(dt);
+    stepSim(dt);
+    setInjectedKeys([]);
+    stepSim(dt);
+    assert.equal(replayLockKind(), "skater");
+  } finally {
+    setInjectedKeys([]);
+    stopPauseReplay();
+  }
+});
+
+test("panning the ice X onto a center of mass locks that skater", () => {
+  bootReplay();
+  const dt = 1 / 60;
+  try {
+    const lx = world.replayCam.lx;
+    const lz = world.replayCam.lz;
+    for (const s of world.skaters) {
+      s.comX = 80;
+      s.comZ = 80;
+    }
+    const skater = world.skaters[0];
+    skater.comX = lx + 0.5;
+    skater.comZ = lz;
+    setInjectedKeys(["ArrowUp"]);
+    stepSim(dt);
+    stepSim(dt);
+    assert.equal(replayLockKind(), "free");
+    const parked = world.replayCam.lx;
+    setInjectedKeys([]);
+    stepSim(dt);
+    assert.equal(replayLockKind(), "skater");
+    assert.equal(world.replayCam.lx, skater.x);
+    assert.ok(Math.abs(parked - (lx + 0.42)) < 0.03);
+    for (let i = 0; i < 6; i++) stepSim(dt);
+    assert.equal(replayLockKind(), "skater");
+    assert.equal(world.replayCam.lx, skater.x);
+  } finally {
+    setInjectedKeys([]);
+    stopPauseReplay();
   }
 });

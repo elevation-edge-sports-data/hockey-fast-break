@@ -6,15 +6,18 @@ import {
   defendDir,
   goalieButterflyPose,
   goaliePlaysPuck,
+  goaliePlayPuckPose,
+  goaliePokeCheckPose,
   goalieDiveSavePose,
   goalieShotSave,
   goalieZKind,
   autoDekePoseName,
   rageDraw,
   shotFollowTime,
-  shotThreatensBar,
+  ironDefensePose,
   shotTopCornerHand,
   shoulderCheckPose,
+  scoredOnGoalieRagePose,
   stridePair,
   world,
   type Skater,
@@ -97,20 +100,6 @@ function faceoffDot(s: Skater): boolean {
   return s.id === world.homeDot || s.id === world.awayDot;
 }
 
-/**
- * CPU goalie who was scored on, after the scoop, when no teammate is breaking a stick.
- * smashKind stays 0, so the stamp applies goalieRage1 and does not blend into goalieRage2.
- */
-function scoredOnGoalieStill(s: Skater): boolean {
-  if (s.kind !== "goalie" || s.id === world.userId || s.smashKind > 0) return false;
-  if (world.whistle !== "goal" || world.goalSide === null || world.goalSide === s.side) return false;
-  if (world.stoppageT < 1.22) return false;
-  for (const other of world.skaters) {
-    if (other.side === s.side && other.kind !== "goalie" && other.smashKind > 0) return false;
-  }
-  return true;
-}
-
 function faceoffStill(s: Skater): boolean {
   return (
     s.kind !== "goalie" &&
@@ -128,14 +117,11 @@ function faceoffStill(s: Skater): boolean {
 export function inferNamedPose(s: Skater, index: number): string | null {
   const goalie = s.kind === "goalie";
   if (brawlLive(s.id)) return "fight";
-  if (
-    goalie &&
-    !tumbling(s) &&
-    s.dive <= 0.04 &&
-    !checkedCyclePose(s.struck, s.tumble) &&
-    (s.smashKind > 0 || scoredOnGoalieStill(s))
-  )
-    return "goalieRage1";
+  if (goalie && !tumbling(s) && s.dive <= 0.04 && !checkedCyclePose(s.struck, s.tumble)) {
+    if (s.smashKind > 0) return "goalieRage1";
+    const ragePose = scoredOnGoalieRagePose(s);
+    if (ragePose) return ragePose;
+  }
   if (!goalie && s.celebrate > 0.05 && s.hit <= 0 && !tumbling(s) && s.struck <= 0.2 && !brawlLive(s.id) && !rageDraw(s.id) && s.dive <= 0.04) {
     return "celebrate";
   }
@@ -188,7 +174,8 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   if (carrying && s.burst <= 0 && s.deke <= 0.02 && Math.abs(s.stickPull) <= 0.02) return "puckPossess1";
 
   if (goalie && !tumbling(s) && s.celebrate <= 0.05 && s.dive <= 0.04) {
-    if (shotThreatensBar(s)) return "goalieUpright";
+    const iron = ironDefensePose(s);
+    if (iron) return iron;
     const hand = shotTopCornerHand(s);
     if (hand === "blocker") return "goalieBlockerSave";
     if (hand === "glove") return "goalieGloveSave";
@@ -196,8 +183,12 @@ export function inferNamedPose(s: Skater, index: number): string | null {
     if (behind) return behind;
     const dive = desperateDivePose(s);
     if (dive) return dive;
-    if (goaliePlaysPuck(s)) return "goaliePlay";
-    if (s.coverPose >= 0.35 || goalieButterflyPose(s)) return "goalieCover";
+    const playPose = goaliePlayPuckPose(s);
+    if (playPose) return playPose;
+    if (goaliePokeCheckPose(s)) return "goaliePokeCheck";
+    // Cover between 0.08 and 0.35 used to miss every named stance. The mesh
+    // then splayed both pads and kinked the goalie blade. That is not a saved pose.
+    if (s.coverPose > 0.08 || goalieButterflyPose(s)) return "goalieCover";
     const zone = goalieZKind(s);
     if (zone === "butterfly") return "goalieButterfly";
     if (zone === "upright") return "goalieUpright";

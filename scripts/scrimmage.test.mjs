@@ -47,8 +47,8 @@ const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
-const { resetWorld, stepSim, world, targetBoard } = sim;
-const { useGame } = store;
+const { resetWorld, stepSim, world, targetBoard, beginPauseReplay, stopPauseReplay } = sim;
+const { useGame, gameSpeedRate } = store;
 const { setInjectedKeys } = input;
 const { GOAL_LINE_X, GOAL_W, GOAL_H } = rink;
 
@@ -230,6 +230,192 @@ test("clearing the last opposing target wins", () => {
   assert.equal(useGame.getState().awayScore, 0);
 });
 
+function playReplayAt(t) {
+  world.replayPlaying = false;
+  world.replayT = t;
+  stepSim(DT);
+}
+
+test("replay keeps the target up until the knockdown frame", () => {
+  bootScrimmage(4, 4);
+  world.puck.owner = null;
+  world.puck.x = 0;
+  world.puck.z = 0;
+  world.puck.y = 0.05;
+  world.puck.vx = 2;
+  world.puck.vz = 0;
+  for (let i = 0; i < 30; i++) stepSim(DT);
+  assert.equal(world.scrimmageAwayGone[0], false);
+  const { y, z } = cellCenter(4, 0);
+  driveAtMouth(1, y, z);
+  assert.equal(world.scrimmageAwayGone[0], true);
+  useGame.getState().setPaused(true);
+  assert.equal(beginPauseReplay(), true);
+  playReplayAt(0);
+  assert.equal(world.scrimmageAwayGone[0], false);
+  playReplayAt(999);
+  assert.equal(world.scrimmageAwayGone[0], true);
+  stopPauseReplay();
+  assert.equal(world.replay, false);
+  assert.equal(world.scrimmageAwayGone[0], true);
+});
+
+test("drill replay shows the card leave the board", () => {
+  setInjectedKeys([]);
+  const ui = useGame.getState();
+  ui.setClockMode("drill");
+  ui.setDrillTargets(4);
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  resetWorld();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  world.puck.owner = null;
+  world.puck.x = 0;
+  world.puck.vx = 2;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  for (let i = 0; i < 20; i++) stepSim(DT);
+  assert.equal(world.drillGone[0], false);
+  assert.equal(world.drillCards.length, 0);
+  world.drillGone[0] = true;
+  world.drillCards.push({
+    x: GOAL_LINE_X - 0.05,
+    y: 0.4,
+    z: 0,
+    vx: -3,
+    vy: 1.2,
+    vz: 0.2,
+    rx: 0,
+    ry: 0,
+    rz: 0,
+    sx: 0,
+    sy: 0,
+    sz: 4,
+    w: 0.3,
+    h: 0.3,
+    pts: 20,
+    age: 0,
+    flutter: 0,
+  });
+  for (let i = 0; i < 12; i++) stepSim(DT);
+  assert.equal(world.drillGone[0], true);
+  assert.ok(world.drillCards.length > 0);
+  const flown = world.drillCards[0].x;
+  useGame.getState().setPaused(true);
+  assert.equal(beginPauseReplay(), true);
+  playReplayAt(0);
+  assert.equal(world.drillGone[0], false);
+  assert.equal(world.drillCards.length, 0);
+  playReplayAt(999);
+  assert.equal(world.drillGone[0], true);
+  assert.ok(world.drillCards.length > 0);
+  assert.ok(Math.abs(world.drillCards[0].x - flown) < 0.05);
+  stopPauseReplay();
+  assert.equal(world.drillGone[0], true);
+  assert.ok(world.drillCards.length > 0);
+});
+
+function replaySamples() {
+  world.replayPlaying = false;
+  const out = [];
+  let prev = -1;
+  for (let t = 0; t < 8; t += 0.05) {
+    world.replayT = t;
+    stepSim(DT);
+    if (t > 0 && world.replayT <= prev + 1e-4) break;
+    prev = world.replayT;
+    out.push({
+      scrimmage: world.scrimmageAwayGone[0] === true,
+      drill: world.drillGone[0] === true,
+      y: world.drillCards[0] ? world.drillCards[0].y : null,
+    });
+  }
+  return out;
+}
+
+test("scrimmage replay plays the target down to the ice", () => {
+  bootScrimmage(4, 4);
+  world.puck.owner = null;
+  world.puck.x = 0;
+  world.puck.z = 0;
+  world.puck.y = 0.05;
+  world.puck.vx = 2;
+  world.puck.vz = 0;
+  for (let i = 0; i < 20; i++) stepSim(DT);
+  const { y, z } = cellCenter(4, 0);
+  driveAtMouth(1, y, z);
+  assert.equal(world.scrimmageAwayGone[0], true);
+  assert.ok(world.drillCards.length > 0);
+  for (let i = 0; i < 80; i++) stepSim(DT);
+  assert.ok(world.drillCards[0].y <= 0.08, `live landing y ${world.drillCards[0].y}`);
+  useGame.getState().setPaused(true);
+  assert.equal(beginPauseReplay(), true);
+  const seen = replaySamples();
+  const up = seen.findIndex((s) => !s.scrimmage);
+  const air = seen.findIndex((s) => s.scrimmage && s.y !== null && s.y > 0.2);
+  const ice = seen.findIndex((s) => s.scrimmage && s.y !== null && s.y <= 0.08);
+  assert.ok(up >= 0, "target was never up");
+  assert.ok(air > up, "card never left the board");
+  assert.ok(ice > air, `card never reached the ice ${JSON.stringify(seen.filter((s) => s.y !== null).slice(0, 8))}`);
+  stopPauseReplay();
+});
+
+test("drill replay plays the card down to the ice", () => {
+  setInjectedKeys([]);
+  const ui = useGame.getState();
+  ui.setClockMode("drill");
+  ui.setDrillTargets(4);
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  resetWorld();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  world.puck.owner = null;
+  world.puck.x = 0;
+  world.puck.vx = 2;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  for (let i = 0; i < 20; i++) stepSim(DT);
+  assert.equal(world.drillGone[0], false);
+  world.drillGone[0] = true;
+  world.drillCards.push({
+    x: GOAL_LINE_X - 0.05,
+    y: 1.1,
+    z: 0,
+    vx: -3,
+    vy: 1.2,
+    vz: 0.2,
+    rx: 0,
+    ry: 0,
+    rz: 0,
+    sx: 1,
+    sy: 1,
+    sz: 4,
+    w: 0.3,
+    h: 0.3,
+    pts: 20,
+    age: 0,
+    flutter: 0,
+  });
+  for (let i = 0; i < 90; i++) stepSim(DT);
+  assert.ok(world.drillCards[0].y <= 0.08, `live drill y ${world.drillCards[0].y}`);
+  useGame.getState().setPaused(true);
+  assert.equal(beginPauseReplay(), true);
+  const seen = replaySamples();
+  const up = seen.findIndex((s) => !s.drill);
+  const air = seen.findIndex((s) => s.drill && s.y !== null && s.y > 0.2);
+  const ice = seen.findIndex((s) => s.drill && s.y !== null && s.y <= 0.08);
+  assert.ok(up >= 0, "target was never up");
+  assert.ok(air > up, "card was never in the air");
+  assert.ok(ice > air, "card never reached the ice");
+  stopPauseReplay();
+});
+
 test("a knockdown on the home board is credited to away", () => {
   bootScrimmage(4, 4);
   const { y, z } = cellCenter(4, 0);
@@ -248,6 +434,62 @@ test("a knockdown on the home board is credited to away", () => {
   assert.equal(useGame.getState().homeScore, 0);
   assert.equal(useGame.getState().awayScore, 0);
   assert.equal(world.faceoff, false);
+});
+
+test("scrimmage clock counts up from zero and does not expire", () => {
+  bootScrimmage(4, 4);
+  assert.equal(world.periodClock, 0);
+  assert.equal(useGame.getState().periodClock, 0);
+  assert.equal(world.periodOver, false);
+  const rate = gameSpeedRate(useGame.getState().gameSpeed);
+  const steps = 48;
+  for (let i = 0; i < steps; i++) stepSim(DT);
+  const expected = (steps * DT) / rate;
+  assert.ok(Math.abs(world.periodClock - expected) < 0.02, `clock ${world.periodClock}`);
+  assert.equal(useGame.getState().periodClock, Math.floor(world.periodClock));
+  assert.equal(world.periodOver, false);
+  assert.equal(useGame.getState().periodBreak, 0);
+
+  const pausedAt = world.periodClock;
+  useGame.getState().setPaused(true);
+  for (let i = 0; i < 30; i++) stepSim(DT);
+  assert.equal(world.periodClock, pausedAt);
+
+  useGame.getState().setPaused(false);
+  world.faceoff = true;
+  world.stoppage = true;
+  world.whistle = null;
+  for (let i = 0; i < steps; i++) stepSim(DT);
+  assert.ok(world.periodClock > pausedAt + 0.9, `clock through whistle ${world.periodClock}`);
+  assert.equal(world.periodOver, false);
+  assert.equal(useGame.getState().periodBreak, 0);
+
+  const mid = world.periodClock;
+  resetWorld({ keepScore: true });
+  assert.ok(Math.abs(world.periodClock - mid) < 0.001);
+  resetWorld();
+  assert.equal(world.periodClock, 0);
+  assert.equal(useGame.getState().periodClock, 0);
+
+  useGame.getState().setClockMode("game");
+  resetWorld();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  const gameStart = world.periodClock;
+  assert.equal(gameStart, 1200);
+  stepSim(DT);
+  assert.ok(world.periodClock < gameStart);
+
+  useGame.getState().setClockMode("practice");
+  resetWorld();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  const practiceStart = world.periodClock;
+  for (let i = 0; i < steps; i++) stepSim(DT);
+  assert.equal(world.periodClock, practiceStart);
+  assert.equal(world.periodOver, false);
 });
 
 test("a shot through an empty scrimmage cell is not a goal", () => {

@@ -687,10 +687,15 @@ function CameraRig() {
         const net = world.replayNet || 1;
         const netX = net * GOAL_LINE_X;
         const scorer = world.lastShooter !== null ? world.skaters[world.lastShooter] : null;
-        const px = Math.max(BLUE_X - 1.2, puck.x * net) * net;
-        const sz = Math.max(-2.2, Math.min(2.2, puck.z * 0.45 + (scorer ? scorer.z * 0.2 : 0)));
-        _desired.set(netX - net * 13.2, 8.4, 7.6);
-        _look.set(netX * 0.42 + px * 0.58, 0.52, sz);
+        if (scorer) {
+          _desired.set(scorer.x - net * 8.4, 3.8, scorer.z + 5.4);
+          _look.set(scorer.x, 1.05, scorer.z);
+        } else {
+          const px = Math.max(BLUE_X - 1.2, puck.x * net) * net;
+          const sz = Math.max(-2.2, Math.min(2.2, puck.z * 0.45));
+          _desired.set(netX - net * 13.2, 8.4, 7.6);
+          _look.set(netX * 0.42 + px * 0.58, 0.52, sz);
+        }
       }
       _pos.copy(_desired);
       _lookSmooth.copy(_look);
@@ -797,7 +802,11 @@ function CameraRig() {
     const endCam = !idle && !drillCam ? periodEndLook() : null;
     const whistleCam = !idle && !endCam ? whistleUserLook() : null;
     const focus = endCam ?? whistleCam;
-    const controlled = focus && !endCam && world.whistle === "goal" ? world.skaters[world.userId] : undefined;
+    const controlled =
+      focus && !endCam && world.whistle === "goal"
+        ? (world.lastShooter !== null ? world.skaters[world.lastShooter] : undefined) ??
+          world.skaters[world.userId]
+        : undefined;
     const px = idle ? 0 : drillCam ? drillCam.x : focus ? focus.x : puck.x;
     const pz = idle ? 0 : drillCam ? drillCam.z : focus ? focus.z : puck.z;
     const py = idle ? 0.45 : drillCam ? drillCam.y : focus ? focus.y : Math.max(0.35, puck.y);
