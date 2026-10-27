@@ -101,8 +101,9 @@ test("jumbotron side keeps speed, stops the clock, and faceoffs after 2s", () =>
   assert.equal(puck.owner, null);
   const faceX = world.faceX;
   const faceZ = world.faceZ;
-  assert.equal(faceX, 0);
-  assert.equal(faceZ, 0);
+  const face = nearestFaceoff(0, JUMBO_HW);
+  assert.equal(faceX, face.x);
+  assert.equal(faceZ, face.z);
   const clock = world.periodClock;
   const z0 = puck.z;
   const y0 = puck.y;

@@ -19119,6 +19119,7 @@ function stepPause(dt: number, act: Actions): boolean {
   if (!ui.playing) {
     dropWingClaims();
     if (ui.camAdjust) ui.setCamAdjust(false);
+    if (!world.camPick && !world.replay) tickFreeCam(dt, act);
     if (act.aEdge || act.aTap) {
       resetWorld();
       ui.setPlaying(true);

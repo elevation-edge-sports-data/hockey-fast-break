@@ -770,14 +770,59 @@ const POKE_FRONT_FOOT_Z = 0.47;
 /** Left hand at or above the knob-side grip. */
 const POKE_LEFT_GRIP = 0.96;
 
-function mat(color: string, extras: THREE.MeshStandardMaterialParameters = {}) {
-  return new THREE.MeshStandardMaterial({
+/**
+ * Body parts are centered boxes and capsules. Stick, tape, and blade origins sit at the heel,
+ * so a body-sized reach would hide the shaft whenever the camera passed the hands.
+ */
+const FAR_SIDE_REACH = 0.42;
+const FAR_SIDE_STICK_REACH = 0.07;
+
+/**
+ * Discard the reverse side, and the far side of a part when the camera is inside it.
+ * Front faces of a convex part stay put while the camera is outside. Shadows use a
+ * depth program without this chunk and are left alone.
+ */
+export function applyFarSideCull(material: THREE.Material, reach = FAR_SIDE_REACH): void {
+  const reachText = reach.toFixed(2);
+  material.onBeforeCompile = (shader) => {
+    if (!shader.fragmentShader.includes("#include <normal_fragment_begin>")) return;
+    if (!shader.vertexShader.includes("#include <project_vertex>")) return;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vFarOrigin;")
+      .replace(
+        "#include <project_vertex>",
+        `#include <project_vertex>
+#ifdef USE_INSTANCING
+	vFarOrigin = (modelViewMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+#else
+	vFarOrigin = (modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+#endif`,
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vFarOrigin;")
+      .replace(
+        "#include <normal_fragment_begin>",
+        `#include <normal_fragment_begin>
+	if (!gl_FrontFacing || dot(normal, vViewPosition) < 0.0) discard;
+	{
+		float farOrigin = length(vFarOrigin);
+		if (farOrigin < ${reachText} && length(vViewPosition) > farOrigin) discard;
+	}`,
+      );
+  };
+  material.customProgramCacheKey = () => `far-side-${reachText}`;
+}
+
+function mat(color: string, extras: THREE.MeshStandardMaterialParameters = {}, reach = FAR_SIDE_REACH) {
+  const material = new THREE.MeshStandardMaterial({
     color,
     roughness: 0.62,
     metalness: 0.04,
     envMapIntensity: 0.85,
     ...extras,
   });
+  applyFarSideCull(material, reach);
+  return material;
 }
 
 type KitMats = {
@@ -857,13 +902,17 @@ function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
       emissive: kit.helmet,
       emissiveIntensity: 0.18,
     }),
-    visor: new THREE.MeshStandardMaterial({
-      color: kit.visor,
-      roughness: 0.08,
-      metalness: 0.4,
-      transparent: true,
-      opacity: 0.72,
-    }),
+    visor: (() => {
+      const visor = new THREE.MeshStandardMaterial({
+        color: kit.visor,
+        roughness: 0.08,
+        metalness: 0.4,
+        transparent: true,
+        opacity: 0.72,
+      });
+      applyFarSideCull(visor);
+      return visor;
+    })(),
     jersey: mat(kit.jersey, {
       roughness: 0.48,
       envMapIntensity: 1.4,
@@ -932,14 +981,18 @@ function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
       emissiveIntensity: 0.2,
     }),
     skates: mat(kit.skates, { roughness: 0.4, metalness: 0.12 }),
-    blade: mat("#c5ccd4", {
-      roughness: 0.38,
-      metalness: 0.28,
-      emissive: "#9aa3ab",
-      emissiveIntensity: 0.22,
-    }),
-    stick: mat(kit.stick, { roughness: 0.4 }),
-    tape: mat(kit.tape, { roughness: 0.8 }),
+    blade: mat(
+      "#c5ccd4",
+      {
+        roughness: 0.38,
+        metalness: 0.28,
+        emissive: "#9aa3ab",
+        emissiveIntensity: 0.22,
+      },
+      FAR_SIDE_STICK_REACH,
+    ),
+    stick: mat(kit.stick, { roughness: 0.4 }, FAR_SIDE_STICK_REACH),
+    tape: mat(kit.tape, { roughness: 0.8 }, FAR_SIDE_STICK_REACH),
     number: new THREE.MeshBasicMaterial({
       map: numberMap,
       transparent: true,
@@ -6079,12 +6132,16 @@ export function RefereeMesh({ slot = 0 }: { slot?: 0 | 1 | 2 | 3 }) {
       black: mat("#161616", { roughness: 0.62 }),
       orange: mat("#e85d04", { roughness: 0.55 }),
       pants: mat("#111111", { roughness: 0.7 }),
-      blade: mat("#c5ccd4", {
-        roughness: 0.38,
-        metalness: 0.28,
-        emissive: "#9aa3ab",
-        emissiveIntensity: 0.22,
-      }),
+      blade: mat(
+        "#c5ccd4",
+        {
+          roughness: 0.38,
+          metalness: 0.28,
+          emissive: "#9aa3ab",
+          emissiveIntensity: 0.22,
+        },
+        FAR_SIDE_STICK_REACH,
+      ),
       mask: mat("#121212", { roughness: 0.42, metalness: 0.18 }),
     }),
     [],

@@ -14,8 +14,12 @@ export const FASCIA_W = 0.55;
 export const FASCIA_H = 0.22;
 export const FASCIA_D = 0.55;
 export const FASCIA_DROP = 0.52;
+/** Short half-extent, along Z (the rink's width). Side-line seats look at the long faces. */
 export const JUMBO_HW = 5.15;
-export const JUMBO_HH = 2.42;
+/** Half-height. 1.5× the old 2.42, plus a little so the narrow faces can stack the clock over the score. */
+export const JUMBO_HH = 2.42 * 1.68;
+/** Long half-extent, along X (the rink's length). End-line seats look at the short faces. */
+export const JUMBO_HL = JUMBO_HW * 2;
 export const JUMBO_SHELL_SHRINK = 0.12;
 export const JUMBO_FACE_SCALE = 1.92;
 export const PRESS_SHELL = { w: 18.4, h: 3.7, d: 4.6, z: 0.2 };
@@ -415,16 +419,17 @@ function addPress(): void {
 }
 
 function addJumbo(): void {
-  const hx = (JUMBO_HW * 2 - JUMBO_SHELL_SHRINK) / 2;
+  const hx = (JUMBO_HL * 2 - JUMBO_SHELL_SHRINK) / 2;
   const hy = (JUMBO_HH * 2 - JUMBO_SHELL_SHRINK) / 2;
-  const hz = hx;
+  const hz = (JUMBO_HW * 2 - JUMBO_SHELL_SHRINK) / 2;
   addAabb(0, JUMBO_Y, 0, hx, hy, hz);
-  const fw = (JUMBO_HW * JUMBO_FACE_SCALE) / 2;
+  const fwX = (JUMBO_HL * JUMBO_FACE_SCALE) / 2;
+  const fwZ = (JUMBO_HW * JUMBO_FACE_SCALE) / 2;
   const fh = (JUMBO_HH * JUMBO_FACE_SCALE) / 2;
-  addSolid(worldBox(-fw, JUMBO_Y - fh, JUMBO_HW, fw, JUMBO_Y + fh, JUMBO_HW));
-  addSolid(worldBox(-fw, JUMBO_Y - fh, -JUMBO_HW, fw, JUMBO_Y + fh, -JUMBO_HW));
-  addSolid(worldBox(JUMBO_HW, JUMBO_Y - fh, -fw, JUMBO_HW, JUMBO_Y + fh, fw));
-  addSolid(worldBox(-JUMBO_HW, JUMBO_Y - fh, -fw, -JUMBO_HW, JUMBO_Y + fh, fw));
+  addSolid(worldBox(-fwX, JUMBO_Y - fh, JUMBO_HW, fwX, JUMBO_Y + fh, JUMBO_HW));
+  addSolid(worldBox(-fwX, JUMBO_Y - fh, -JUMBO_HW, fwX, JUMBO_Y + fh, -JUMBO_HW));
+  addSolid(worldBox(JUMBO_HL, JUMBO_Y - fh, -fwZ, JUMBO_HL, JUMBO_Y + fh, fwZ));
+  addSolid(worldBox(-JUMBO_HL, JUMBO_Y - fh, -fwZ, -JUMBO_HL, JUMBO_Y + fh, fwZ));
 }
 
 function buildCrowd(): void {

@@ -26,10 +26,14 @@ import {
   RINK_L,
   RINK_W,
 } from "./rink";
+import { JUMBO_HH, JUMBO_HL, JUMBO_HW } from "./crowd";
+import centerIceUrl from "../../logo-center-ice.png";
 import scoreboardLogoUrl from "../../logo-scoreboard.png";
 
 const scoreboardLogo = new Image();
 scoreboardLogo.src = scoreboardLogoUrl;
+const centerIceLogo = new Image();
+centerIceLogo.src = centerIceUrl;
 
 function hash2(ix: number, iy: number): number {
   let n = Math.imul(ix, 374761393) + Math.imul(iy, 668265263);
@@ -653,18 +657,169 @@ export type JumboPaint = RibbonPaint & {
   players: { x: number; z: number; home: boolean }[];
 };
 
-export function createJumboFace(): {
+/** Overhead token: head, striped torso, legs, and a short stick. Centered on the ice point. */
+function paintJumboSkater(
+  g: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  jersey: string,
+  stripe: string,
+): void {
+  const torsoW = 6.2;
+  const torsoH = 5;
+  const legW = 1.7;
+  const legH = 4.2;
+  const headR = 2.15;
+  const top = y - 6.2;
+  const torsoY = top + headR * 2 - 0.4;
+  const hip = torsoY + torsoH - 0.5;
+  g.fillStyle = jersey;
+  g.beginPath();
+  g.arc(x, top + headR, headR, 0, Math.PI * 2);
+  g.fill();
+  g.fillRect(x - torsoW / 2, torsoY, torsoW, torsoH);
+  g.fillStyle = stripe;
+  g.fillRect(x - torsoW / 2, torsoY + 1.35, torsoW, 1.35);
+  g.fillStyle = jersey;
+  g.fillRect(x - 2.8, hip, legW, legH);
+  g.fillRect(x + 1.1, hip, legW, legH);
+  g.strokeStyle = "#1a120c";
+  g.lineWidth = 1.15;
+  g.beginPath();
+  g.moveTo(x + torsoW / 2 - 0.5, torsoY + torsoH * 0.55);
+  g.lineTo(x + torsoW / 2 + 3.1, hip + legH - 0.3);
+  g.stroke();
+}
+
+function traceRoundRect(
+  g: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  rw: number,
+  rh: number,
+  rad: number,
+): void {
+  const r = Math.max(0, Math.min(rad, rw / 2, rh / 2));
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.lineTo(x + rw - r, y);
+  g.quadraticCurveTo(x + rw, y, x + rw, y + r);
+  g.lineTo(x + rw, y + rh - r);
+  g.quadraticCurveTo(x + rw, y + rh, x + rw - r, y + rh);
+  g.lineTo(x + r, y + rh);
+  g.quadraticCurveTo(x, y + rh, x, y + rh - r);
+  g.lineTo(x, y + r);
+  g.quadraticCurveTo(x, y, x + r, y);
+  g.closePath();
+}
+
+function paintJumboScore(
+  g: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  bw: number,
+  bh: number,
+  opts: JumboPaint,
+  stacked: boolean,
+): void {
+  g.fillStyle = "#1a2228";
+  g.fillRect(x, y, bw, bh);
+  g.strokeStyle = opts.fill;
+  g.lineWidth = 2;
+  g.strokeRect(x + 1, y + 1, bw - 2, bh - 2);
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillStyle = opts.fill;
+  g.font = `700 ${Math.max(11, Math.round(bh * (stacked ? 0.1 : 0.14)))}px 'Barlow Condensed', sans-serif`;
+  g.fillText("HOCKEY FAST BREAK", x + bw / 2, y + bh * (stacked ? 0.1 : 0.18));
+  const small = `600 ${Math.max(9, Math.round(bh * (stacked ? 0.08 : 0.1)))}px 'IBM Plex Sans', sans-serif`;
+  const big = `700 ${Math.max(14, Math.round(bh * (stacked ? 0.16 : 0.26)))}px 'Barlow Condensed', sans-serif`;
+  const clock = opts.clock ?? "—";
+  const score = `${opts.homeScore}  –  ${opts.awayScore}`;
+  if (stacked) {
+    g.fillStyle = "#8b9688";
+    g.font = small;
+    g.fillText("GAME TIME", x + bw / 2, y + bh * 0.28);
+    g.fillStyle = "#e8ece6";
+    g.font = big;
+    g.fillText(clock, x + bw / 2, y + bh * 0.46);
+    g.fillStyle = "#8b9688";
+    g.font = small;
+    g.fillText("SCORE", x + bw / 2, y + bh * 0.66);
+    g.fillStyle = "#e8ece6";
+    g.font = big;
+    g.fillText(score, x + bw / 2, y + bh * 0.84);
+    return;
+  }
+  g.fillStyle = "#8b9688";
+  g.font = small;
+  g.fillText("GAME TIME", x + bw * 0.28, y + bh * 0.42);
+  g.fillText("SCORE", x + bw * 0.72, y + bh * 0.42);
+  g.fillStyle = "#e8ece6";
+  g.font = big;
+  g.fillText(clock, x + bw * 0.28, y + bh * 0.72);
+  g.fillText(score, x + bw * 0.72, y + bh * 0.72);
+}
+
+function paintJumboLogoAd(g: CanvasRenderingContext2D, x: number, y: number, bw: number, bh: number): void {
+  g.fillStyle = "#fef8ec";
+  g.fillRect(x, y, bw, bh);
+  if (scoreboardLogo.complete && scoreboardLogo.naturalWidth > 0) {
+    const ir = scoreboardLogo.naturalWidth / scoreboardLogo.naturalHeight;
+    const rr = bw / bh;
+    const dw = ir > rr ? bh * ir : bw;
+    const dh = ir > rr ? bh : bw / ir;
+    g.save();
+    g.beginPath();
+    g.rect(x, y, bw, bh);
+    g.clip();
+    g.drawImage(scoreboardLogo, x + (bw - dw) / 2, y + (bh - dh) / 2, dw, dh);
+    g.restore();
+  }
+  g.strokeStyle = "#1b3a6b";
+  g.lineWidth = 2;
+  g.strokeRect(x + 1, y + 1, bw - 2, bh - 2);
+}
+
+function paintJumboWaterAd(g: CanvasRenderingContext2D, x: number, y: number, bw: number, bh: number): void {
+  g.fillStyle = "#d7eef7";
+  g.fillRect(x, y, bw, bh);
+  g.strokeStyle = "#6aa3b8";
+  g.lineWidth = 2;
+  g.strokeRect(x + 1, y + 1, bw - 2, bh - 2);
+  g.fillStyle = "#14556c";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.font = `italic ${Math.max(14, Math.round(bh * 0.22))}px 'Segoe Script', 'Brush Script MT', cursive`;
+  g.fillText("Drink More", x + bw / 2, y + bh * 0.4);
+  g.fillText("Water!", x + bw / 2, y + bh * 0.68);
+}
+
+/**
+ * `wide` is a side-line face: rink length left-right, video along the bottom, score and ads across the top.
+ * `tall` is an end-line face: rink length vertical, video along the left, score and ads stacked on the right.
+ * `flip` is the opposite face of that pair. Only the vertical rink axis reverses, so the near end stays
+ * at the bottom without mirroring left and right.
+ */
+export function createJumboFace(kind: "wide" | "tall" = "wide", flip = false): {
   canvas: HTMLCanvasElement;
   texture: THREE.CanvasTexture;
   paint: (opts: JumboPaint) => void;
 } {
   const canvas = document.createElement("canvas");
-  canvas.width = 1024;
-  canvas.height = 512;
+  const tall = kind === "tall";
+  if (tall) {
+    canvas.width = 900;
+    canvas.height = Math.max(1, Math.round(canvas.width * (JUMBO_HH / JUMBO_HW)));
+  } else {
+    canvas.width = 1280;
+    canvas.height = Math.max(1, Math.round(canvas.width * (JUMBO_HH / JUMBO_HL)));
+  }
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 8;
 
+  const axis = flip ? -1 : 1;
   const paint = (opts: JumboPaint) => {
     const g = canvas.getContext("2d");
     if (!g) return;
@@ -677,105 +832,183 @@ export function createJumboFace(): {
     g.lineWidth = 8;
     g.strokeRect(4, 4, w - 8, h - 8);
 
-    g.fillStyle = opts.fill;
-    g.font = "700 36px 'Barlow Condensed', sans-serif";
-    g.textAlign = "center";
-    g.textBaseline = "middle";
-    g.fillText("HOCKEY FAST BREAK", w * 0.39, h * 0.11);
-
-    const adX = w * 0.78;
-    const adW = w * 0.18;
-    const adY = h * 0.05;
-    const adH = h * 0.28;
-    g.fillStyle = "#fef8ec";
-    g.fillRect(adX, adY, adW, adH);
-    if (scoreboardLogo.complete && scoreboardLogo.naturalWidth > 0) {
-      const ir = scoreboardLogo.naturalWidth / scoreboardLogo.naturalHeight;
-      const rr = adW / adH;
-      let dw: number;
-      let dh: number;
-      if (ir > rr) {
-        dh = adH;
-        dw = dh * ir;
-      } else {
-        dw = adW;
-        dh = dw / ir;
-      }
-      g.save();
-      g.beginPath();
-      g.rect(adX, adY, adW, adH);
-      g.clip();
-      g.drawImage(scoreboardLogo, adX + (adW - dw) / 2, adY + (adH - dh) / 2, dw, dh);
-      g.restore();
+    const pad = Math.max(8, Math.round(Math.min(w, h) * 0.02));
+    let vidX: number;
+    let vidY: number;
+    let vidW: number;
+    let vidH: number;
+    if (tall) {
+      const rightW = Math.round(w * 0.34);
+      vidX = pad;
+      vidY = pad;
+      vidW = w - rightW - pad * 3;
+      vidH = h - pad * 2;
+      const rx = vidX + vidW + pad;
+      const gap = pad;
+      const slot = (vidH - gap * 2) / 3;
+      paintJumboScore(g, rx, vidY, rightW, slot, opts, true);
+      paintJumboLogoAd(g, rx, vidY + slot + gap, rightW, slot);
+      paintJumboWaterAd(g, rx, vidY + (slot + gap) * 2, rightW, slot);
+    } else {
+      const topH = Math.round(h * 0.32);
+      const scoreW = Math.round(w * 0.4);
+      const adW = Math.round((w - pad * 4 - scoreW) / 2);
+      paintJumboScore(g, pad, pad, scoreW, topH, opts, false);
+      paintJumboLogoAd(g, pad * 2 + scoreW, pad, adW, topH);
+      paintJumboWaterAd(g, pad * 3 + scoreW + adW, pad, adW, topH);
+      vidX = pad;
+      vidY = pad * 2 + topH;
+      vidW = w - pad * 2;
+      vidH = h - vidY - pad;
     }
-    g.strokeStyle = "#1b3a6b";
-    g.lineWidth = 2;
-    g.strokeRect(adX, adY, adW, adH);
-
-    g.fillStyle = "#d7eef7";
-    g.fillRect(adX, h * 0.36, adW, h * 0.26);
-    g.strokeStyle = "#6aa3b8";
-    g.strokeRect(adX, h * 0.36, adW, h * 0.26);
-    g.fillStyle = "#14556c";
-    g.font = "italic 22px 'Segoe Script', 'Brush Script MT', cursive";
-    g.fillText("Drink More", adX + adW / 2, h * 0.45);
-    g.fillText("Water!", adX + adW / 2, h * 0.56);
-
-    g.fillStyle = "#1a2228";
-    g.fillRect(14, h * 0.2, w * 0.72, h * 0.3);
-    g.fillStyle = "#8b9688";
-    g.font = "600 18px 'IBM Plex Sans', sans-serif";
-    g.textAlign = "left";
-    g.fillText("GAME TIME", 28, h * 0.3);
-    g.fillText("SCORE", w * 0.4, h * 0.3);
-    g.fillStyle = "#e8ece6";
-    g.font = "700 52px 'Barlow Condensed', sans-serif";
-    g.fillText(opts.clock ?? "—", 28, h * 0.43);
-    g.fillText(`${opts.homeScore}  –  ${opts.awayScore}`, w * 0.4, h * 0.43);
-
-    const vx = 14;
-    const vy = h * 0.54;
-    const vw = w * 0.72;
-    const vh = h * 0.4;
     g.fillStyle = "#05080a";
-    g.fillRect(vx, vy, vw, vh);
+    g.fillRect(vidX, vidY, vidW, vidH);
     g.strokeStyle = "#2a3d32";
     g.lineWidth = 2;
-    g.strokeRect(vx, vy, vw, vh);
-    const iceX = vx + 18;
-    const iceY = vy + 16;
-    const iceW = vw - 36;
-    const iceH = vh - 32;
+    g.strokeRect(vidX + 1, vidY + 1, vidW - 2, vidH - 2);
+    const inset = 8;
+    const fitW = vidW - inset * 2;
+    const fitH = vidH - inset * 2;
+    const margin = 3.4;
+    const viewL = RINK_L + margin * 2;
+    const viewW = RINK_W + margin * 2;
+    const viewAspect = tall ? viewW / viewL : viewL / viewW;
+    let viewPixW = fitW;
+    let viewPixH = viewPixW / viewAspect;
+    if (viewPixH > fitH) {
+      viewPixH = fitH;
+      viewPixW = viewPixH * viewAspect;
+    }
+    const viewX = vidX + (vidW - viewPixW) / 2;
+    const viewY = vidY + (vidH - viewPixH) / 2;
+    const iceW = tall ? viewPixW * (RINK_W / viewW) : viewPixW * (RINK_L / viewL);
+    const iceH = tall ? viewPixH * (RINK_L / viewL) : viewPixH * (RINK_W / viewW);
+    const iceX = viewX + (viewPixW - iceW) / 2;
+    const iceY = viewY + (viewPixH - iceH) / 2;
+    const pxPerM = viewPixW / (tall ? viewW : viewL);
+    const corner = CORNER_R * pxPerM;
+    // Wide: length left-right. Flip only moves the near side boards to the bottom.
+    // Tall: length vertical. Flip only moves the near goal line to the bottom.
+    const toIce = tall
+      ? (x: number, z: number) => ({
+          x: viewX + viewPixW / 2 + (-z / (viewW / 2)) * (viewPixW / 2),
+          y: viewY + viewPixH / 2 + axis * (x / (viewL / 2)) * (viewPixH / 2),
+        })
+      : (x: number, z: number) => ({
+          x: viewX + viewPixW / 2 + (x / (viewL / 2)) * (viewPixW / 2),
+          y: viewY + viewPixH / 2 + axis * (z / (viewW / 2)) * (viewPixH / 2),
+        });
+    const fillWorldRect = (x0: number, z0: number, x1: number, z1: number, color: string) => {
+      const a = toIce(x0, z0);
+      const b = toIce(x1, z0);
+      const c = toIce(x1, z1);
+      const d = toIce(x0, z1);
+      g.beginPath();
+      g.moveTo(a.x, a.y);
+      g.lineTo(b.x, b.y);
+      g.lineTo(c.x, c.y);
+      g.lineTo(d.x, d.y);
+      g.closePath();
+      g.fillStyle = color;
+      g.fill();
+    };
+    const crowdStep = 1.45;
+    for (let ring = 0; ring < 3; ring++) {
+      const out = 1.05 + ring * 0.78;
+      for (let x = -RINK_L / 2 - out; x <= RINK_L / 2 + out; x += crowdStep) {
+        for (const side of [-1, 1]) {
+          const z = side * (RINK_W / 2 + out);
+          const away = z < 0 && x > -12 && x < -0.5;
+          g.fillStyle = away ? "#9a1c2f" : "#1a3f72";
+          const p = toIce(x, z);
+          g.fillRect(p.x - 1.3, p.y - 1.3, 2.6, 2.6);
+        }
+      }
+      for (let z = -RINK_W / 2 + crowdStep; z <= RINK_W / 2 - crowdStep; z += crowdStep) {
+        for (const side of [-1, 1]) {
+          const x = side * (RINK_L / 2 + out);
+          g.fillStyle = "#1a3f72";
+          const p = toIce(x, z);
+          g.fillRect(p.x - 1.3, p.y - 1.3, 2.6, 2.6);
+        }
+      }
+    }
+    const zBench = -RINK_W / 2 - 1.58;
+    fillWorldRect(0.52, zBench - 0.55, 9.8, zBench + 0.35, "#d8dde3");
+    fillWorldRect(-9.8, zBench - 0.55, -0.52, zBench + 0.35, "#d8dde3");
+    const zBox = RINK_W / 2 + 1.55;
+    const boxW = 2.6;
+    fillWorldRect(-(boxW / 2 + 0.05) - boxW / 2, zBox - 0.2, -(boxW / 2 + 0.05) + boxW / 2, zBox + 1.05, "#c8d8e8");
+    fillWorldRect(boxW / 2 + 0.05 - boxW / 2, zBox - 0.2, boxW / 2 + 0.05 + boxW / 2, zBox + 1.05, "#c8d8e8");
     g.fillStyle = "#d7e8f4";
-    g.fillRect(iceX, iceY, iceW, iceH);
+    traceRoundRect(g, iceX, iceY, iceW, iceH, corner);
+    g.fill();
+    const rule = (x: number) => {
+      const p = toIce(x, 0);
+      if (tall) {
+        g.moveTo(iceX, p.y);
+        g.lineTo(iceX + iceW, p.y);
+      } else {
+        g.moveTo(p.x, iceY);
+        g.lineTo(p.x, iceY + iceH);
+      }
+    };
+    g.save();
+    traceRoundRect(g, iceX, iceY, iceW, iceH, corner);
+    g.clip();
+    g.fillStyle = CREASE_FILL;
+    for (const side of [1, -1] as const) {
+      const gx = GOAL_LINE_X * side;
+      const dir = -side;
+      const creaseHw = Math.max(GOAL_W / 2, CREASE_R * 0.66);
+      const mouth = toIce(gx, -creaseHw);
+      g.beginPath();
+      g.moveTo(mouth.x, mouth.y);
+      const steps = 14;
+      for (let i = 0; i <= steps; i++) {
+        const z = -creaseHw + (2 * creaseHw * i) / steps;
+        const xOff = Math.sqrt(Math.max(0, CREASE_R * CREASE_R - z * z));
+        const p = toIce(gx + dir * xOff, z);
+        g.lineTo(p.x, p.y);
+      }
+      g.closePath();
+      g.fill();
+      g.strokeStyle = LINE_RED;
+      g.lineWidth = 1.2;
+      g.stroke();
+    }
+    const logoAt = toIce(0, 0);
+    const logoR = FACEOFF_MARK_R * pxPerM;
+    if (centerIceLogo.complete && centerIceLogo.naturalWidth > 0) {
+      g.save();
+      g.beginPath();
+      g.arc(logoAt.x, logoAt.y, logoR, 0, Math.PI * 2);
+      g.clip();
+      g.drawImage(centerIceLogo, logoAt.x - logoR, logoAt.y - logoR, logoR * 2, logoR * 2);
+      g.restore();
+    } else {
+      g.fillStyle = LINE_BLUE;
+      g.beginPath();
+      g.arc(logoAt.x, logoAt.y, Math.max(2, logoR * 0.28), 0, Math.PI * 2);
+      g.fill();
+    }
     g.strokeStyle = LINE_RED;
     g.lineWidth = 2;
     g.beginPath();
-    g.moveTo(iceX + iceW / 2, iceY);
-    g.lineTo(iceX + iceW / 2, iceY + iceH);
+    rule(0);
     g.stroke();
     g.strokeStyle = LINE_BLUE;
-    const bx = (BLUE_X / (RINK_L / 2)) * (iceW / 2);
     g.beginPath();
-    g.moveTo(iceX + iceW / 2 - bx, iceY);
-    g.lineTo(iceX + iceW / 2 - bx, iceY + iceH);
-    g.moveTo(iceX + iceW / 2 + bx, iceY);
-    g.lineTo(iceX + iceW / 2 + bx, iceY + iceH);
+    rule(-BLUE_X);
+    rule(BLUE_X);
     g.stroke();
-    const gx = (GOAL_LINE_X / (RINK_L / 2)) * (iceW / 2);
     g.strokeStyle = LINE_RED;
     g.beginPath();
-    g.moveTo(iceX + iceW / 2 - gx, iceY);
-    g.lineTo(iceX + iceW / 2 - gx, iceY + iceH);
-    g.moveTo(iceX + iceW / 2 + gx, iceY);
-    g.lineTo(iceX + iceW / 2 + gx, iceY + iceH);
+    rule(-GOAL_LINE_X);
+    rule(GOAL_LINE_X);
     g.stroke();
-    const toIce = (x: number, z: number) => ({
-      x: Math.max(iceX + 4, Math.min(iceX + iceW - 4, iceX + iceW / 2 + (x / (RINK_L / 2)) * (iceW / 2))),
-      y: Math.max(iceY + 4, Math.min(iceY + iceH - 4, iceY + iceH / 2 + (z / (RINK_W / 2)) * (iceH / 2))),
-    });
-    const circR = (FACEOFF_MARK_R / (RINK_L / 2)) * (iceW / 2);
-    const dotR = Math.max(1.6, (DOT_R / (RINK_L / 2)) * (iceW / 2));
+    const circR = FACEOFF_MARK_R * pxPerM;
+    const dotR = Math.max(1.6, DOT_R * pxPerM);
     const spots: [number, number][] = [
       [0, 0],
       [FACEOFF_EZ_X, FACEOFF_SPOT_Z],
@@ -797,13 +1030,13 @@ export function createJumboFace(): {
     }
     for (const p of opts.players) {
       const pt = toIce(p.x, p.z);
-      g.fillStyle = p.home ? opts.homeJersey : opts.awayJersey;
-      g.beginPath();
-      g.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
-      g.fill();
-      g.strokeStyle = p.home ? opts.homeStripe : opts.awayStripe;
-      g.lineWidth = 1.5;
-      g.stroke();
+      paintJumboSkater(
+        g,
+        pt.x,
+        pt.y,
+        p.home ? opts.homeJersey : opts.awayJersey,
+        p.home ? opts.homeStripe : opts.awayStripe,
+      );
     }
     const puck = toIce(opts.puckX, opts.puckZ);
     g.fillStyle = "#111111";
@@ -818,6 +1051,11 @@ export function createJumboFace(): {
       g.textAlign = "center";
       g.fillText("GOAL", iceX + iceW / 2, iceY + 14);
     }
+    g.restore();
+    g.strokeStyle = "#e8eef4";
+    g.lineWidth = 3;
+    traceRoundRect(g, iceX, iceY, iceW, iceH, corner);
+    g.stroke();
     texture.needsUpdate = true;
   };
 

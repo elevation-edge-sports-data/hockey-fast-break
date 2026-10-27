@@ -324,6 +324,18 @@ let _titleReady = false;
 let _titleNeedsBaseline = false;
 let _titleUserCam = false;
 let _titleModeSeen: CamMode | null = null;
+let _titleFcTheta = 0;
+let _titleFcPhi = 0;
+let _titleFcRadius = 0;
+let _titleFcSynced = false;
+
+function syncTitleFreeCam(): void {
+  const fc = world.freeCam;
+  _titleFcTheta = fc.theta;
+  _titleFcPhi = fc.phi;
+  _titleFcRadius = fc.radius;
+  _titleFcSynced = true;
+}
 
 function seedFreestyleCam(camera: THREE.PerspectiveCamera) {
   const playing = useGame.getState().playing;
@@ -660,6 +672,20 @@ function CameraRig() {
             seededTitle.current = true;
             _titleReady = true;
             _titleNeedsBaseline = true;
+            _titleFcSynced = false;
+          }
+        }
+        const fc = world.freeCam;
+        if (_titleReady && fc.captured && _titleFcSynced) {
+          const spun =
+            Math.abs(fc.theta - _titleFcTheta) > 1e-5 ||
+            Math.abs(fc.phi - _titleFcPhi) > 1e-5 ||
+            Math.abs(fc.radius - _titleFcRadius) > 1e-3;
+          if (spun) {
+            applyFreeCam(cam);
+            _titleUserCam = true;
+            _titleHold.copy(cam.position);
+            syncTitleFreeCam();
           }
         }
         writeCamBasis(cam);
@@ -972,12 +998,14 @@ function CameraRig() {
       _titleHold.copy(cam.position);
       _titleNeedsBaseline = false;
       captureFreeCam(cam, true);
+      syncTitleFreeCam();
       return;
     }
     if (!_titleUserCam && cam.position.distanceTo(_titleBaseline) > 0.08) _titleUserCam = true;
     if (_titleUserCam && cam.position.distanceTo(_titleHold) > 1e-4) {
       _titleHold.copy(cam.position);
       captureFreeCam(cam, true);
+      syncTitleFreeCam();
     }
   });
   return null;
