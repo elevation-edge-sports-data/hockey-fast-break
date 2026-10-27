@@ -8,7 +8,9 @@ import {
   goaliePlaysPuck,
   goaliePlayPuckPose,
   goaliePokeCheckPose,
+  goalieUserPokePose,
   goalieDiveSavePose,
+  goalieHandSavePose,
   goalieShotSave,
   goalieZKind,
   autoDekePoseName,
@@ -125,6 +127,17 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   if (!goalie && s.celebrate > 0.05 && s.hit <= 0 && !tumbling(s) && s.struck <= 0.2 && !brawlLive(s.id) && !rageDraw(s.id) && s.dive <= 0.04) {
     return "celebrate";
   }
+  // After a shootout goal the scoop cover used to stamp over a check.
+  // The same get-up other modes use for a tumbled goalie plays for absorb too.
+  const soPose = world.shootout;
+  if (
+    goalie &&
+    soPose &&
+    checkedCyclePose(s.struck, s.tumble) &&
+    (world.whistle === "goal" || soPose.phase === "result" || soPose.phase === "done")
+  ) {
+    return "goalieGetUp";
+  }
   if (goalie && !tumbling(s) && s.celebrate > 0.05) return "goalieCheer";
   // The live draw keeps the centers on the crouch spots. Ready would stand
   // them up inside each other. Wings leave that set once the puck is down.
@@ -174,6 +187,8 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   if (carrying && s.burst <= 0 && s.deke <= 0.02 && Math.abs(s.stickPull) <= 0.02) return "puckPossess1";
 
   if (goalie && !tumbling(s) && s.celebrate <= 0.05 && s.dive <= 0.04) {
+    const manual = goalieHandSavePose(s);
+    if (manual) return manual;
     const iron = ironDefensePose(s);
     if (iron) return iron;
     const hand = shotTopCornerHand(s);
@@ -183,6 +198,8 @@ export function inferNamedPose(s: Skater, index: number): string | null {
     if (behind) return behind;
     const dive = desperateDivePose(s);
     if (dive) return dive;
+    // X plays this pose with nothing in reach. A loose-puck skate must not cover it.
+    if (goalieUserPokePose(s)) return "goaliePokeCheck";
     const playPose = goaliePlayPuckPose(s);
     if (playPose) return playPose;
     if (goaliePokeCheckPose(s)) return "goaliePokeCheck";

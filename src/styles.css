@@ -245,6 +245,15 @@ h2 {
   font-size: clamp(1.8rem, 4vw, 2.6rem);
 }
 
+.hud-score-cluster {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
 .hud-stats {
   display: flex;
   flex-direction: column;
@@ -933,8 +942,8 @@ h2 {
 
 .clock-setup {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 4px 8px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 4px 6px;
   width: 100%;
   min-width: 0;
   max-width: 100%;
@@ -953,9 +962,9 @@ h2 {
   width: 100%;
   min-width: 0;
   white-space: nowrap;
-  padding: 0 6px;
-  font-size: clamp(0.78rem, 2.4vw, 1.05rem);
-  letter-spacing: 0.04em;
+  padding: 0 2px;
+  font-size: clamp(0.64rem, 1.7vw, 0.95rem);
+  letter-spacing: 0.02em;
 }
 
 .clock-setup button.is-on {
@@ -1019,6 +1028,17 @@ h2 {
   font-family: var(--font-display);
   font-size: 0.92rem;
   font-variant-numeric: tabular-nums;
+}
+
+.clock-mins.ot-format {
+  flex-wrap: nowrap;
+}
+
+.clock-mins.ot-format button {
+  letter-spacing: 0.02em;
+  font-size: clamp(0.58rem, 1.5vw, 0.78rem);
+  white-space: nowrap;
+  padding: 0 1px;
 }
 
 .ability-sliders {
@@ -1133,6 +1153,58 @@ h2 {
   z-index: 1;
   touch-action: none;
   pointer-events: auto;
+}
+
+.so-grid {
+  position: relative;
+  z-index: 4;
+  pointer-events: none;
+  flex: 0 0 auto;
+  display: grid;
+  gap: 4px 6px;
+  align-items: center;
+  justify-items: center;
+  padding: 8px 12px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklab, var(--color-surface) 88%, transparent);
+  border: 1px solid var(--color-line);
+  font-family: var(--font-display);
+}
+
+.so-round,
+.so-side {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.so-side {
+  justify-self: end;
+  padding-right: 4px;
+}
+
+.so-cell {
+  width: 1.45rem;
+  height: 1.45rem;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  border: 1px solid var(--color-line);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.so-cell.is-goal {
+  color: #1f9d55;
+  border-color: #1f9d55;
+  background: color-mix(in oklab, #1f9d55 16%, transparent);
+}
+
+.so-cell.is-miss {
+  color: #d64545;
+  border-color: #d64545;
+  background: color-mix(in oklab, #d64545 16%, transparent);
 }
 
 .whistle {

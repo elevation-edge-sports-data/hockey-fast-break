@@ -224,44 +224,38 @@ function aimIntoNet(bx, bz) {
   return { mx: az / n, my: ax / n, hx, wallZ };
 }
 
-function mouthZ(prevX, prevZ, x, z) {
-  const mouth = GOAL_LINE_X;
-  if (x === prevX) return null;
-  if (!((prevX - mouth) * (x - mouth) <= 0)) return null;
-  if (prevX >= mouth) return null;
-  const t = (mouth - prevX) / (x - prevX);
-  return prevZ + (z - prevZ) * t;
-}
-
 function runLooseBank() {
   boot();
   const bank = flatBankStart();
   const sp = 16;
   launch(bank.x, PUCK_Y, bank.z, bank.vx * sp, 0, bank.vz * sp);
-  let crossed = null;
-  let prevX = world.puck.x;
-  let prevZ = world.puck.z;
+  let faceZ = null;
+  let bounced = false;
+  let deepest = world.puck.x;
+  let prevVx = world.puck.vx;
   const samples = [];
   for (let i = 0; i < 180; i++) {
     step(1);
     samples.push([world.puck.x, world.puck.z, world.puck.vx, world.puck.vz]);
-    const zAt = mouthZ(prevX, prevZ, world.puck.x, world.puck.z);
-    if (zAt !== null) {
-      crossed = zAt;
+    if (world.puck.x > deepest) deepest = world.puck.x;
+    if (prevVx > 1 && world.puck.vx < 0 && world.puck.x > GOAL_LINE_X - 1.2) {
+      bounced = true;
+      faceZ = world.puck.z;
       break;
     }
-    prevX = world.puck.x;
-    prevZ = world.puck.z;
+    prevVx = world.puck.vx;
     if (world.stoppage) break;
   }
-  return { crossed, samples };
+  return { faceZ, bounced, deepest, samples, x: world.puck.x };
 }
 
-test("a board bounce at the right angle enters the empty net, and it repeats", () => {
+test("a board bounce at the right angle hits the scrimmage face and repeats", () => {
   const a = runLooseBank();
   const b = runLooseBank();
-  assert.ok(a.crossed !== null, "first bank missed the goal line");
-  assert.ok(Math.abs(a.crossed) < GOAL_W / 2 - 0.04, `bank crossed at z ${a.crossed}`);
+  assert.equal(a.bounced, true, "first bank did not come off the face");
+  assert.ok(a.deepest > GOAL_LINE_X - 0.8, `bank never reached the net, deepest ${a.deepest.toFixed(2)}`);
+  assert.ok(a.x < GOAL_LINE_X - 0.01, `bank went through at ${a.x.toFixed(2)}`);
+  assert.ok(a.faceZ !== null && Math.abs(a.faceZ) < GOAL_W / 2 + 0.15, `bank met the face at z ${a.faceZ}`);
   assert.equal(a.samples.length, b.samples.length);
   for (let i = 0; i < a.samples.length; i++) {
     for (let k = 0; k < 4; k++) {
@@ -285,7 +279,7 @@ function putBlade(x, z) {
   }
 }
 
-test("a pass off the boards at that angle still goes in", () => {
+test("a pass off the boards at that angle comes off the scrimmage face", () => {
   boot();
   const bank = flatBankStart();
   putBlade(bank.x, bank.z);
@@ -306,20 +300,18 @@ test("a pass off the boards at that angle still goes in", () => {
   setInjectedKeys([]);
   step(1);
   assert.equal(world.puck.owner, null, "pass did not leave the stick");
-  let crossed = null;
-  let prevX = world.puck.x;
-  let prevZ = world.puck.z;
+  let faceZ = null;
+  let prevVx = world.puck.vx;
   for (let i = 0; i < 200; i++) {
     step(1);
-    const zAt = mouthZ(prevX, prevZ, world.puck.x, world.puck.z);
-    if (zAt !== null) {
-      crossed = zAt;
+    if (prevVx > 1 && world.puck.vx < 0 && world.puck.x > GOAL_LINE_X - 1.2) {
+      faceZ = world.puck.z;
       break;
     }
-    prevX = world.puck.x;
-    prevZ = world.puck.z;
+    prevVx = world.puck.vx;
     if (world.puck.owner !== null) break;
   }
-  assert.ok(crossed !== null, `pass bank missed, puck ${world.puck.x.toFixed(2)}, ${world.puck.z.toFixed(2)}`);
-  assert.ok(Math.abs(crossed) < GOAL_W / 2 - 0.04, `pass crossed at z ${crossed}`);
+  assert.ok(faceZ !== null, `pass bank missed the face, puck ${world.puck.x.toFixed(2)}, ${world.puck.z.toFixed(2)}`);
+  assert.ok(world.puck.x < GOAL_LINE_X - 0.01, `pass went through at ${world.puck.x.toFixed(2)}`);
+  assert.ok(Math.abs(faceZ) < GOAL_W / 2 + 0.15, `pass met the face at z ${faceZ}`);
 });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Pause, Play, RotateCcw } from "lucide-react";
-import { setTouchBurst, setTouchFace, setTouchLt, setTouchMove, setTouchView } from "./input";
+import { setTouchBurst, setTouchFace, setTouchLt, setTouchMove, setTouchStart } from "./input";
 import {
   applyLiveLineup,
   resetWorld,
@@ -24,6 +24,9 @@ import {
   previewPausedScrimmage,
   previewPausedMinutes,
   previewPausedRollerMinutes,
+  previewPausedOtFormat,
+  previewPausedRollerOtFormat,
+  previewPausedShootoutRounds,
   resumePausedGame,
   resetPausedGame,
   startPausedNewGame,
@@ -36,6 +39,7 @@ import {
   stepPeriodMinutes,
   periodEndCopy,
   periodOrdinal,
+  shootoutColumns,
   showsPeriodClock,
   lineupTotal,
   modeLineupCap,
@@ -46,9 +50,12 @@ import {
   type CamMode,
   type DrillTargets,
   type Lineup,
+  type OtFormat,
   type PlayMode,
+  type ShootoutRounds,
+  type ShootoutResult,
 } from "./store";
-import { kitById, UNIFORMS, type UniformKit } from "./uniforms";
+import { kitById, kitWornColors, UNIFORMS, type UniformKit } from "./uniforms";
 
 function Swatch({
   id,
@@ -62,17 +69,19 @@ function Swatch({
   onPick: (id: number) => void;
 }) {
   const u = UNIFORMS[id]!;
+  const worn = kitWornColors(u);
   return (
     <button
       type="button"
       aria-label={`Kit ${id + 1}`}
+      aria-pressed={selected}
       disabled={disabled}
       onClick={() => onPick(id)}
       className={`uni-swatch${selected ? " is-on" : ""}`}
     >
-      <span style={{ background: u.helmet }} />
-      <span style={{ background: u.jersey }} />
-      <span style={{ background: u.pants }} />
+      <span style={{ background: worn.helmet }} />
+      <span style={{ background: worn.jersey }} />
+      <span style={{ background: worn.pants }} />
     </button>
   );
 }
@@ -197,35 +206,25 @@ function Stepper({
   );
 }
 
-function AimCompass({ flip = false }: { flip?: boolean }) {
-  const [dir, setDir] = useState<"up" | "down" | "left" | "right">("up");
+function AimCompass() {
+  const [dir, setDir] = useState<"up" | "down">("up");
   useEffect(() => {
     let id = 0;
     const tick = () => {
-      const d = attackCompass();
+      const d = attackCompass() === "down" ? "down" : "up";
       setDir((prev) => (prev === d ? prev : d));
       id = requestAnimationFrame(tick);
     };
     id = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(id);
   }, []);
-  const shown =
-    !flip
-      ? dir
-      : dir === "up"
-        ? "down"
-        : dir === "down"
-          ? "up"
-          : dir === "left"
-            ? "right"
-            : "left";
-  const ch = shown === "up" ? "↑" : shown === "down" ? "↓" : shown === "left" ? "←" : "→";
+  const ch = dir === "down" ? "↓" : "↑";
   return (
     <button
       type="button"
       className="aim-compass"
-      title={`Attack ${shown} — click to rotate`}
-      aria-label={`Attack ${shown}, click to rotate aim`}
+      title={dir === "down" ? "Shot left and right swapped — click for normal" : "Normal shot aim — click to swap left and right"}
+      aria-label={dir === "down" ? "Down aim, left and right swapped, click to restore" : "Up aim, click to swap left and right"}
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -238,11 +237,12 @@ function AimCompass({ flip = false }: { flip?: boolean }) {
 }
 
 function UniStripe({ kit }: { kit: UniformKit }) {
+  const worn = kitWornColors(kit);
   return (
     <span className="uni-stripe" aria-hidden="true">
-      <i style={{ background: kit.helmet }} />
-      <i style={{ background: kit.jersey }} />
-      <i style={{ background: kit.pants }} />
+      <i style={{ background: worn.helmet }} />
+      <i style={{ background: worn.jersey }} />
+      <i style={{ background: worn.pants }} />
     </span>
   );
 }
@@ -447,6 +447,113 @@ function PeriodMinutes({ kind }: { kind: "game" | "roller" }) {
   );
 }
 
+function OtFormatPick({ kind }: { kind: "game" | "roller" }) {
+  const storeFormat = useGame((s) => (kind === "roller" ? s.rollerOtFormat : s.otFormat));
+  const playing = useGame((s) => s.playing);
+  const paused = useGame((s) => s.paused);
+  const draft = usePauseDraft();
+  const format =
+    playing && paused && draft
+      ? kind === "roller"
+        ? draft.rollerOtFormat
+        : draft.otFormat
+      : storeFormat;
+  const pick = (v: OtFormat) => {
+    if (format === v) return;
+    if (kind === "roller") previewPausedRollerOtFormat(v);
+    else previewPausedOtFormat(v);
+  };
+  return (
+    <div className="clock-mins ot-format" role="group" aria-label="Overtime format">
+      <button type="button" className={format === "reg" ? "is-on" : ""} aria-pressed={format === "reg"} onClick={() => pick("reg")}>
+        Reg
+      </button>
+      <button
+        type="button"
+        className={format === "playoff" ? "is-on" : ""}
+        aria-pressed={format === "playoff"}
+        onClick={() => pick("playoff")}
+      >
+        Playoff
+      </button>
+    </div>
+  );
+}
+
+function ShootoutRoundsPick() {
+  const storeRounds = useGame((s) => s.shootoutRounds);
+  const playing = useGame((s) => s.playing);
+  const paused = useGame((s) => s.paused);
+  const draft = usePauseDraft();
+  const rounds = playing && paused && draft ? draft.shootoutRounds : storeRounds;
+  const pick = (n: ShootoutRounds) => {
+    if (rounds === n) return;
+    previewPausedShootoutRounds(n);
+  };
+  return (
+    <>
+      <p className="clock-untimed">rounds</p>
+      <div className="clock-mins" role="group" aria-label="Shootout rounds">
+        {([3, 5, 7] as const).map((n) => (
+          <button
+            key={n}
+            type="button"
+            className={rounds === n ? "is-on" : ""}
+            aria-pressed={rounds === n}
+            onClick={() => pick(n)}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function ShootoutCell({ result }: { result: ShootoutResult | null }) {
+  if (result === "goal") return <span className="so-cell is-goal" aria-label="Goal">✓</span>;
+  if (result === "save") return <span className="so-cell is-miss" aria-label="Miss">✕</span>;
+  return <span className="so-cell" />;
+}
+
+function ShootoutGrid() {
+  const shootout = useGame((s) => s.shootout);
+  const playing = useGame((s) => s.playing);
+  if (!playing || !shootout) return null;
+  const scheduled = shootout.rounds === 5 || shootout.rounds === 7 ? shootout.rounds : 3;
+  const cols = shootoutColumns(shootout.attempts, scheduled);
+  const rounds = Math.max(cols.home.length, cols.away.length, scheduled);
+  const away = (i: number) => cols.away[i] ?? null;
+  const home = (i: number) => cols.home[i] ?? null;
+  return (
+    <div
+      className="so-grid"
+      role="table"
+      aria-label="Shootout"
+      style={{ gridTemplateColumns: `auto repeat(${rounds}, 1.7rem)` }}
+    >
+      <span />
+      {Array.from({ length: rounds }, (_, i) => (
+        <span key={i} className="so-round" role="columnheader">
+          {i + 1}
+        </span>
+      ))}
+      <span className="so-side" role="rowheader">
+        CPU
+      </span>
+      {Array.from({ length: rounds }, (_, i) => (
+        <ShootoutCell key={`a${i}`} result={away(i)} />
+      ))}
+      <span className="so-side" role="rowheader">
+        YOU
+      </span>
+      {Array.from({ length: rounds }, (_, i) => (
+        <ShootoutCell key={`h${i}`} result={home(i)} />
+      ))}
+    </div>
+  );
+}
+
 function ClockSetup() {
   const storeMode = useGame((s) => s.clockMode);
   const playing = useGame((s) => s.playing);
@@ -469,6 +576,16 @@ function ClockSetup() {
             <DrillTargetPick />
           </>
         ) : null}
+      </div>
+      <div className="clock-col">
+        <button
+          type="button"
+          className={clockMode === "shootout" ? "is-on" : ""}
+          onClick={() => chooseMode("shootout")}
+        >
+          Shootout
+        </button>
+        {clockMode === "shootout" ? <ShootoutRoundsPick /> : null}
       </div>
       <div className="clock-col">
         <button
@@ -510,6 +627,8 @@ function ClockSetup() {
             <p className="clock-untimed">2 X 18</p>
             <p className="clock-untimed">period length</p>
             <PeriodMinutes kind="roller" />
+            <p className="clock-untimed">ot format</p>
+            <OtFormatPick kind="roller" />
           </>
         ) : null}
       </div>
@@ -526,6 +645,8 @@ function ClockSetup() {
             <p className="clock-untimed">3 X 20</p>
             <p className="clock-untimed">period length</p>
             <PeriodMinutes kind="game" />
+            <p className="clock-untimed">ot format</p>
+            <OtFormatPick kind="game" />
           </>
         ) : null}
       </div>
@@ -1122,12 +1243,15 @@ export function Overlay() {
   const goalSide = useGame((s) => s.goalSide);
   const gameMinutes = useGame((s) => s.gameMinutes);
   const rollerMinutes = useGame((s) => s.rollerMinutes);
+  const otFormat = useGame((s) => s.otFormat);
+  const rollerOtFormat = useGame((s) => s.rollerOtFormat);
+  const shootoutRounds = useGame((s) => s.shootoutRounds);
   const pauseDraft = usePauseDraft();
   const periodOver = useGame((s) => s.periodOver);
   const periodBreak = useGame((s) => s.periodBreak);
   const periodEnd =
     periodBreak > 0 && (clockMode === "game" || clockMode === "roller")
-      ? periodEndCopy(periodBreak, homeScore, awayScore)
+      ? periodEndCopy(periodBreak, homeScore, awayScore, clockMode)
       : null;
   const setPlaying = useGame((s) => s.setPlaying);
   const [cpuDrillNote, setCpuDrillNote] = useState<string | null>(null);
@@ -1181,7 +1305,10 @@ export function Overlay() {
         pauseDraft.scrimmageHome !== scrimmageHomeTargets ||
         pauseDraft.scrimmageAway !== scrimmageAwayTargets ||
         pauseDraft.gameMinutes !== gameMinutes ||
-        pauseDraft.rollerMinutes !== rollerMinutes));
+        pauseDraft.rollerMinutes !== rollerMinutes ||
+        pauseDraft.otFormat !== otFormat ||
+        pauseDraft.rollerOtFormat !== rollerOtFormat ||
+        pauseDraft.shootoutRounds !== shootoutRounds));
 
   return (
     <div className={playing ? "hud" : "hud is-title"}>
@@ -1213,10 +1340,7 @@ export function Overlay() {
           <div className="uni-cluster is-cpu">
             <div className="uni-side">
               <div className="uni-side-head">
-                <span>
-                  CPU
-                  <AimCompass flip />
-                </span>
+                <span>CPU</span>
               </div>
               <div className="uni-row">
                 {UNIFORMS.map((u) => (
@@ -1241,6 +1365,8 @@ export function Overlay() {
             <h1>Hockey Fast Break</h1>
             <AbilitySliders />
           </div>
+          <div className="hud-score-cluster">
+          <ShootoutGrid />
           <div className="hud-stats">
             <span className="scoreline">
               {clockMode === "drill" ? (
@@ -1286,7 +1412,7 @@ export function Overlay() {
                   </span>
                   {showsPeriodClock(clockMode) ? (
                     <span className="period-clock">
-                      {periodOrdinal(period)} {fmtClock(periodClock)}
+                      {periodOrdinal(period, clockMode)} {fmtClock(periodClock)}
                     </span>
                   ) : null}
                 </>
@@ -1344,6 +1470,7 @@ export function Overlay() {
                 )}
               </span>
             ) : null}
+          </div>
           </div>
         </header>
       </div>
@@ -1542,7 +1669,9 @@ export function Overlay() {
                 : `Score ${drillScore} / ${drillMaxScore()}`
               : clockMode === "scrimmage"
                 ? `${goalSide === "home" ? "YOU WIN" : goalSide === "away" ? "CPU WINS" : "Final"} ${scrimmageHomeDown}/${scrimmageAwayTargets}–${scrimmageAwayDown}/${scrimmageHomeTargets}`
-                : `Final ${homeScore}–${awayScore}`}
+                : clockMode === "shootout"
+                  ? `${homeScore > awayScore ? "YOU WIN" : awayScore > homeScore ? "CPU WINS" : "Final"} ${homeScore}–${awayScore}`
+                  : `Final ${homeScore}–${awayScore}`}
           </p>
           <button type="button" className="btn-primary" onClick={skate}>
             Skate
@@ -1600,18 +1729,18 @@ export function Overlay() {
                 className="net"
                 onPointerDown={() => {
                   if (controlProfile === "wings") setTouchLt(true);
-                  else setTouchView(true);
+                  else setTouchStart(true);
                 }}
                 onPointerUp={() => {
                   setTouchLt(false);
-                  setTouchView(false);
+                  setTouchStart(false);
                 }}
                 onPointerCancel={() => {
                   setTouchLt(false);
-                  setTouchView(false);
+                  setTouchStart(false);
                 }}
               >
-                <small>{controlProfile === "wings" ? "LT" : "R"}</small>
+                <small>{controlProfile === "wings" ? "LT" : "Start"}</small>
                 {controlProfile === "wings" ? "Left" : "Goalie"}
               </button>
             </div>

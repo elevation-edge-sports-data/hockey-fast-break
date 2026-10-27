@@ -40,10 +40,11 @@ after(() => server.close());
 
 const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
+const inferMod = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 
-const { periodEndLive, periodEndLook, resetPlayFrame, resetWorld, stepPlayFrame, stepSim, world } = sim;
+const { attackDir, faceYaw, periodEndLive, periodEndLook, resetPlayFrame, resetWorld, setShootoutRoll, shootoutBenchOverflow, shootoutFocusLook, shootoutSkaterHidden, shootoutStillGoing, stepPlayFrame, stepSim, world } = sim;
 const {
   useGame,
   GAME_MINUTES_DEFAULT,
@@ -59,10 +60,15 @@ const {
   ROLLER_CLOCK_DISPLAY_MINUTES,
   rollerClockScale,
   clampRollerMinutes,
+  clampOtFormat,
   gameSpeedRate,
+  REG_OT_SECONDS,
+  shootoutColumns,
+  seriesShootoutRounds,
 } = store;
-const { GOAL_LINE_X, BLUE_X } = rink;
-const { setInjectedKeys } = input;
+const { GOAL_LINE_X, GOAL_D, BLUE_X, RINK_W } = rink;
+const { inferNamedPose } = inferMod;
+const { setInjectedKeys, setInjectedStart } = input;
 
 const DT = 1 / 60;
 
@@ -99,6 +105,7 @@ function freshGame() {
   ui.setPlaying(true);
   ui.setClockMode("game");
   ui.setGameMinutes(2);
+  ui.setOtFormat("playoff");
   ui.setGameSpeed(1);
   resetWorld();
   world.replay = false;
@@ -214,6 +221,14 @@ test("period length is 1 to 5 minutes and defaults to 1.5", () => {
   assert.equal(GAME_MINUTES_DEFAULT, 1.5);
   assert.equal(GAME_PERIODS, 3);
   assert.equal(useGame.getState().gameMinutes, 1.5);
+  assert.equal(useGame.getState().otFormat, "playoff");
+  assert.equal(useGame.getState().rollerOtFormat, "reg");
+  assert.equal(periodOrdinal(3, "roller"), "OT");
+  assert.equal(periodEndCopy(3, 0, 0, "roller").title, "END OT");
+  assert.equal(clampOtFormat("reg"), "reg");
+  assert.equal(clampOtFormat("playoff"), "playoff");
+  assert.equal(clampOtFormat("shootout"), "playoff");
+  assert.equal(clampOtFormat(null), "playoff");
   assert.equal(clampGameMinutes(0), 1);
   assert.equal(clampGameMinutes(1.2), 1);
   assert.equal(clampGameMinutes(1.4), 1.5);
@@ -1029,17 +1044,1237 @@ test("a tied game plays sudden-death overtime and does not end 0-0", () => {
   assert.equal(useGame.getState().periodBreak, 0);
 });
 
-test("roller still ends when the second period is tied", () => {
+function sorted(nums) {
+  return [...nums].sort((a, b) => a - b);
+}
+
+function reachRegOt() {
+  freshGame();
+  const starters = {
+    home: world.skaters.filter((s) => s.side === "home" && s.kind !== "goalie").map((s) => s.number),
+    away: world.skaters.filter((s) => s.side === "away" && s.kind !== "goalie").map((s) => s.number),
+  };
+  useGame.getState().setOtFormat("reg");
+  useGame.getState().setHomeScore(0);
+  useGame.getState().setAwayScore(0);
+  for (let i = 1; i <= 2; i++) {
+    world.period = i;
+    useGame.getState().setPeriod(i);
+    expirePeriod();
+    assert.equal(world.periodOver, false, `period ${i} ended a tie`);
+    drainPeriodBreak();
+  }
+  world.period = 3;
+  useGame.getState().setPeriod(3);
+  expirePeriod();
+  assert.equal(world.periodOver, false);
+  assert.equal(useGame.getState().periodBreak, 3);
+  drainPeriodBreak();
+  assert.equal(world.period, 4);
+  assert.equal(world.periodClock, REG_OT_SECONDS);
+  assert.equal(useGame.getState().periodClock, REG_OT_SECONDS);
+  return starters;
+}
+
+test("regular-season overtime is one 5:00 3-on-3 period at the regulation clock rate", () => {
+  const starters = reachRegOt();
+  assert.deepEqual(sorted(starters.home), [7, 8, 29, 88, 92]);
+  for (const side of ["home", "away"]) {
+    assert.equal(countKind(side, "goalie"), 1, side);
+    assert.equal(countKind(side, "winger"), 3, side);
+    assert.equal(countKind(side, "defense"), 0, side);
+  }
+  assert.equal(world.shootout, null);
+  liveClock();
+  for (const s of world.skaters) s.stun = 30;
+  world.puck.owner = null;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.periodClock = REG_OT_SECONDS;
+  const before = world.periodClock;
+  step(30);
+  const drop = before - world.periodClock;
+  assert.ok(Math.abs(drop - 6.25) < 0.2, `5:00 clock dropped ${drop}`);
+  assert.equal(world.period, 4);
+  assert.equal(world.periodOver, false);
+  useGame.getState().setOtFormat("playoff");
+});
+
+test("a regular-season overtime goal ends the match", () => {
+  reachRegOt();
+  liveClock();
+  world.periodClock = 200;
+  useGame.getState().setPeriodClock(200);
+  crossNet(world.homeAttack);
+  assert.equal(world.whistle, "goal");
+  assert.equal(world.periodOver, false);
+  assert.equal(useGame.getState().homeScore, 1);
+  assert.equal(world.shootout, null);
+  let guard = 0;
+  while (!world.periodOver && guard < 500) {
+    step(1);
+    guard++;
+  }
+  assert.equal(world.periodOver, true);
+  assert.equal(world.period, 4);
+  assert.equal(world.shootout, null);
+  assert.equal(useGame.getState().homeScore, 1);
+  assert.equal(useGame.getState().awayScore, 0);
+  useGame.getState().setOtFormat("playoff");
+});
+
+test("a tied regular-season overtime goes to a three-round shootout", () => {
+  const starters = reachRegOt();
+  const script = [false, false, false, false, false, false, true, false];
+  let roll = 0;
+  setShootoutRoll(() => script[roll++] ?? false);
+  expirePeriod();
+  assert.equal(world.periodOver, false);
+  assert.equal(world.period, 4);
+  assert.equal(useGame.getState().periodBreak, 0);
+  assert.ok(world.shootout);
+  const homeOrder = world.shootout.order.home;
+  const awayOrder = world.shootout.order.away;
+  assert.deepEqual(sorted(homeOrder.slice(0, 5)), sorted(starters.home));
+  assert.deepEqual(sorted(homeOrder.slice(5)), [10, 11, 42, 62, 84]);
+  assert.deepEqual(sorted(awayOrder.slice(0, 5)), sorted(starters.away));
+  assert.equal(awayOrder.length, starters.away.length + 5);
+  assert.ok(awayOrder.slice(5).every((n) => !starters.away.includes(n)));
+  const first = world.shootout.first;
+  step(1);
+  for (const s of world.skaters) {
+    if (s.kind === "goalie") {
+      assert.ok(Math.abs(Math.abs(s.x) - (GOAL_LINE_X - 0.85)) < 0.25, `goalie x ${s.x}`);
+    } else if (s.id !== world.shootout.shooterId) {
+      assert.ok(s.z < -RINK_W / 2, `benched z ${s.z}`);
+    }
+  }
+  assert.equal(countKind("home", "goalie") + countKind("away", "goalie"), 2);
+  let guard = 0;
+  while ((world.shootout?.attempts.filter((a) => a.result).length ?? 0) < 6 && guard < 2500) {
+    step(1);
+    guard++;
+  }
+  assert.equal(world.shootout.attempts.filter((a) => a.result).length, 6);
+  assert.equal(world.periodOver, false);
+  assert.equal(shootoutStillGoing(world.shootout.attempts), true);
+  assert.equal(world.period, 4);
+  guard = 0;
+  while (!world.periodOver && guard < 2500) {
+    step(1);
+    guard++;
+  }
+  assert.equal(world.periodOver, true);
+  assert.equal(world.period, 4);
+  const attempts = useGame.getState().shootout.attempts;
+  assert.equal(attempts.length, 8);
+  for (let i = 0; i < attempts.length; i++) {
+    const side = i % 2 === 0 ? first : first === "home" ? "away" : "home";
+    assert.equal(attempts[i].side, side);
+    assert.equal(attempts[i].result, i < 6 ? "save" : i === 6 ? "goal" : "save");
+  }
+  assert.equal(shootoutStillGoing(attempts), false);
+  if (first === "home") {
+    assert.equal(useGame.getState().homeScore, 1);
+    assert.equal(useGame.getState().awayScore, 0);
+  } else {
+    assert.equal(useGame.getState().homeScore, 0);
+    assert.equal(useGame.getState().awayScore, 1);
+  }
+  const stayed = world.skaters.find((s) => s.kind !== "goalie" && s.id !== world.shootout.shooterId);
+  assert.ok(stayed && stayed.z < -RINK_W / 2, `skater joined the ice at z ${stayed?.z}`);
+  assert.ok(useGame.getState().shootout);
+  setShootoutRoll(null);
+  useGame.getState().setOtFormat("playoff");
+});
+
+test("shootout mode starts on the first shot and ends with a winner", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  const script = [false, false, false, false, false, false, true, false];
+  let roll = 0;
+  setShootoutRoll(() => script[roll++] ?? false);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  assert.equal(useGame.getState().clockMode, "shootout");
+  assert.equal(world.period, 1);
+  assert.equal(world.faceoff, false);
+  assert.equal(useGame.getState().homeScore, 0);
+  assert.equal(useGame.getState().awayScore, 0);
+  assert.ok(world.shootout);
+  assert.equal(world.shootout.phase, "approach");
+  for (const side of ["home", "away"]) {
+    assert.equal(countKind(side, "goalie"), 1, side);
+    assert.equal(countKind(side, "defense") + countKind(side, "winger"), 5, side);
+  }
+  const open = shootoutColumns(useGame.getState().shootout.attempts);
+  assert.equal(open.home.length, 3);
+  assert.equal(open.away.length, 3);
+  assert.equal(open.home[0], null);
+  assert.equal(open.away[0], null);
+  assert.equal(open.home[2], null);
+  assert.equal(open.away[2], null);
+  step(1);
+  for (const s of world.skaters) {
+    if (s.kind !== "goalie") continue;
+    assert.ok(Math.abs(Math.abs(s.x) - (GOAL_LINE_X - 0.85)) < 0.25, `goalie x ${s.x}`);
+  }
+  assert.ok(world.skaters.some((s) => s.kind !== "goalie" && s.id !== world.shootout.shooterId && s.z < -RINK_W / 2));
+  let guard = 0;
+  while ((world.shootout?.attempts.filter((a) => a.result).length ?? 0) < 6 && guard < 2500) {
+    step(1);
+    guard++;
+  }
+  const mid = shootoutColumns(world.shootout.attempts);
+  assert.equal(mid.home.length, 3);
+  assert.equal(mid.away.length, 3);
+  assert.ok(mid.home.every((r) => r === "save"));
+  assert.ok(mid.away.every((r) => r === "save"));
+  assert.equal(world.periodOver, false);
+  guard = 0;
+  while (!world.periodOver && guard < 2500) {
+    step(1);
+    guard++;
+  }
+  assert.equal(world.periodOver, true);
+  assert.equal(world.period, 1);
+  assert.equal(useGame.getState().clockMode, "shootout");
+  assert.ok(world.goalTicker > 4.5, `win cheer ${world.goalTicker}`);
+  const winSide = world.goalSide;
+  const winTime = world.time;
+  step(1);
+  assert.equal(world.goalSide, winSide);
+  assert.ok(world.time > winTime, "win celebration clock is frozen");
+  assert.ok(world.goalTicker > 4.5, `win cheer after a step ${world.goalTicker}`);
+  assert.ok(useGame.getState().shootout, "shootout grid record cleared");
+  const stayed = world.skaters.find((s) => s.kind !== "goalie" && s.id !== world.shootout.shooterId);
+  assert.ok(stayed && stayed.z < -RINK_W / 2, `skater joined the ice at z ${stayed?.z}`);
+  const skater = world.skaters[world.userId];
+  const x0 = skater.x;
+  const z0 = skater.z;
+  world.camFx = 1;
+  world.camFz = 0;
+  world.camRx = 0;
+  world.camRz = 1;
+  setInjectedKeys(["KeyW"]);
+  step(10);
+  const moved = world.skaters[world.userId];
+  assert.ok(Math.hypot(moved.x - x0, moved.z - z0) > 0.08, `user froze at ${moved.x},${moved.z}`);
+  const still = world.skaters.find((s) => s.kind !== "goalie" && s.id !== world.shootout.shooterId && s.id !== moved.id);
+  if (still) assert.ok(still.z < -RINK_W / 2, `teammate joined at z ${still.z}`);
+  setInjectedKeys([]);
+  const done = useGame.getState().shootout.attempts;
+  assert.equal(done.length, 8);
+  const goals = { home: 0, away: 0 };
+  for (const a of done) if (a.result === "goal") goals[a.side] += 1;
+  assert.equal(goals.home + goals.away, 1);
+  if (goals.home > goals.away) {
+    assert.equal(useGame.getState().homeScore, 1);
+    assert.equal(useGame.getState().awayScore, 0);
+  } else {
+    assert.equal(useGame.getState().homeScore, 0);
+    assert.equal(useGame.getState().awayScore, 1);
+  }
+  setShootoutRoll(null);
+  useGame.getState().setClockMode("game");
+  useGame.getState().setOtFormat("playoff");
+});
+
+test("a shootout goal cheers for 2 seconds and the user can take the goalie", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(() => true);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  let guard = 0;
+  while (world.shootout?.attempts[0]?.result !== "goal" && guard < 400) {
+    step(1);
+    guard++;
+  }
+  assert.equal(world.shootout.attempts[0].result, "goal");
+  assert.equal(world.goalSide, world.shootout.attempts[0].side);
+  assert.ok(world.goalTicker > 1.5 && world.goalTicker <= 2, `goal cheer ${world.goalTicker}`);
+
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  const attempt = world.shootout.attempts[0];
+  assert.equal(world.shootout.phase, "live");
+  if (attempt.side === "home") {
+    assert.equal(world.userId, world.shootout.shooterId);
+    assert.equal(world.skaters[world.userId].kind === "goalie", false);
+    setInjectedKeys(["KeyW"]);
+    step(1);
+    assert.equal(world.userId, world.shootout.shooterId);
+    assert.equal(world.shootout.goalieUser, false);
+  } else {
+    assert.equal(world.skaters[world.userId].kind, "goalie");
+    assert.equal(world.skaters[world.userId].side, "home");
+    assert.equal(world.shootout.goalieUser, false);
+    step(1);
+    assert.equal(world.shootout.goalieUser, false);
+    setInjectedKeys(["KeyW"]);
+    step(1);
+    assert.equal(world.shootout.goalieUser, true);
+    assert.equal(world.skaters[world.userId].kind, "goalie");
+  }
+  setInjectedKeys([]);
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setClockMode("shootout");
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  const live = world.shootout;
+  assert.equal(live.phase, "live");
+  const shot = live.attempts[live.attempts.length - 1];
+  const keeper = world.skaters.find((s) => s.kind === "goalie" && s.side !== shot.side);
+  assert.ok(keeper);
+  world.lastShooter = live.shooterId;
+  world.lastShoot = world.time - 1;
+  world.puck.owner = keeper.id;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.puck.x = keeper.x;
+  world.puck.z = keeper.z;
+  step(1);
+  assert.equal(world.shootout.phase, "result");
+  assert.equal(world.shootout.attempts.length, 1);
+  assert.equal(world.shootout.attempts[0].result, "save");
+  world.coverT = 3;
+  world.whistle = null;
+  step(1);
+  assert.notEqual(world.whistle, "cover");
+  assert.equal(world.shootout.phase, "result");
+  assert.equal(world.shootout.attempts[0].result, "save");
+  resetWorld();
+  ui.setClockMode("shootout");
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  world.lastShoot = -10;
+  world.lastShooter = null;
+  world.lastPasser = world.shootout.shooterId;
+  world.lastPass = world.time;
+  world.goalieSaveT = world.time;
+  world.puck.owner = null;
+  world.puck.x = 0;
+  world.puck.z = 0;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  step(1);
+  assert.equal(world.shootout.attempts[0].result, "save");
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setClockMode("shootout");
+  ui.setPlaying(true);
+  world.lastShooter = world.shootout.shooterId;
+  world.lastShoot = world.time;
+  world.goalieSaveT = world.time;
+  world.puck.owner = null;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.x = 0;
+  world.puck.z = 0;
+  step(1);
+  assert.equal(world.shootout.attempts[0].result, "save");
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("a shootout ends as soon as the other team cannot catch up", () => {
+  const shot = (side, result) => ({ side, number: 1, result });
+  assert.equal(
+    shootoutStillGoing([
+      shot("home", "goal"),
+      shot("away", "save"),
+      shot("home", "goal"),
+      shot("away", "save"),
+    ]),
+    false,
+  );
+  assert.equal(
+    shootoutStillGoing([
+      shot("home", "goal"),
+      shot("away", "save"),
+      shot("home", "goal"),
+    ]),
+    true,
+  );
+  assert.equal(
+    shootoutStillGoing([
+      shot("home", "goal"),
+      shot("away", "goal"),
+      shot("home", "goal"),
+      shot("away", "save"),
+      shot("home", "goal"),
+    ]),
+    false,
+  );
+  const tied = [];
+  for (let i = 0; i < 6; i++) tied.push(shot(i % 2 === 0 ? "home" : "away", "save"));
+  assert.equal(shootoutStillGoing(tied), true);
+  assert.equal(shootoutStillGoing([...tied, shot("home", "goal")]), true);
+  assert.equal(shootoutStillGoing([...tied, shot("home", "goal"), shot("away", "save")]), false);
+
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  const script = [true, false, true, false];
+  let roll = 0;
+  setShootoutRoll(() => script[roll++] ?? false);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  let guard = 0;
+  while (!world.periodOver && guard < 2500) {
+    step(1);
+    guard++;
+  }
+  assert.equal(world.periodOver, true);
+  assert.equal(useGame.getState().shootout.attempts.length, 4);
+  const cols = shootoutColumns(useGame.getState().shootout.attempts);
+  assert.equal(cols.home.length, 3);
+  assert.equal(cols.away.length, 3);
+  const goals = { home: 0, away: 0 };
+  for (const a of useGame.getState().shootout.attempts) {
+    if (a.result === "goal") goals[a.side] += 1;
+  }
+  assert.equal(Math.max(goals.home, goals.away), 2);
+  assert.equal(Math.min(goals.home, goals.away), 0);
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("a cpu shootout skater keeps the puck, and skating back fails the attempt", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  const cpu = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
+  const homeG = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  world.shootout.attempts[0].side = "away";
+  world.shootout.shooterId = cpu.id;
+  world.puck.owner = cpu.id;
+  world.userId = homeG.id;
+  cpu.x = 0;
+  cpu.z = 0;
+  for (let i = 0; i < 20; i++) {
+    step(1);
+    if (world.shootout.phase !== "live") break;
+    assert.equal(world.puck.owner, cpu.id);
+    assert.notEqual(world.lastPasser, cpu.id);
+  }
+  assert.ok(Math.hypot(cpu.x, cpu.z) > 0.5, `cpu stayed put at ${cpu.x},${cpu.z}`);
+  const atk = -world.homeAttack;
+  cpu.x = homeG.x - atk * 0.35;
+  cpu.z = homeG.z;
+  world.puck.owner = cpu.id;
+  world.puck.x = cpu.x;
+  world.puck.z = cpu.z;
+  world.puck.y = 0.08;
+  homeG.yaw = Math.atan2(-(cpu.x - homeG.x), -(cpu.z - homeG.z));
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.equal(world.shootout.attempts[0].result, "save");
+  resetWorld();
+  ui.setPlaying(true);
+  const shooter = world.skaters[world.shootout.shooterId];
+  const attack = shooter.side === "home" ? world.homeAttack : -world.homeAttack;
+  shooter.x = -attack * 1.5;
+  step(1);
+  assert.equal(world.shootout.attempts[0].result, "save");
+  assert.equal(world.shootout.phase, "result");
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("a goalie faces the ice, and X poke-checks outside a shootout", () => {
+  freshGame();
+  liveClock();
+  const g = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  const attack = attackDir("home");
+  world.userId = g.id;
+  g.yaw = faceYaw("home") + Math.PI;
+  g.vx = 0;
+  g.vz = 0;
+  g.dive = 0;
+  g.stun = 0;
+  g.tumble = 0;
+  world.puck.owner = null;
+  world.puck.x = g.x + attack * 8;
+  world.puck.z = g.z;
+  world.puck.y = 0.08;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  step(40);
+  const fx = -Math.sin(g.yaw);
+  assert.ok(fx * attack > 0.35, `goalie looks into the net at yaw ${g.yaw}`);
+  world.userId = g.id;
+  world.puck.owner = null;
+  world.puck.x = g.x + attack * 3;
+  world.puck.z = g.z;
+  world.puck.y = 0.08;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  setInjectedStart(true);
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  setInjectedKeys([]);
+  setInjectedStart(false);
+  assert.ok(g.poke > 0.2, `X did not poke poke=${g.poke} user=${world.userId}`);
+  assert.equal(world.puck.owner, null);
+  assert.equal(inferNamedPose(g, g.id), "goaliePokeCheck");
+
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  const so = world.shootout;
+  const keeper = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  assert.ok(keeper);
+  so.attempts[0].side = "away";
+  so.phase = "live";
+  world.userId = keeper.id;
+  world.faceoff = false;
+  world.stoppage = false;
+  world.whistle = null;
+  const dir = attackDir("home");
+  world.puck.owner = null;
+  world.puck.x = keeper.x + dir * 8;
+  world.puck.z = keeper.z;
+  world.puck.y = 0.08;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  keeper.coverPose = 0.8;
+  keeper.poke = 0;
+  setInjectedKeys([]);
+  step(1);
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.equal(inferNamedPose(keeper, keeper.id), "goaliePokeCheck");
+  assert.equal(world.puck.owner, null);
+  assert.equal(so.phase, "live");
+  assert.equal(so.attempts[0].result, null);
+
+  world.puck.owner = null;
+  world.puck.x = keeper.x;
+  world.puck.z = keeper.z;
+  world.puck.y = 0.08;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  step(1);
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.equal(so.attempts[0].result, "save");
+  assert.equal(so.phase, "result");
+  uiReset();
+});
+
+function uiReset() {
+  setInjectedKeys([]);
+  useGame.getState().setClockMode("game");
+  useGame.getState().setOtFormat("playoff");
+}
+
+test("a shootout shot across the goal line counts, and play does not freeze", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  const so = world.shootout;
+  const attempt = so.attempts[0];
+  const attack = attempt.side === "home" ? world.homeAttack : -world.homeAttack;
+  const mouth = attack * GOAL_LINE_X;
+  world.puck.owner = null;
+  world.puck.x = mouth - attack * 0.2;
+  world.puck.y = 0.4;
+  world.puck.z = 0.05;
+  world.puck.vx = attack * 24;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+  world.lastShooter = so.shooterId;
+  world.lastShoot = world.time;
+  step(1);
+  assert.equal(world.shootout.attempts[0].result, "goal");
+  assert.equal(world.whistle, "goal");
+  assert.ok((world.puck.x - mouth) * attack > -0.02, `puck stopped short at ${world.puck.x}`);
+  const crossedAt = world.puck.x;
+  step(1);
+  assert.equal(world.shootout.phase, "result");
+  assert.notEqual(world.puck.x, crossedAt);
+
+  resetWorld();
+  ui.setPlaying(true);
+  const live = world.shootout;
+  const side = live.attempts[0].side;
+  const dir = side === "home" ? world.homeAttack : -world.homeAttack;
+  world.lastShooter = live.shooterId;
+  world.lastShoot = world.time;
+  world.goalieSaveT = world.time;
+  world.puck.owner = null;
+  world.puck.x = dir * 3;
+  world.puck.y = 0.2;
+  world.puck.z = 3.2;
+  world.puck.vx = 0;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+  step(1);
+  assert.equal(world.shootout.attempts[0].result, "save");
+  world.puck.vx = dir * 9;
+  world.puck.vz = 0;
+  const held = world.puck.x;
+  step(1);
+  assert.equal(world.shootout.phase, "result");
+  assert.ok(Math.abs(world.puck.x - held) > 0.04, `puck froze at ${world.puck.x}`);
+
+  const cpu = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie" && s.id !== world.shootout.shooterId);
+  const home = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie" && s.id !== world.shootout.shooterId);
+  assert.ok(cpu);
+  assert.ok(home);
+  assert.equal(shootoutSkaterHidden(cpu.id), true);
+  assert.equal(shootoutSkaterHidden(home.id), true);
+  world.replay = true;
+  assert.equal(shootoutSkaterHidden(cpu.id), false);
+  assert.equal(shootoutSkaterHidden(home.id), false);
+  const spare = world.skaters.find((s) => s.kind !== "goalie" && s.id !== world.shootout.shooterId);
+  const overflowId = world.skaters.length;
+  world.skaters.push({ ...spare, id: overflowId, number: 501 });
+  assert.equal(shootoutBenchOverflow(overflowId), true);
+  assert.equal(shootoutSkaterHidden(overflowId), true);
+  world.skaters.pop();
+  const saveLook = shootoutFocusLook();
+  const saveSide = world.shootout.attempts[0].side === "home" ? "away" : "home";
+  const saveGoalie = world.skaters.find((s) => s.side === saveSide && s.kind === "goalie");
+  assert.ok(saveLook && saveGoalie);
+  assert.equal(saveLook.x, saveGoalie.x);
+  assert.equal(saveLook.z, saveGoalie.z);
+  world.shootout.attempts[0].result = "goal";
+  const goalLook = shootoutFocusLook();
+  const scorer = world.skaters[world.shootout.shooterId];
+  assert.ok(goalLook && scorer);
+  assert.equal(goalLook.x, scorer.x);
+  assert.equal(goalLook.z, scorer.z);
+  world.shootout.phase = "done";
+  world.shootout.attempts = [
+    { side: "home", number: 8, result: "goal" },
+    { side: "away", number: 9, result: "save" },
+  ];
+  const winLook = shootoutFocusLook();
+  const homeGoalie = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  assert.ok(winLook && homeGoalie);
+  assert.equal(winLook.x, homeGoalie.x);
+  assert.equal(winLook.z, homeGoalie.z);
+  world.shootout.attempts = [
+    { side: "away", number: 9, result: "save" },
+    { side: "home", number: 8, result: "goal" },
+  ];
+  const goalWin = shootoutFocusLook();
+  const homeSkater = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie");
+  assert.ok(goalWin && homeSkater);
+  assert.equal(goalWin.x, homeSkater.x);
+  assert.equal(goalWin.z, homeSkater.z);
+  world.replay = false;
+
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("a fast shootout shot stops on the net mesh", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  const so = world.shootout;
+  const attempt = so.attempts[0];
+  const attack = attempt.side === "home" ? world.homeAttack : -world.homeAttack;
+  const mouth = attack * GOAL_LINE_X;
+  world.puck.owner = null;
+  world.puck.x = mouth - attack * 0.15;
+  world.puck.y = 0.55;
+  world.puck.z = 0.2;
+  world.puck.vx = attack * 90;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+  world.lastShooter = so.shooterId;
+  world.lastShoot = world.time;
+  step(1);
+  const past = (world.puck.x - mouth) * attack;
+  assert.ok(past < GOAL_D + 0.2, `puck tunneled ${past.toFixed(2)} m past the goal line`);
+  assert.ok(past > -0.08, `puck left the net at ${past.toFixed(2)}`);
+  step(8);
+  const later = (world.puck.x - mouth) * attack;
+  assert.ok(later < GOAL_D + 0.2, `puck kept going through at ${later.toFixed(2)}`);
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("a goalie touch followed by a skater touch misses, and a pad rebound can still score", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  const so = world.shootout;
+  const attempt = so.attempts[0];
+  const attack = attempt.side === "home" ? world.homeAttack : -world.homeAttack;
+  const mouth = attack * GOAL_LINE_X;
+  const skater = world.skaters.find((s) => s.kind !== "goalie" && s.id !== so.shooterId);
+  assert.ok(skater);
+  world.time = 2;
+  world.goalieSaveT = 1;
+  world.lastShooter = skater.id;
+  world.lastShoot = 2;
+  world.lastPasser = null;
+  world.lastPass = -10;
+  world.puck.owner = null;
+  world.puck.x = mouth - attack * 0.2;
+  world.puck.y = 0.35;
+  world.puck.z = 0.05;
+  world.puck.vx = attack * 24;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+  const home = ui.homeScore;
+  const away = ui.awayScore;
+  step(1);
+  assert.equal(attempt.result, "save");
+  assert.notEqual(world.whistle, "goal");
+  assert.equal(useGame.getState().homeScore, home);
+  assert.equal(useGame.getState().awayScore, away);
+
+  resetWorld();
+  ui.setPlaying(true);
+  const live = world.shootout;
+  const side = live.attempts[0].side;
+  const dir = side === "home" ? world.homeAttack : -world.homeAttack;
+  const line = dir * GOAL_LINE_X;
+  world.time = 2;
+  world.goalieSaveT = 1;
+  world.lastShooter = live.shooterId;
+  world.lastShoot = 0.4;
+  world.lastPasser = null;
+  world.lastPass = -10;
+  world.puck.owner = null;
+  world.puck.x = line - dir * 0.2;
+  world.puck.y = 0.35;
+  world.puck.z = 0.05;
+  world.puck.vx = dir * 24;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+  step(1);
+  assert.equal(live.attempts[0].result, "goal");
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("a goalie who has the puck fails the shootout attempt immediately and can still shoot", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  const so = world.shootout;
+  const goalie = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  assert.ok(goalie);
+  so.attempts[0].side = "away";
+  so.phase = "live";
+  world.userId = goalie.id;
+  world.puck.owner = goalie.id;
+  world.puck.x = goalie.x;
+  world.puck.z = goalie.z;
+  world.puck.y = 0.08;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastPass = -10;
+  world.lastShoot = -10;
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(so.attempts[0].result, "save");
+  assert.equal(so.phase, "result");
+  assert.equal(world.puck.owner, goalie.id);
+  world.lastShoot = -10;
+  world.faceoff = false;
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  assert.equal(so.phase, "result", "press keeps the failed attempt");
+  assert.equal(world.puck.owner, goalie.id);
+  setInjectedKeys([]);
+  step(1);
+  assert.notEqual(world.puck.owner, goalie.id, "shot after the fail");
+  assert.ok(Math.hypot(world.puck.vx, world.puck.vz) > 1, `shot speed ${world.puck.vx},${world.puck.vz}`);
+  assert.equal(so.attempts[0].result, "save");
+  assert.equal(so.phase, "result");
+
+  resetWorld();
+  ui.setPlaying(true);
+  const sauce = world.shootout;
+  const sauceG = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  assert.ok(sauceG);
+  sauce.attempts[0].side = "away";
+  sauce.phase = "live";
+  world.userId = sauceG.id;
+  world.puck.owner = sauceG.id;
+  world.puck.x = sauceG.x;
+  world.puck.z = sauceG.z;
+  world.puck.y = 0.08;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastPass = -10;
+  world.lastShoot = -10;
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(sauce.attempts[0].result, "save");
+  assert.equal(sauce.phase, "result");
+  setInjectedKeys(["KeyE", "KeyR"]);
+  step(1);
+  assert.equal(world.puck.owner, sauceG.id);
+  setInjectedKeys(["KeyR"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.equal(world.lastPasser, sauceG.id, "saucer after the fail");
+  assert.notEqual(world.puck.owner, sauceG.id);
+  assert.ok(world.puck.vy > 0.4, `saucer vy ${world.puck.vy}`);
+  assert.equal(sauce.attempts[0].result, "save");
+
+  resetWorld();
+  ui.setPlaying(true);
+  const pass = world.shootout;
+  const passG = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  assert.ok(passG);
+  pass.attempts[0].side = "away";
+  pass.phase = "live";
+  world.userId = passG.id;
+  world.puck.owner = passG.id;
+  world.puck.x = passG.x;
+  world.puck.z = passG.z;
+  world.puck.y = 0.08;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastPass = -10;
+  world.lastShoot = -10;
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(pass.attempts[0].result, "save");
+  setInjectedKeys(["KeyE"]);
+  step(1);
+  assert.equal(world.puck.owner, passG.id);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(world.lastPasser, passG.id, "pass after the fail");
+  assert.notEqual(world.puck.owner, passG.id);
+  assert.equal(pass.attempts[0].result, "save");
+
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("a shootout goalie can shoot and saucer with the puck", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  const so = world.shootout;
+  const goalie = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  assert.ok(goalie);
+  so.attempts[0].side = "away";
+  world.userId = goalie.id;
+  world.puck.owner = goalie.id;
+  world.puck.x = goalie.x;
+  world.puck.z = goalie.z;
+  world.puck.y = 0.08;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastPass = -10;
+  world.lastShoot = -10;
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  setInjectedKeys([]);
+  step(1);
+  assert.notEqual(world.puck.owner, goalie.id, "X did not shoot");
+  assert.ok(Math.hypot(world.puck.vx, world.puck.vz) > 1, `shot speed ${world.puck.vx},${world.puck.vz}`);
+
+  resetWorld();
+  ui.setPlaying(true);
+  const live = world.shootout;
+  const keeper = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  assert.ok(keeper);
+  live.attempts[0].side = "away";
+  world.userId = keeper.id;
+  world.puck.owner = keeper.id;
+  world.puck.x = keeper.x;
+  world.puck.z = keeper.z;
+  world.puck.y = 0.08;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastPass = -10;
+  world.lastShoot = -10;
+  setInjectedKeys(["KeyE", "KeyR"]);
+  step(1);
+  setInjectedKeys(["KeyR"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.equal(world.lastPasser, keeper.id, "Select did not saucer");
+  assert.notEqual(world.puck.owner, keeper.id);
+  assert.ok(world.puck.vy > 0.4, `saucer vy ${world.puck.vy}`);
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("shootout rounds are 3, 5, or 7 and still end early", () => {
+  const shot = (side, result) => ({ side, number: 1, result });
+  const pair = [];
+  for (let i = 0; i < 3; i++) {
+    pair.push(shot("home", i === 0 ? "goal" : "save"));
+    pair.push(shot("away", "save"));
+  }
+  assert.equal(shootoutStillGoing(pair, 3), false);
+  assert.equal(shootoutStillGoing(pair, 5), true);
+  assert.equal(shootoutStillGoing(pair, 7), true);
+  assert.equal(shootoutColumns(pair, 5).home.length, 5);
+  assert.equal(shootoutColumns(pair, 7).away.length, 7);
+  const tied = [];
+  for (let i = 0; i < 10; i++) tied.push(shot(i % 2 === 0 ? "home" : "away", "save"));
+  assert.equal(shootoutStillGoing(tied, 5), true);
+  assert.equal(shootoutStillGoing([...tied, shot("home", "goal")], 5), true);
+  assert.equal(shootoutStillGoing([...tied, shot("home", "goal"), shot("away", "save")], 5), false);
+
+  freshGame();
+  const ui = useGame.getState();
+  assert.equal(ui.shootoutRounds, 3);
+  ui.setShootoutRounds(9);
+  assert.equal(useGame.getState().shootoutRounds, 3);
+  assert.equal(localStorage.getItem("hfb-shootout-rounds"), "3");
+  ui.setShootoutRounds(5);
+  assert.equal(useGame.getState().shootoutRounds, 5);
+  ui.setClockMode("shootout");
+  const script = [true, false, true, false];
+  let roll = 0;
+  setShootoutRoll(() => script[roll++] ?? false);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  assert.equal(world.shootout.rounds, 5);
+  assert.equal(useGame.getState().shootout.rounds, 5);
+  assert.equal(shootoutColumns(useGame.getState().shootout.attempts, 5).home.length, 5);
+  assert.equal(seriesShootoutRounds("shootout", 7), 7);
+  assert.equal(seriesShootoutRounds("game", 7), 3);
+  assert.equal(seriesShootoutRounds("roller", 5), 3);
+  assert.equal(seriesShootoutRounds("scrimmage", 7), 3);
+  let guard = 0;
+  while ((world.shootout?.attempts.filter((a) => a.result).length ?? 0) < 4 && guard < 800) {
+    step(1);
+    guard++;
+  }
+  assert.equal(world.shootout.attempts.filter((a) => a.result).length, 4);
+  assert.equal(world.periodOver, false);
+  assert.notEqual(world.shootout.phase, "done");
+  ui.setShootoutRounds(7);
+  ui.setClockMode("game");
+  ui.setOtFormat("reg");
+  ui.setHomeScore(1);
+  ui.setAwayScore(1);
+  ui.setPeriod(GAME_PERIODS + 1);
+  world.period = GAME_PERIODS + 1;
+  world.shootout = null;
+  world.periodEndT = 0;
+  world.periodClock = 0.01;
+  liveClock();
+  step(1);
+  assert.equal(world.shootout.rounds, 3);
+  assert.equal(useGame.getState().shootout.rounds, 3);
+  assert.equal(useGame.getState().shootoutRounds, 7);
+
+  ui.setClockMode("roller");
+  ui.setRollerOtFormat("reg");
+  ui.setHomeScore(0);
+  ui.setAwayScore(0);
+  ui.setPeriod(ROLLER_PERIODS + 1);
+  world.period = ROLLER_PERIODS + 1;
+  world.shootout = null;
+  world.periodOver = false;
+  world.periodEndT = 0;
+  world.periodClock = 0.01;
+  liveClock();
+  step(1);
+  assert.equal(world.shootout.rounds, 3);
+  assert.equal(useGame.getState().shootout.rounds, 3);
+
+  ui.setShootoutRounds(3);
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+  ui.setRollerOtFormat("reg");
+});
+
+test("a user shootout goal stays open for 3 seconds, and a win still dives and checks", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  ui.setCheckRefs(true);
+  ui.setCheckGoalies(true);
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  const so = world.shootout;
+  const home = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie");
+  assert.ok(home);
+  so.attempts[0].side = "home";
+  so.shooterId = home.id;
+  world.userId = home.id;
+  const attack = world.homeAttack;
+  home.x = 0;
+  home.z = 0;
+  home.vx = 0;
+  home.vz = 0;
+  so.backAlong = home.x * attack;
+  const mouth = attack * GOAL_LINE_X;
+  parkNets();
+  world.goalieShot = "score";
+  world.puck.owner = null;
+  world.puck.x = mouth - attack * 0.2;
+  world.puck.y = 0.35;
+  world.puck.z = 0.05;
+  world.puck.vx = attack * 24;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+  world.lastShooter = home.id;
+  world.lastShoot = world.time;
+  world.goalieSaveT = -10;
+  step(1);
+  assert.equal(so.attempts[0].result, "goal");
+  assert.equal(so.phase, "result");
+  assert.equal(world.whistle, "goal");
+  assert.ok(world.goalTicker <= 2 && world.goalTicker > 1.5, `cheer ${world.goalTicker}`);
+
+  const benched = world.skaters.find((s) => s.kind !== "goalie" && s.id !== home.id);
+  assert.ok(benched);
+  const benchZ = benched.z;
+  assert.ok(benchZ < -RINK_W / 2, `bench z ${benchZ}`);
+
+  world.camFx = 1;
+  world.camFz = 0;
+  world.camRx = 0;
+  world.camRz = 1;
+  const x0 = home.x;
+  const z0 = home.z;
+  setInjectedKeys(["KeyW"]);
+  step(20);
+  setInjectedKeys([]);
+  assert.ok(Math.hypot(home.x - x0, home.z - z0) > 0.2, `user stayed at ${home.x},${home.z}`);
+  assert.equal(so.phase, "result");
+  assert.ok(benched.z < -RINK_W / 2, `left the bench at ${benched.z}`);
+
+  home.dive = 0;
+  setInjectedKeys(["ShiftLeft"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.ok(home.dive > 0.4, `dive ${home.dive}`);
+
+  const goalie = world.skaters.find((s) => s.side === "away" && s.kind === "goalie");
+  assert.ok(goalie);
+  home.dive = 0;
+  home.hit = 0;
+  home.x = goalie.x - 0.6;
+  home.z = goalie.z;
+  home.yaw = Math.atan2(-(goalie.x - home.x), -(goalie.z - home.z));
+  goalie.struck = 0;
+  setInjectedKeys(["KeyQ"]);
+  step(1);
+  setInjectedKeys([]);
+  step(1);
+  assert.ok(goalie.struck > 0.2, `goalie struck ${goalie.struck}`);
+  assert.equal(inferNamedPose(goalie, goalie.id), "goalieGetUp");
+
+  const ref = world.ref;
+  home.hit = 0;
+  home.x = ref.x - 0.6;
+  home.z = ref.z;
+  home.yaw = Math.atan2(-(ref.x - home.x), -(ref.z - home.z));
+  ref.struck = 0;
+  setInjectedKeys(["KeyQ"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.ok(ref.struck > 0.2, `ref struck ${ref.struck}`);
+  assert.equal(so.phase, "result");
+  assert.ok(benched.z < -RINK_W / 2, `pile pulled ${benched.z}`);
+
+  let guard = 0;
+  while (so.phase === "result" && guard < 220) {
+    step(1);
+    guard++;
+  }
+  assert.ok(guard >= 100, `celebration ended after ${guard} frames`);
+  assert.notEqual(so.phase, "result");
+
+  const script = [true, false, true, false];
+  let roll = 0;
+  setShootoutRoll(() => script[roll++] ?? false);
+  resetWorld();
+  ui.setPlaying(true);
+  guard = 0;
+  while (!world.periodOver && guard < 2500) {
+    step(1);
+    guard++;
+  }
+  assert.equal(world.shootout.phase, "done");
+  const user = world.skaters[world.userId];
+  assert.ok(user && user.kind !== "goalie");
+  user.dive = 0;
+  user.x = 0;
+  user.z = 0;
+  setInjectedKeys(["ShiftLeft"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.ok(user.dive > 0.4, `win dive ${user.dive}`);
+  const foe = world.skaters.find((s) => s.side === "away" && s.kind === "goalie");
+  assert.ok(foe);
+  user.dive = 0;
+  user.hit = 0;
+  user.x = foe.x - 0.6;
+  user.z = foe.z;
+  user.yaw = Math.atan2(-(foe.x - user.x), -(foe.z - user.z));
+  foe.struck = 0;
+  setInjectedKeys(["KeyQ"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.ok(foe.struck > 0.2, `win check ${foe.struck}`);
+  assert.equal(inferNamedPose(foe, foe.id), "goalieGetUp");
+
+  ui.setClockMode("game");
+  user.dive = 0;
+  setInjectedKeys(["ShiftLeft"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.ok(user.dive > 0.4, `game win dive ${user.dive}`);
+
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("a missed shootout attempt cheers the defending fans for 2 seconds", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(() => false);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  let guard = 0;
+  while (world.shootout?.attempts[0]?.result !== "save" && guard < 400) {
+    step(1);
+    guard++;
+  }
+  const attempt = world.shootout.attempts[0];
+  const defending = attempt.side === "home" ? "away" : "home";
+  assert.equal(attempt.result, "save");
+  assert.equal(world.whistle, null);
+  assert.equal(world.goalSide, defending);
+  assert.equal(useGame.getState().goalSide, defending);
+  assert.ok(world.goalTicker > 1.5 && world.goalTicker <= 2, `save cheer ${world.goalTicker}`);
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("roller defaults to regular overtime and playoff overtime keeps going", () => {
+  freshRoller();
+  assert.equal(useGame.getState().rollerOtFormat, "reg");
+  useGame.getState().setHomeScore(0);
+  useGame.getState().setAwayScore(0);
+  world.period = 2;
+  useGame.getState().setPeriod(2);
+  expirePeriod();
+  assert.equal(world.periodOver, false);
+  assert.equal(useGame.getState().periodBreak, 2);
+  drainPeriodBreak();
+  assert.equal(world.period, 3);
+  assert.equal(world.periodClock, REG_OT_SECONDS);
+  assert.equal(useGame.getState().liveHome.d, 0);
+  assert.equal(useGame.getState().liveHome.o, 3);
+  assert.equal(useGame.getState().liveHome.g, 1);
+  assert.equal(useGame.getState().liveAway.d, 0);
+  assert.equal(useGame.getState().homeLineup.d, 1);
+
+  crossNet(world.homeAttack);
+  assert.equal(world.whistle, "goal");
+  assert.equal(world.periodOver, false);
+  let scored = 0;
+  while (!world.periodOver && scored < 500) {
+    step(1);
+    scored++;
+  }
+  assert.equal(world.periodOver, true);
+  assert.equal(world.shootout, null);
+
   freshRoller();
   useGame.getState().setHomeScore(0);
   useGame.getState().setAwayScore(0);
   world.period = 2;
   useGame.getState().setPeriod(2);
   expirePeriod();
-  assert.equal(world.periodOver, true);
-  assert.equal(useGame.getState().periodOver, true);
-  assert.equal(world.period, 2);
-  assert.equal(useGame.getState().periodBreak, 0);
+  drainPeriodBreak();
+  useGame.getState().setHomeScore(0);
+  useGame.getState().setAwayScore(0);
+  expirePeriod();
+  assert.ok(world.shootout);
+  assert.equal(world.periodOver, false);
+  setShootoutRoll(null);
+
+  freshRoller();
+  useGame.getState().setRollerOtFormat("playoff");
+  useGame.getState().setHomeScore(1);
+  useGame.getState().setAwayScore(1);
+  world.period = 2;
+  useGame.getState().setPeriod(2);
+  expirePeriod();
+  assert.equal(useGame.getState().periodBreak, 2);
+  drainPeriodBreak();
+  assert.equal(world.period, 3);
+  assert.equal(world.periodClock, 18 * 60);
+  assert.equal(useGame.getState().liveHome.d, 1);
+  assert.equal(world.shootout, null);
+  useGame.getState().setRollerOtFormat("reg");
 });
 
 function parkNets() {

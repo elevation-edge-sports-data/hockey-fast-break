@@ -45,7 +45,7 @@ const rink = await server.ssrLoadModule("/src/game/rink.ts");
 const { resetWorld, stepSim, world, stickBlade } = sim;
 const { useGame } = store;
 const { setInjectedKeys, setInjectedAim } = input;
-const { GOAL_LINE_X, GOAL_W, FACEOFF_SPOT_Z } = rink;
+const { GOAL_LINE_X, GOAL_H, GOAL_W, FACEOFF_EZ_X, FACEOFF_SPOT_Z, cageDepthAt } = rink;
 
 const DT = 1 / 60;
 
@@ -286,4 +286,63 @@ test("a shot from below the goal line does not travel behind the net", () => {
       }
     }
   }
+});
+
+function pastShell(mouth, x, y, z) {
+  const along = x - mouth;
+  const limit = cageDepthAt(z, Math.min(Math.max(y, 0), GOAL_H));
+  return limit > 0.05 && along > limit + 0.18 && Math.abs(z) < GOAL_W / 2 && y < GOAL_H + 0.02;
+}
+
+test("the twine and the bottom pipe stop the puck both ways", () => {
+  boot("game");
+  const mouth = GOAL_LINE_X;
+  const cases = [
+    { x: mouth + 0.4, y: 0.55, z: 0, vx: 26, vy: 0, vz: 0 },
+    { x: mouth + 0.35, y: 0.042, z: 0.15, vx: 8, vy: 0, vz: 16 },
+    { x: mouth + 1.55, y: 0.042, z: 0, vx: -24, vy: 0, vz: 0 },
+    { x: mouth + 1.45, y: 0.7, z: -0.2, vx: -18, vy: 0, vz: 7 },
+  ];
+  for (const c of cases) {
+    world.whistle = null;
+    world.stoppage = false;
+    world.puck.owner = null;
+    world.puck.x = c.x;
+    world.puck.y = c.y;
+    world.puck.z = c.z;
+    world.puck.vx = c.vx;
+    world.puck.vy = c.vy;
+    world.puck.vz = c.vz;
+    let leaked = false;
+    for (let i = 0; i < 25; i++) {
+      step(1);
+      if (pastShell(mouth, world.puck.x, world.puck.y, world.puck.z) && c.vx > 0) leaked = true;
+      if (c.vx > 0 && world.puck.x > mouth + 0.12 && Math.abs(world.puck.z) > GOAL_W / 2 + 0.12) leaked = true;
+      if (c.vx < 0 && world.puck.x < mouth - 0.05 && Math.abs(world.puck.z) < GOAL_W / 2 - 0.05) leaked = true;
+    }
+    assert.equal(leaked, false, `leaked from ${c.x.toFixed(2)},${c.z.toFixed(2)} to ${world.puck.x.toFixed(2)},${world.puck.z.toFixed(2)}`);
+  }
+});
+
+test("a goalie does not snap a puck back from the faceoff dot", () => {
+  boot("game");
+  const goalie = world.skaters.find((s) => s.kind === "goalie" && s.side === "away");
+  assert.ok(goalie);
+  world.whistle = "goal";
+  world.stoppage = true;
+  world.stoppageT = 0.7;
+  world.goalSide = "home";
+  useGame.getState().setWhistle("goal");
+  useGame.getState().setGoalSide("home");
+  world.puck.owner = null;
+  world.puck.x = FACEOFF_EZ_X;
+  world.puck.y = 0.042;
+  world.puck.z = 0;
+  world.puck.vx = 0;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+  const x0 = world.puck.x;
+  step(1);
+  assert.ok(Math.abs(world.puck.x - x0) < 0.4, `snapped from ${x0.toFixed(2)} to ${world.puck.x.toFixed(2)}`);
+  assert.notEqual(world.puck.owner, goalie.id);
 });

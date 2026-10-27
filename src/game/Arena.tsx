@@ -10,9 +10,19 @@ import {
 } from "./iceTexture";
 import { BOARD_H, CORNER_R, FT, GLASS_H, GOAL_LINE_X, RINK_L, RINK_W } from "./rink";
 import { rinkPerimeter } from "./rinkGeom";
-import { kitById } from "./uniforms";
+import { kitById, kitWornColors } from "./uniforms";
 import { periodOrdinal, showsPeriodClock, useGame, type ArenaLook } from "./store";
-import { benchGoalieNumber, defendDir, jumboReplayView, penaltyNumbers, stepJumboReplay, world } from "./sim";
+import {
+  AWAY_BENCH_NUMS,
+  HOME_BENCH_NUMS,
+  benchGoalieNumber,
+  defendDir,
+  jumboReplayView,
+  penaltyNumbers,
+  shootoutBenchRow,
+  stepJumboReplay,
+  world,
+} from "./sim";
 import { applyFarSideCull, SeatedPlayer } from "./PlayerMesh";
 import {
   FASCIA_D,
@@ -158,25 +168,67 @@ function floatsInSight(x: number, y: number, z: number): boolean {
 
 const crowdHide = new Uint8Array(STANDS.length);
 
+/** A missed shootout attempt cheers the defending fans without a goal banner. */
+function shootoutMissCheer(): boolean {
+  const so = world.shootout;
+  return !!so && so.phase !== "done" && world.whistle !== "goal" && world.goalTicker > 0 && !!world.goalSide;
+}
+
+function fanTri(kitId: number): { helmet: THREE.Color; jersey: THREE.Color; pants: THREE.Color } {
+  const worn = kitWornColors(kitById(kitId));
+  return {
+    helmet: new THREE.Color(worn.helmet),
+    jersey: new THREE.Color(worn.jersey),
+    pants: new THREE.Color(worn.pants),
+  };
+}
+
+function fanJersey(
+  i: number,
+  awayFan: boolean,
+  homeTri: ReturnType<typeof fanTri>,
+  awayTri: ReturnType<typeof fanTri>,
+  dark: THREE.Color,
+): THREE.Color {
+  if (awayFan ? i % 9 === 0 : i % 11 === 0) return dark;
+  const tri = awayFan ? awayTri : homeTri;
+  const band = i % 3;
+  return band === 0 ? tri.helmet : band === 1 ? tri.jersey : tri.pants;
+}
+
+function paintCrowdColors(crowd: THREE.InstancedMesh, homeId: number, awayId: number): void {
+  const homeTri = fanTri(homeId);
+  const awayTri = fanTri(awayId);
+  const dark = new THREE.Color("#1c222c");
+  for (let i = 0; i < STANDS.length; i++) {
+    const p = STANDS[i]!;
+    crowd.setColorAt(i, fanJersey(i, p.awayFan, homeTri, awayTri, dark));
+  }
+  if (crowd.instanceColor) crowd.instanceColor.needsUpdate = true;
+}
+
 function SeatDeck() {
-  const home = kitById(useGame((s) => s.homeKit));
-  const away = kitById(useGame((s) => s.awayKit));
+  const homeId = useGame((s) => s.homeKit);
+  const awayId = useGame((s) => s.awayKit);
+  const home = kitById(homeId);
+  const away = kitById(awayId);
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const crowdRef = useRef<THREE.InstancedMesh>(null);
   const cheering = useRef(false);
+  const colorKey = useRef("");
   const count = STANDS.length;
   const { camera } = useThree();
 
-  const colors = useMemo(
-    () => ({
+  const colors = useMemo(() => {
+    const homeTri = fanTri(home.id);
+    const awayTri = fanTri(away.id);
+    return {
       seat: new THREE.Color("#2a3340"),
-      homePri: new THREE.Color(home.crowdPri),
-      homeSec: new THREE.Color(home.crowdSec),
-      awayPri: new THREE.Color(away.crowdPri),
       dark: new THREE.Color("#1c222c"),
-    }),
-    [home, away],
-  );
+      homeTri,
+      awayTri,
+    };
+  }, [home, away]);
   const crowdMat = useMemo(() => {
     const material = new THREE.MeshStandardMaterial({ roughness: 0.75 });
     applyFarSideCull(material, 0.24);
@@ -203,41 +255,44 @@ function SeatDeck() {
       dummy.position.y = p.y + PERSON_LIFT;
       dummy.updateMatrix();
       crowd.setMatrixAt(i, dummy.matrix);
-      const jersey = p.awayFan
-        ? i % 3 === 0
-          ? colors.dark
-          : colors.awayPri
-        : i % 6 === 0
-          ? colors.homeSec
-          : i % 11 === 0
-            ? colors.dark
-            : colors.homePri;
-      crowd.setColorAt(i, jersey);
+      crowd.setColorAt(i, fanJersey(i, p.awayFan, colors.homeTri, colors.awayTri, colors.dark));
     }
     seats.instanceMatrix.needsUpdate = true;
     crowd.instanceMatrix.needsUpdate = true;
     if (seats.instanceColor) seats.instanceColor.needsUpdate = true;
     if (crowd.instanceColor) crowd.instanceColor.needsUpdate = true;
-  }, [colors]);
+    colorKey.current = `${homeId}:${awayId}`;
+  }, [colors, homeId, awayId]);
 
   useFrame(() => {
     const seats = meshRef.current;
     const crowd = crowdRef.current;
     if (!seats || !crowd) return;
-    const dummy = _crowdDummy;
     const ui = useGame.getState();
+    const key = `${ui.homeKit}:${ui.awayKit}`;
+    if (colorKey.current !== key) {
+      colorKey.current = key;
+      paintCrowdColors(crowd, ui.homeKit, ui.awayKit);
+    }
+    const dummy = _crowdDummy;
     const scrimmageHomeWin =
       ui.clockMode === "scrimmage" && world.periodOver && world.goalSide === "home";
     const scrimmageAwayWin =
       ui.clockMode === "scrimmage" && world.periodOver && world.goalSide === "away";
-    const winHome = (world.periodOver && ui.homeScore > ui.awayScore) || scrimmageHomeWin;
-    const winAway = (world.periodOver && ui.awayScore > ui.homeScore) || scrimmageAwayWin;
+    const shootoutDone = world.shootout?.phase === "done";
+    const winHome =
+      !shootoutDone && ((world.periodOver && ui.homeScore > ui.awayScore) || scrimmageHomeWin);
+    const winAway =
+      !shootoutDone && ((world.periodOver && ui.awayScore > ui.homeScore) || scrimmageAwayWin);
     const drill = ui.clockMode === "drill";
     const brawl = world.lineBrawl !== null;
+    const shootoutCheer = shootoutDone && world.goalTicker > 0 && !!world.goalSide;
     const on = drill
       ? world.drillCheer > 0
-      : (world.goalTicker > 0 && !!world.goalSide) || winHome || winAway;
-    const scoringHome = winHome || (!world.periodOver && world.goalSide === "home");
+      : shootoutCheer || (world.goalTicker > 0 && !!world.goalSide) || winHome || winAway;
+    const scoringHome = shootoutCheer
+      ? world.goalSide === "home"
+      : winHome || (!world.periodOver && world.goalSide === "home");
     const t = world.time;
     updateSight(camera);
     const cx = sightCx;
@@ -389,12 +444,19 @@ function StadiumRibbon({
     const scoring = world.goalSide ?? goalSide;
     const fill =
       scoring === "home" ? home.ribbon : scoring === "away" ? away.ribbon : home.ribbon;
-    const lit = clockMode === "drill" ? world.drillCheer > 0 : !!scoring && world.goalTicker > 0;
+    const lit =
+      clockMode === "drill" ? world.drillCheer > 0 : !!scoring && world.goalTicker > 0 && !shootoutMissCheer();
+    const homeWorn = kitWornColors(home);
+    const awayWorn = kitWornColors(away);
     const opts = {
-      homeJersey: home.jersey,
-      homeStripe: home.stripe,
-      awayJersey: away.jersey,
-      awayStripe: away.stripe,
+      homeHelmet: homeWorn.helmet,
+      homeJersey: homeWorn.jersey,
+      homePants: homeWorn.pants,
+      homeStripe: homeWorn.stripe,
+      awayHelmet: awayWorn.helmet,
+      awayJersey: awayWorn.jersey,
+      awayPants: awayWorn.pants,
+      awayStripe: awayWorn.stripe,
       fill: lit ? mixHex(fill, "#ffffff", 0.18) : fill,
       homeScore,
       awayScore,
@@ -738,13 +800,20 @@ function Jumbotron() {
     const scoring = world.goalSide ?? goalSide;
     const fill =
       scoring === "home" ? home.ribbon : scoring === "away" ? away.ribbon : home.ribbon;
-    const lit = clockMode === "drill" ? world.drillCheer > 0 : !!scoring && world.goalTicker > 0;
+    const lit =
+      clockMode === "drill" ? world.drillCheer > 0 : !!scoring && world.goalTicker > 0 && !shootoutMissCheer();
     const replay = jumboReplayView();
+    const homeWorn = kitWornColors(home);
+    const awayWorn = kitWornColors(away);
     const paintOpts = {
-      homeJersey: home.jersey,
-      homeStripe: home.stripe,
-      awayJersey: away.jersey,
-      awayStripe: away.stripe,
+      homeHelmet: homeWorn.helmet,
+      homeJersey: homeWorn.jersey,
+      homePants: homeWorn.pants,
+      homeStripe: homeWorn.stripe,
+      awayHelmet: awayWorn.helmet,
+      awayJersey: awayWorn.jersey,
+      awayPants: awayWorn.pants,
+      awayStripe: awayWorn.stripe,
       fill: lit ? mixHex(fill, "#ffffff", 0.12) : fill,
       homeScore,
       awayScore,
@@ -754,7 +823,7 @@ function Jumbotron() {
         clockMode === "scrimmage"
           ? `${Math.floor(Math.max(0, periodClock) / 60)}:${String(Math.floor(Math.max(0, periodClock) % 60)).padStart(2, "0")}`
           : showsPeriodClock(clockMode)
-            ? `${periodOrdinal(period).toUpperCase()}  ${Math.floor(Math.max(0, periodClock) / 60)}:${String(Math.floor(Math.max(0, periodClock) % 60)).padStart(2, "0")}`
+            ? `${periodOrdinal(period, clockMode).toUpperCase()}  ${Math.floor(Math.max(0, periodClock) / 60)}:${String(Math.floor(Math.max(0, periodClock) % 60)).padStart(2, "0")}`
             : "—",
       puckX: replay?.puckX ?? world.puck.x,
       puckZ: replay?.puckZ ?? world.puck.z,
@@ -894,8 +963,6 @@ function Truss() {
 
 const BENCH_SKATERS = 9;
 const BENCH_SEATS = BENCH_SKATERS + 1;
-const HOME_BENCH_NUMS = [84, 62, 42, 25, 11, 10, 15, 18, 21];
-const AWAY_BENCH_NUMS = [2, 4, 9, 14, 17, 19, 22, 27, 31];
 
 /** 9 skaters plus one goalie. Index 0 of a −X bench is the end toward −X. */
 function benchXs(end: -1 | 1): number[] {
@@ -1056,6 +1123,7 @@ function Benches() {
   const liveAway = useGame((s) => s.liveAway);
   useGame((s) => s.lineupRev);
   const clockMode = useGame((s) => s.clockMode);
+  const shootout = useGame((s) => s.shootout);
   const homeBox =
     clockMode === "practice" || clockMode === "drill" ? [] : penaltyNumbers("home", liveHome);
   const awayBox =
@@ -1124,24 +1192,50 @@ function Benches() {
         <BenchReporter />
       </group>
       {/* Same pose on both benches. Stick side is not flipped toward center ice. */}
-      {HOME_BENCH_XS.map((x, i) => {
-        const goalie = i === homeGSlot;
-        const number = goalie ? homeGNum : HOME_BENCH_NUMS[i < homeGSlot ? i : i - 1]!;
-        return (
-          <group key={`h${i}`} position={[x, 0.75, zBench - 0.04]}>
-            <SeatedPlayer kit={home} number={number} holdStick={!goalie} goalie={goalie} seatX={x} poseId={goalie ? "goalieBench" : "bench"} />
-          </group>
-        );
-      })}
-      {AWAY_BENCH_XS.map((x, i) => {
-        const goalie = i === awayGSlot;
-        const number = goalie ? awayGNum : AWAY_BENCH_NUMS[i < awayGSlot ? i : i - 1]!;
-        return (
-          <group key={`a${i}`} position={[x, 0.75, zBench - 0.04]}>
-            <SeatedPlayer kit={away} number={number} holdStick={!goalie} goalie={goalie} seatX={x} poseId={goalie ? "goalieBench" : "bench"} />
-          </group>
-        );
-      })}
+      {(shootout
+        ? (["home", "away"] as const).flatMap((side) => {
+            const kit = side === "home" ? home : away;
+            const goalieNum = side === "home" ? homeGNum : awayGNum;
+            return shootoutBenchRow(side, goalieNum, shootout.bench[side]).map((seat) => ({
+              ...seat,
+              key: `so-${side}-${seat.number}`,
+              kit,
+            }));
+          })
+        : [
+            ...HOME_BENCH_XS.map((x, i) => {
+              const goalie = i === homeGSlot;
+              return {
+                key: `h${i}`,
+                x,
+                number: goalie ? homeGNum : HOME_BENCH_NUMS[i < homeGSlot ? i : i - 1]!,
+                goalie,
+                kit: home,
+              };
+            }),
+            ...AWAY_BENCH_XS.map((x, i) => {
+              const goalie = i === awayGSlot;
+              return {
+                key: `a${i}`,
+                x,
+                number: goalie ? awayGNum : AWAY_BENCH_NUMS[i < awayGSlot ? i : i - 1]!,
+                goalie,
+                kit: away,
+              };
+            }),
+          ]
+      ).map((seat) => (
+        <group key={seat.key} position={[seat.x, 0.75, zBench - 0.04]}>
+          <SeatedPlayer
+            kit={seat.kit}
+            number={seat.number}
+            holdStick={!seat.goalie}
+            goalie={seat.goalie}
+            seatX={seat.x}
+            poseId={seat.goalie ? "goalieBench" : "bench"}
+          />
+        </group>
+      ))}
       <PenaltyBox
         x={-(penaltyBoxWidth(homeBox.length) / 2 + 0.05)}
         z={zBox}

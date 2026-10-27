@@ -24,6 +24,7 @@ export type Actions = {
   ltDown: boolean;
   rtEdge: boolean;
   rtDown: boolean;
+  lbEdge: boolean;
   lbDown: boolean;
   rbEdge: boolean;
   rbDown: boolean;
@@ -72,11 +73,13 @@ const faceR3 = freshFace();
 const facePause = freshFace();
 const faceLt = freshFace();
 const faceRt = freshFace();
+const faceLb = freshFace();
 const faceRb = freshFace();
 const faceView = freshFace();
 const faceStart = freshFace();
 let touchLt = false;
 let touchView = false;
+let touchStart = false;
 
 const GAME_CODES = new Set([
   "KeyW",
@@ -110,6 +113,7 @@ const GAME_CODES = new Set([
   "NumpadAdd",
   "BracketLeft",
   "BracketRight",
+  "Enter",
 ]);
 
 function activeKeys(): Set<string> {
@@ -144,6 +148,10 @@ export function setTouchLt(v: boolean): void {
 
 export function setTouchView(v: boolean): void {
   touchView = v;
+}
+
+export function setTouchStart(v: boolean): void {
+  touchStart = v;
 }
 
 export function setTouchFace(btn: "a" | "x" | "y" | "b", v: boolean): void {
@@ -371,7 +379,8 @@ function readPad(): PadRead {
 // Pass and shot holds share this face clock (performance time, seconds).
 // A under 0.28s releases as aTap; longer is aHoldRel. xHeld flips at that same 0.28s.
 // That flip is not the wrist/slap switch. sim winds shotWindupT and slaps at half of SHOT_FULL_HOLD.
-// Select (gamepad View, button 8, also KeyR / the touch Goalie button) is the saucer.
+// Select (gamepad View, button 8, also KeyR) is the saucer. It does not take the goalie.
+// Start (gamepad button 9, Enter, and the touch Goalie button) holds the home goalie.
 // selectHoldFor is that button's own clock, not aHoldFor. Held at the A release it makes a saucer.
 // It does not change pass speed. Start (button 9) does not. There is no separate saucer key.
 // Sauce used to read aHoldFor, so the meter stayed off until A went down, and a pass that was
@@ -410,6 +419,7 @@ export function readActions(): Actions {
   const lbDown = k.has("Comma") || k.has("KeyN") || pad.lb;
   const rbDown = k.has("Period") || k.has("KeyM") || pad.rb;
   const viewDown = k.has("KeyR") || pad.view || touchView;
+  const startPressed = pad.start || injectedStart || touchStart || k.has("Enter");
 
   track(faceA, aDown, now);
   track(faceX, xDown, now);
@@ -419,9 +429,10 @@ export function readActions(): Actions {
   track(facePause, pauseDown, now);
   track(faceLt, ltDown, now);
   track(faceRt, rtDown, now);
+  track(faceLb, lbDown, now);
   track(faceRb, rbDown, now);
   track(faceView, viewDown, now);
-  track(faceStart, pad.start || injectedStart, now);
+  track(faceStart, startPressed, now);
 
   const zoomIn =
     faceX.down || k.has("Equal") || k.has("NumpadAdd") || k.has("BracketRight");
@@ -462,6 +473,7 @@ export function readActions(): Actions {
     ltDown: faceLt.down,
     rtEdge: faceRt.edge,
     rtDown: faceRt.down,
+    lbEdge: faceLb.edge,
     lbDown,
     rbEdge: faceRb.edge,
     rbDown,

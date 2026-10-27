@@ -19,7 +19,7 @@ const server = await createServer({
 });
 after(() => server.close());
 
-const { UNIFORMS, kitName } = await server.ssrLoadModule("/src/game/uniforms.ts");
+const { UNIFORMS, kitName, kitWornColors } = await server.ssrLoadModule("/src/game/uniforms.ts");
 
 test("new kits sit at 5 and 6 and the old 5–8 shift up by two", () => {
   assert.equal(UNIFORMS.length, 10);
@@ -83,4 +83,19 @@ test("new kits sit at 5 and 6 and the old 5–8 shift up by two", () => {
   assert.equal(UNIFORMS[9].jersey, "#ffffff");
   assert.equal(UNIFORMS[9].stripe, "#ce1126");
   assert.equal(UNIFORMS[9].socks, "#ffffff");
+});
+
+test("kit bars, crowd, and in-game chips share the worn helmet jersey and pants", () => {
+  for (const kit of UNIFORMS) {
+    const worn = kitWornColors(kit);
+    assert.equal(worn.helmet, kit.helmet);
+    assert.equal(worn.jersey, kit.jersey);
+    assert.equal(worn.pants, kit.pants);
+    assert.equal(worn.stripe, kit.pantStripe ?? kit.stripe);
+  }
+  assert.equal(kitWornColors(UNIFORMS[0]).stripe, "#5a1021");
+  assert.equal(kitWornColors(UNIFORMS[7]).helmet, "#1a58d4");
+  assert.equal(kitWornColors(UNIFORMS[7]).jersey, "#ffffff");
+  assert.equal(kitWornColors(UNIFORMS[7]).pants, "#1a58d4");
+  assert.notEqual(kitWornColors(UNIFORMS[7]).jersey, UNIFORMS[7].crowdPri);
 });

@@ -47,7 +47,7 @@ import {
   RINK_W,
 } from "./rink";
 import { roundedRectShape, rinkPerimeter } from "./rinkGeom";
-import { kitById } from "./uniforms";
+import { kitById, kitWornColors } from "./uniforms";
 import { useGame, type DrillTargets } from "./store";
 import { defendDir, drillFade, drillGrid, drillTargetList, targetBoard, world } from "./sim";
 
@@ -760,12 +760,20 @@ export function Rink() {
   const clockMode = useGame((s) => s.clockMode);
   const home = kitById(homeKit);
   const away = kitById(awayKit);
+  const homeWorn = kitWornColors(home);
+  const awayWorn = kitWornColors(away);
   const showBlue = clockMode !== "roller";
   const nzDots = clockMode !== "roller";
 
   const ice = useMemo(() => createIceTextures(showBlue, nzDots), [showBlue, nzDots]);
-  const adsHome = useMemo(() => createAdTexture(home.ribbon, home.yoke), [home]);
-  const adsAway = useMemo(() => createAdTexture(away.ribbon, away.yoke), [away]);
+  const adsHome = useMemo(
+    () => createAdTexture(homeWorn.jersey, homeWorn.helmet),
+    [homeWorn.jersey, homeWorn.helmet],
+  );
+  const adsAway = useMemo(
+    () => createAdTexture(awayWorn.jersey, awayWorn.helmet),
+    [awayWorn.jersey, awayWorn.helmet],
+  );
 
   useLayoutEffect(
     () => () => {
@@ -881,8 +889,12 @@ export function Rink() {
         <boxGeometry args={[RINK_L * 0.42, 0.7, 0.06]} />
         <meshStandardMaterial map={adsHome} roughness={0.55} />
       </mesh>
-      <mesh position={[0, BOARD_H * 0.55, -RINK_W / 2 - 0.22]} rotation={[0, Math.PI, 0]}>
-        <boxGeometry args={[RINK_L * 0.42, 0.7, 0.06]} />
+      <mesh position={[RINK_L * 0.12, BOARD_H * 0.55, -RINK_W / 2 - 0.22]} rotation={[0, Math.PI, 0]}>
+        <boxGeometry args={[RINK_L * 0.2, 0.7, 0.06]} />
+        <meshStandardMaterial map={adsHome} roughness={0.55} />
+      </mesh>
+      <mesh position={[-RINK_L * 0.12, BOARD_H * 0.55, -RINK_W / 2 - 0.22]} rotation={[0, Math.PI, 0]}>
+        <boxGeometry args={[RINK_L * 0.2, 0.7, 0.06]} />
         <meshStandardMaterial map={adsAway} roughness={0.55} />
       </mesh>
 

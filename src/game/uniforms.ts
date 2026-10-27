@@ -257,3 +257,22 @@ export const UNIFORMS: UniformKit[] = [
 export function kitById(id: number): UniformKit {
   return UNIFORMS[id] ?? UNIFORMS[0]!;
 }
+
+/**
+ * Colors the HUD kit bars show, and the colors the stands, scoreboard chip,
+ * and jumbo token should wear for that same kit. `stripe` is the pants stripe
+ * actually drawn on the player (pantStripe when the kit has one).
+ */
+export function kitWornColors(kit: UniformKit): {
+  helmet: string;
+  jersey: string;
+  pants: string;
+  stripe: string;
+} {
+  return {
+    helmet: kit.helmet,
+    jersey: kit.jersey,
+    pants: kit.pants,
+    stripe: kit.pantStripe ?? kit.stripe,
+  };
+}

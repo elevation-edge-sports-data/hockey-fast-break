@@ -57,6 +57,8 @@ const DT = 1 / 60;
 const loadedMode = useGame.getState().clockMode;
 const loadedStored = localStorage.getItem("hfb-play-mode");
 const loadedVersion = localStorage.getItem("hfb-play-mode-v");
+const loadedHomeTargets = useGame.getState().scrimmageHomeTargets;
+const loadedAwayTargets = useGame.getState().scrimmageAwayTargets;
 
 function cellCenter(count, index) {
   const { cols, rows, list } = targetBoard(count);
@@ -121,6 +123,8 @@ test("a saved scrimmage id loads as roller", () => {
   assert.equal(loadedStored, "roller");
   assert.equal(loadedVersion, "2");
   assert.equal(useGame.getState().powerPlay, true);
+  assert.equal(loadedHomeTargets, 4);
+  assert.equal(loadedAwayTargets, 4);
 });
 
 test("a knockdown schedules a center-ice faceoff", () => {
@@ -436,6 +440,73 @@ test("a knockdown on the home board is credited to away", () => {
   assert.equal(world.faceoff, false);
 });
 
+function waitUntilOver() {
+  let frames = 0;
+  for (; frames < 400 && !world.periodOver; frames++) stepSim(DT);
+  assert.equal(world.periodOver, true, `still playing after ${frames}`);
+  return frames;
+}
+
+test("a scrimmage win freezes the clock, handicaps the loser, and cycles a home kit", () => {
+  bootScrimmage(4, 4);
+  const kit = useGame.getState().awayKit;
+  world.scrimmageAwayGone[1] = true;
+  world.scrimmageAwayGone[2] = true;
+  world.scrimmageAwayGone[3] = true;
+  const { y, z } = cellCenter(4, 0);
+  driveAtMouth(1, y, z);
+  const frozen = world.periodClock;
+  for (let i = 0; i < 60; i++) stepSim(DT);
+  assert.equal(world.periodClock, frozen);
+  assert.equal(world.periodOver, false);
+  waitUntilOver();
+  assert.equal(world.periodClock, frozen);
+  assert.equal(useGame.getState().scrimmageAwayTargets, 4);
+  assert.equal(useGame.getState().scrimmageHomeTargets, 4);
+  setInjectedKeys(["KeyE"]);
+  stepSim(DT);
+  setInjectedKeys([]);
+  assert.equal(world.periodClock, 0);
+  assert.equal(useGame.getState().periodClock, 0);
+  assert.equal(world.periodOver, false);
+  assert.equal(useGame.getState().scrimmageAwayTargets, 8);
+  assert.equal(useGame.getState().scrimmageHomeTargets, 4);
+  assert.equal(world.scrimmageAwayGone.length, 8);
+  assert.notEqual(useGame.getState().awayKit, kit);
+
+  bootScrimmage(4, 16);
+  world.scrimmageAwayGone.fill(true);
+  world.scrimmageAwayGone[0] = false;
+  const last = cellCenter(16, 0);
+  driveAtMouth(1, last.y, last.z);
+  waitUntilOver();
+  setInjectedKeys(["KeyE"]);
+  stepSim(DT);
+  setInjectedKeys([]);
+  assert.equal(useGame.getState().scrimmageAwayTargets, 16);
+  assert.equal(useGame.getState().scrimmageHomeTargets, 4);
+  assert.equal(world.periodClock, 0);
+
+  bootScrimmage(4, 4);
+  const stayed = useGame.getState().awayKit;
+  world.scrimmageHomeGone[1] = true;
+  world.scrimmageHomeGone[2] = true;
+  world.scrimmageHomeGone[3] = true;
+  const cpu = cellCenter(4, 0);
+  driveAtMouth(-1, cpu.y, cpu.z);
+  const cpuClock = world.periodClock;
+  for (let i = 0; i < 40; i++) stepSim(DT);
+  assert.equal(world.periodClock, cpuClock);
+  waitUntilOver();
+  setInjectedKeys(["KeyE"]);
+  stepSim(DT);
+  setInjectedKeys([]);
+  assert.equal(useGame.getState().scrimmageHomeTargets, 8);
+  assert.equal(useGame.getState().scrimmageAwayTargets, 4);
+  assert.equal(useGame.getState().awayKit, stayed);
+  assert.equal(world.periodClock, 0);
+});
+
 test("scrimmage clock counts up from zero and does not expire", () => {
   bootScrimmage(4, 4);
   assert.equal(world.periodClock, 0);
@@ -492,14 +563,15 @@ test("scrimmage clock counts up from zero and does not expire", () => {
   assert.equal(world.periodOver, false);
 });
 
-test("a shot through an empty scrimmage cell is not a goal", () => {
+test("a shot through an empty scrimmage cell bounces off the face", () => {
   bootScrimmage(4, 4);
   launch(GOAL_LINE_X - 0.35, GOAL_H * 0.5, 0, 30, 0, 0);
   stepSim(DT);
   assert.ok(
-    world.puck.x > GOAL_LINE_X - 0.05,
-    `puck stayed in front at ${world.puck.x.toFixed(3)},${world.puck.y.toFixed(3)},${world.puck.z.toFixed(3)}`,
+    world.puck.x < GOAL_LINE_X - 0.01,
+    `puck went through at ${world.puck.x.toFixed(3)},${world.puck.y.toFixed(3)},${world.puck.z.toFixed(3)}`,
   );
+  assert.ok(world.puck.vx < 0, `face did not bounce vx ${world.puck.vx.toFixed(2)}`);
   assert.equal(world.stoppage, false);
   assert.equal(world.periodOver, false);
   assert.equal(useGame.getState().homeScore, 0);

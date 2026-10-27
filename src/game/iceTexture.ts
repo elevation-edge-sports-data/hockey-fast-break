@@ -531,9 +531,13 @@ export function mixHex(a: string, b: string, t: number): string {
 }
 
 export type RibbonPaint = {
+  homeHelmet: string;
   homeJersey: string;
+  homePants: string;
   homeStripe: string;
+  awayHelmet: string;
   awayJersey: string;
+  awayPants: string;
   awayStripe: string;
   fill: string;
   homeScore: number;
@@ -542,6 +546,25 @@ export type RibbonPaint = {
   goal: boolean;
   clock?: string | null;
 };
+
+function paintKitChip(
+  g: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  helmet: string,
+  jersey: string,
+  pants: string,
+): void {
+  const band = h / 3;
+  g.fillStyle = helmet;
+  g.fillRect(x, y, w, band);
+  g.fillStyle = jersey;
+  g.fillRect(x, y + band, w, band);
+  g.fillStyle = pants;
+  g.fillRect(x, y + band * 2, w, h - band * 2);
+}
 
 export function createRibbonCanvas(): {
   canvas: HTMLCanvasElement;
@@ -619,14 +642,8 @@ export function createScoreboardCanvas(): {
     g.fillRect(0, h - 6, w, 6);
     g.fillStyle = "#0c1014";
     g.fillRect(16, 16, 92, 96);
-    g.fillStyle = opts.homeJersey;
-    g.fillRect(20, 20, 40, 88);
-    g.fillStyle = opts.homeStripe;
-    g.fillRect(20, 20, 10, 88);
-    g.fillStyle = opts.awayJersey;
-    g.fillRect(64, 20, 40, 88);
-    g.fillStyle = opts.awayStripe;
-    g.fillRect(94, 20, 10, 88);
+    paintKitChip(g, 20, 20, 40, 88, opts.homeHelmet, opts.homeJersey, opts.homePants);
+    paintKitChip(g, 64, 20, 40, 88, opts.awayHelmet, opts.awayJersey, opts.awayPants);
     g.strokeStyle = "rgba(255,255,255,0.78)";
     g.lineWidth = 1.5;
     g.strokeRect(20, 20, 84, 88);
@@ -662,7 +679,9 @@ function paintJumboSkater(
   g: CanvasRenderingContext2D,
   x: number,
   y: number,
+  helmet: string,
   jersey: string,
+  pants: string,
   stripe: string,
 ): void {
   const torsoW = 6.2;
@@ -673,14 +692,15 @@ function paintJumboSkater(
   const top = y - 6.2;
   const torsoY = top + headR * 2 - 0.4;
   const hip = torsoY + torsoH - 0.5;
-  g.fillStyle = jersey;
+  g.fillStyle = helmet;
   g.beginPath();
   g.arc(x, top + headR, headR, 0, Math.PI * 2);
   g.fill();
+  g.fillStyle = jersey;
   g.fillRect(x - torsoW / 2, torsoY, torsoW, torsoH);
   g.fillStyle = stripe;
   g.fillRect(x - torsoW / 2, torsoY + 1.35, torsoW, 1.35);
-  g.fillStyle = jersey;
+  g.fillStyle = pants;
   g.fillRect(x - 2.8, hip, legW, legH);
   g.fillRect(x + 1.1, hip, legW, legH);
   g.strokeStyle = "#1a120c";
@@ -1034,7 +1054,9 @@ export function createJumboFace(kind: "wide" | "tall" = "wide", flip = false): {
         g,
         pt.x,
         pt.y,
+        p.home ? opts.homeHelmet : opts.awayHelmet,
         p.home ? opts.homeJersey : opts.awayJersey,
+        p.home ? opts.homePants : opts.awayPants,
         p.home ? opts.homeStripe : opts.awayStripe,
       );
     }

@@ -6,7 +6,7 @@ import { Arena } from "./Arena";
 import { Rink } from "./Rink.tsx";
 import { PlayerMesh, PUCK_MARK_INNER, PuckMesh, RefereeMesh, USER_MARK_INNER } from "./PlayerMesh";
 import { attachInput } from "./input";
-import { cpuDrillWatchLook, cpuScrimmageWatchOn, installControlsProbe, mirrorFreeCamEnds, orbitFromOffset, periodEndLook, replayLockKind, stepPlayFrame, whistleUserLook, world } from "./sim";
+import { cpuDrillWatchLook, cpuScrimmageWatchOn, installControlsProbe, mirrorFreeCamEnds, orbitFromOffset, periodEndLook, replayLockKind, shootoutFocusLook, stepPlayFrame, whistleUserLook, world } from "./sim";
 import { useGame, type CamMode } from "./store";
 import { BOARD_H, BLUE_X, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
 
@@ -101,8 +101,14 @@ let _crowdCut = false;
 
 function stopPausedOrbit(controls: unknown) {
   if (!controls || typeof controls !== "object") return;
-  const orbit = controls as { enabled?: boolean; autoRotate?: boolean; enableDamping?: boolean };
+  const orbit = controls as {
+    enabled?: boolean;
+    autoRotate?: boolean;
+    enableDamping?: boolean;
+    autoRotateSpeed?: number;
+  };
   orbit.autoRotate = false;
+  orbit.autoRotateSpeed = 0;
   orbit.enableDamping = false;
   orbit.enabled = false;
 }
@@ -146,9 +152,21 @@ function writeCamBasis(camera: THREE.Camera) {
 const CLASSIC_MIN_BACK = 2;
 const CLASSIC_UP_COS = Math.cos((25 * Math.PI) / 180);
 
+/** Attack end that should sit at the top of the screen during a shootout, or 0 outside one. */
+function shootoutAttackUp(): 1 | -1 | 0 {
+  const so = world.shootout;
+  if (!so || so.attempts.length === 0) return 0;
+  const attempt = so.attempts[so.attempts.length - 1];
+  if (!attempt) return 0;
+  const atk = attempt.side === "home" ? world.homeAttack : -world.homeAttack;
+  return atk >= 0 ? 1 : -1;
+}
+
 /** Screen-up along the rink. Drill keeps the +X target net at the top. */
 function screenUpX(): 1 | -1 {
   if (useGame.getState().clockMode === "drill") return 1;
+  const soUp = shootoutAttackUp();
+  if (soUp !== 0) return soUp;
   const homeUp: 1 | -1 = world.homeAttack > 0 ? 1 : -1;
   // Watchable 0v6 puts the CPU attacking net at the top.
   if (cpuScrimmageWatchOn()) return homeUp === 1 ? -1 : 1;
@@ -341,13 +359,15 @@ function seedFreestyleCam(camera: THREE.PerspectiveCamera) {
   const playing = useGame.getState().playing;
   const puck = world.puck;
   const drillCam = playing ? drillFollow() : null;
-  const endCam = playing && !drillCam ? periodEndLook() : null;
-  const whistleCam = playing && !drillCam && !endCam ? whistleUserLook() : null;
-  const px = drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : playing ? puck.x : 0;
-  const pz = drillCam ? drillCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : playing ? puck.z : 0;
-  const py = drillCam ? drillCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
+  const shootCam = playing && !drillCam ? shootoutFocusLook() : null;
+  const endCam = playing && !drillCam && !shootCam ? periodEndLook() : null;
+  const whistleCam = playing && !drillCam && !endCam && !shootCam ? whistleUserLook() : null;
+  const px = drillCam ? drillCam.x : shootCam ? shootCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : playing ? puck.x : 0;
+  const pz = drillCam ? drillCam.z : shootCam ? shootCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : playing ? puck.z : 0;
+  const py = drillCam ? drillCam.y : shootCam ? shootCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
   camera.up.set(0, 1, 0);
-  camera.position.set(px - 12, 9.2, pz + 14);
+  const face = world.shootout ? screenUpX() : 1;
+  camera.position.set(px - face * 12, 9.2, pz + 14);
   camera.lookAt(px, py, pz);
   _pos.copy(camera.position);
   const fc = world.freeCam;
@@ -372,11 +392,12 @@ function captureFreeCam(camera: THREE.Camera, loose = false) {
   const puck = world.puck;
   const playing = useGame.getState().playing;
   const drillCam = drillFollow();
-  const endCam = playing && !drillCam ? periodEndLook() : null;
-  const whistleCam = playing && !drillCam && !endCam ? whistleUserLook() : null;
-  fc.tx = drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : playing ? puck.x : 0;
-  fc.ty = drillCam ? drillCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
-  fc.tz = drillCam ? drillCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : playing ? puck.z : 0;
+  const shootCam = playing && !drillCam ? shootoutFocusLook() : null;
+  const endCam = playing && !drillCam && !shootCam ? periodEndLook() : null;
+  const whistleCam = playing && !drillCam && !endCam && !shootCam ? whistleUserLook() : null;
+  fc.tx = drillCam ? drillCam.x : shootCam ? shootCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : playing ? puck.x : 0;
+  fc.ty = drillCam ? drillCam.y : shootCam ? shootCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
+  fc.tz = drillCam ? drillCam.z : shootCam ? shootCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : playing ? puck.z : 0;
   const dx = camera.position.x - fc.tx;
   const dy = camera.position.y - fc.ty;
   const dz = camera.position.z - fc.tz;
@@ -588,7 +609,7 @@ function snapCrowdFollow(cam: THREE.PerspectiveCamera, mode: CamMode): void {
     cam.position.set(px - upX * 13.2, py + 6.4, pz);
     aimClassic(cam, _lookSmooth);
   } else if (mode === "high") {
-    cam.up.set(atk, 0, 0);
+    cam.up.set(screenUpX(), 0, 0);
     cam.position.set(px, Math.max(32, py + 8), pz);
     cam.lookAt(_lookSmooth);
   } else {
@@ -622,6 +643,8 @@ function CameraRig() {
   const seenPeriod = useRef(world.periodView);
   const seenClock = useRef(useGame.getState().clockMode);
   const drillOrbitFlipped = useRef(false);
+  const seenShootUp = useRef(0);
+  const shootFlips = useRef(0);
 
   useFrame((state) => {
     const ui = useGame.getState();
@@ -646,6 +669,14 @@ function CameraRig() {
     const drillNow = uiNow.clockMode === "drill";
     const drillSnap = drillNow && world.drillView !== seenDrill.current;
     if (!playing) {
+      if (shootoutAttackUp() === 0 && seenShootUp.current !== 0 && shootFlips.current % 2 === 1) {
+        mirrorFreeCamEnds();
+        if (_titleFcSynced) syncTitleFreeCam();
+      }
+      if (shootoutAttackUp() === 0) {
+        seenShootUp.current = 0;
+        shootFlips.current = 0;
+      }
       seenPeriod.current = world.periodView;
       seenClock.current = uiNow.clockMode;
       wasTitle.current = true;
@@ -741,8 +772,21 @@ function CameraRig() {
         world.freeCam.captured = false;
         _pauseHolding = false;
       }
+      if (!world.replay) holdPausedCam(cam);
       prevMode.current = mode;
       return;
+    }
+    const soUp = shootoutAttackUp();
+    let soSnap = false;
+    if (soUp === 0) {
+      soSnap = seenShootUp.current !== 0 && shootFlips.current % 2 === 1;
+      seenShootUp.current = 0;
+      shootFlips.current = 0;
+    } else if (soUp !== seenShootUp.current) {
+      const homeUp: 1 | -1 = world.homeAttack > 0 ? 1 : -1;
+      soSnap = seenShootUp.current !== 0 || soUp !== homeUp;
+      if (soSnap) shootFlips.current += 1;
+      seenShootUp.current = soUp;
     }
     if (world.whistle === "crowd") {
       _crowdCam = true;
@@ -786,6 +830,7 @@ function CameraRig() {
         seedFreestyleCam(cam);
       }
       if (periodSnap && !fromTitle && !switchedMode) mirrorFreeCamEnds();
+      if (soSnap && !fromTitle && !switchedMode && !periodSnap) mirrorFreeCamEnds();
       if (periodSnap) seenPeriod.current = world.periodView;
       const clockNow = useGame.getState().clockMode;
       if (!fromTitle && !switchedMode) {
@@ -804,11 +849,12 @@ function CameraRig() {
       const fc = world.freeCam;
       const puck = world.puck;
       const drillCam = drillFollow();
-      const endCam = drillCam ? null : periodEndLook();
-      const whistleCam = endCam ? null : whistleUserLook();
-      const tx = drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : puck.x;
-      const tz = drillCam ? drillCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : puck.z;
-      const ty = drillCam ? drillCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : Math.max(0.45, puck.y);
+      const shootCam = drillCam ? null : shootoutFocusLook();
+      const endCam = drillCam || shootCam ? null : periodEndLook();
+      const whistleCam = endCam || shootCam ? null : whistleUserLook();
+      const tx = drillCam ? drillCam.x : shootCam ? shootCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : puck.x;
+      const tz = drillCam ? drillCam.z : shootCam ? shootCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : puck.z;
+      const ty = drillCam ? drillCam.y : shootCam ? shootCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : Math.max(0.45, puck.y);
       const k = 1 - Math.exp(-3.4 * Math.min(dt, 0.1));
       fc.tx += (tx - fc.tx) * k;
       fc.tz += (tz - fc.tz) * k;
@@ -825,9 +871,10 @@ function CameraRig() {
     const preview = world.camPick && (!playing || pausedNow);
     const idle = (!playing || pausedNow) && !preview;
     const drillCam = drillFollow();
-    const endCam = !idle && !drillCam ? periodEndLook() : null;
-    const whistleCam = !idle && !endCam ? whistleUserLook() : null;
-    const focus = endCam ?? whistleCam;
+    const shootCam = !idle && !drillCam && (mode === "classic" || mode === "high") ? shootoutFocusLook() : null;
+    const endCam = !idle && !drillCam && !shootCam ? periodEndLook() : null;
+    const whistleCam = !idle && !endCam && !shootCam ? whistleUserLook() : null;
+    const focus = shootCam ?? endCam ?? whistleCam;
     const controlled =
       focus && !endCam && world.whistle === "goal"
         ? (world.lastShooter !== null ? world.skaters[world.lastShooter] : undefined) ??
@@ -839,7 +886,7 @@ function CameraRig() {
     if (periodSnap) seenPeriod.current = world.periodView;
     if (seenClock.current === "drill" && uiNow.clockMode !== "drill") drillOrbitFlipped.current = false;
     seenClock.current = uiNow.clockMode;
-    const switched = prevMode.current !== mode || fromTitle || drillSnap || periodSnap;
+    const switched = prevMode.current !== mode || fromTitle || drillSnap || periodSnap || soSnap;
     prevMode.current = mode;
 
     const puckJump = Math.hypot(px - _follow.x, pz - _follow.z);
@@ -928,7 +975,7 @@ function CameraRig() {
         mode === "classic"
           ? widenClassicForReceiver(
               cam.aspect,
-              world.homeAttack,
+              screenUpX(),
               50 + zoom * 9,
               px,
               puckY,
@@ -1050,12 +1097,13 @@ function FreestyleControls() {
     c.enableDamping = false;
     if (playing) {
       const drillCam = drillFollow();
-      const endCam = drillCam ? null : periodEndLook();
-      const whistleCam = endCam ? null : whistleUserLook();
+      const shootCam = drillCam ? null : shootoutFocusLook();
+      const endCam = drillCam || shootCam ? null : periodEndLook();
+      const whistleCam = endCam || shootCam ? null : whistleUserLook();
       const p = world.puck;
-      const tx = drillCam ? drillCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : p.x;
-      const tz = drillCam ? drillCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : p.z;
-      const ty = drillCam ? drillCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : Math.max(0.45, p.y);
+      const tx = drillCam ? drillCam.x : shootCam ? shootCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : p.x;
+      const tz = drillCam ? drillCam.z : shootCam ? shootCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : p.z;
+      const ty = drillCam ? drillCam.y : shootCam ? shootCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : Math.max(0.45, p.y);
       const snap = drillCam !== null && world.drillView !== seenDrill.current;
       if (snap) seenDrill.current = world.drillView;
       const cut = _crowdCut;
@@ -1070,12 +1118,13 @@ function FreestyleControls() {
   if (!live) return null;
 
   const drillCam = drillFollow();
-  const endCam = playing && !drillCam ? periodEndLook() : null;
-  const whistleCam = playing && !drillCam && !endCam ? whistleUserLook() : null;
+  const shootCam = playing && !drillCam ? shootoutFocusLook() : null;
+  const endCam = playing && !drillCam && !shootCam ? periodEndLook() : null;
+  const whistleCam = playing && !drillCam && !endCam && !shootCam ? whistleUserLook() : null;
   const puck = world.puck;
-  const tx = drillCam ? drillCam.x : !playing ? 0 : endCam ? endCam.x : whistleCam ? whistleCam.x : puck.x;
-  const tz = drillCam ? drillCam.z : !playing ? 0 : endCam ? endCam.z : whistleCam ? whistleCam.z : puck.z;
-  const ty = drillCam ? drillCam.y : !playing ? 0.55 : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
+  const tx = drillCam ? drillCam.x : !playing ? 0 : shootCam ? shootCam.x : endCam ? endCam.x : whistleCam ? whistleCam.x : puck.x;
+  const tz = drillCam ? drillCam.z : !playing ? 0 : shootCam ? shootCam.z : endCam ? endCam.z : whistleCam ? whistleCam.z : puck.z;
+  const ty = drillCam ? drillCam.y : !playing ? 0.55 : shootCam ? shootCam.y : endCam ? endCam.y : whistleCam ? whistleCam.y : 0.55;
 
   return (
     <OrbitControls
@@ -1122,7 +1171,7 @@ export function World() {
       <ReplayIceMark />
       {world.skaters.map((s) => (
         <PlayerMesh
-          key={`${lineupRev}-${s.id}-${s.side === "home" ? homeKit : awayKit}`}
+          key={`${lineupRev}-${s.id}-${s.side}-${s.side === "home" ? homeKit : awayKit}`}
           index={s.id}
           kitId={s.side === "home" ? homeKit : awayKit}
         />

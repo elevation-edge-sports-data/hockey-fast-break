@@ -42,7 +42,7 @@ const input = await server.ssrLoadModule("/src/game/input.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 const uniforms = await server.ssrLoadModule("/src/game/uniforms.ts");
 
-const { resetWorld, stepSim, world, previewPausedMode, previewPausedMinutes, startPausedNewGame, pauseGame } = sim;
+const { resetWorld, stepSim, world, previewPausedMode, previewPausedMinutes, previewPausedOtFormat, startPausedNewGame, pauseGame } = sim;
 const { useGame, patchLineup, cycleMatchKits, drawCpuKit, armCpuKitCycle, applyArmedCpuKitCycle } = store;
 const { setInjectedKeys } = input;
 const { GOAL_LINE_X } = rink;
@@ -237,6 +237,36 @@ test("pause A starts a new mode and Y resumes the game already running", () => {
   tap("KeyQ");
   assert.equal(useGame.getState().paused, false);
   assert.equal(useGame.getState().clockMode, "roller");
+});
+
+test("overtime format applies on the title screen and on a paused new game", () => {
+  boot("game", { g: 1, d: 2, o: 3 }, { g: 1, d: 2, o: 3 });
+  useGame.getState().setOtFormat("playoff");
+  useGame.getState().setPlaying(false);
+  useGame.getState().setPaused(false);
+  previewPausedOtFormat("reg");
+  assert.equal(useGame.getState().otFormat, "reg");
+  assert.equal(localStorage.getItem("hfb-ot-format"), "reg");
+  previewPausedOtFormat("playoff");
+  assert.equal(useGame.getState().otFormat, "playoff");
+
+  useGame.getState().setPlaying(true);
+  pauseGame();
+  previewPausedOtFormat("reg");
+  assert.equal(useGame.getState().otFormat, "playoff");
+  assert.equal(localStorage.getItem("hfb-ot-format"), "playoff");
+  tap("KeyQ");
+  assert.equal(useGame.getState().paused, false);
+  assert.equal(useGame.getState().otFormat, "playoff");
+
+  pauseGame();
+  previewPausedOtFormat("reg");
+  startPausedNewGame();
+  assert.equal(useGame.getState().paused, false);
+  assert.equal(useGame.getState().otFormat, "reg");
+  assert.equal(localStorage.getItem("hfb-ot-format"), "reg");
+  assert.equal(useGame.getState().clockMode, "game");
+  useGame.getState().setOtFormat("playoff");
 });
 
 test("a finished match reset, a new game, and a mode change keep both kits", () => {

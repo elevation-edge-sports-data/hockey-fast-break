@@ -45,7 +45,7 @@ const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const { resetWorld, stepSim, world, defendDir, faceYaw } = sim;
 const { inferNamedPose } = poses;
 const { useGame } = store;
-const { setInjectedKeys } = input;
+const { setInjectedKeys, setInjectedStart } = input;
 const { GOAL_LINE_X } = rink;
 
 const DT = 1 / 60;
@@ -141,7 +141,9 @@ test("holding the goalie still bursts, and release hands back to a skater", () =
   world.puck.x = 20;
   world.puck.z = 12;
   const g = homeGoalie();
-  const held = skate(g, ["KeyR", "KeyW", "Space"], 1);
+  setInjectedStart(true);
+  const held = skate(g, ["KeyW", "Space"], 1);
+  setInjectedStart(false);
   assert.equal(held.userId, g.id);
   assert.equal(held.burst, 1);
   assert.ok(held.sp > 13.5 && held.sp < 15.2, `held burst ${held.sp.toFixed(2)}`);

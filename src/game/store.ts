@@ -5,9 +5,47 @@ export type CamMode = "classic" | "chase" | "broadcast" | "high" | "freestyle";
 export type ArenaLook = "light" | "dark";
 
 export type Lineup = { g: number; d: number; o: number };
-export type PlayMode = "practice" | "roller" | "scrimmage" | "game" | "drill";
+export type PlayMode = "practice" | "roller" | "scrimmage" | "game" | "drill" | "shootout";
 export type DrillTargets = 4 | 8 | 12 | 16;
 export type ControlProfile = "classic" | "wings" | "stick";
+/** Playoff keeps 20:00 5-on-5 sudden death. Reg is one 5:00 3-on-3 period, then a shootout. */
+export type OtFormat = "reg" | "playoff";
+export type ShootoutResult = "goal" | "save";
+/** Scheduled shootout rounds before sudden death. */
+export type ShootoutRounds = 3 | 5 | 7;
+/** One shootout try. `result` stays null while the shooter is still on the ice. */
+export type ShootoutAttempt = {
+  side: "home" | "away";
+  number: number;
+  result: ShootoutResult | null;
+};
+/** One column per round. Missing shots stay null so the cell stays empty. */
+export function shootoutColumns(
+  attempts: readonly ShootoutAttempt[],
+  rounds: ShootoutRounds = 3,
+): {
+  away: (ShootoutResult | null)[];
+  home: (ShootoutResult | null)[];
+} {
+  const away: (ShootoutResult | null)[] = [];
+  const home: (ShootoutResult | null)[] = [];
+  for (const a of attempts) (a.side === "away" ? away : home).push(a.result);
+  const n = Math.max(away.length, home.length, rounds);
+  while (away.length < n) away.push(null);
+  while (home.length < n) home.push(null);
+  return { away, home };
+}
+
+/** Record the HUD can read. The live approach and puck stay on the sim. */
+export type ShootoutRecord = {
+  first: "home" | "away";
+  order: { home: readonly number[]; away: readonly number[] };
+  attempts: readonly ShootoutAttempt[];
+  /** On-ice skaters sitting out this attempt. The shooter and both goalies are omitted. */
+  bench: { home: readonly number[]; away: readonly number[] };
+  /** Columns scheduled before sudden death. Captured when the series starts. */
+  rounds: ShootoutRounds;
+};
 export type ShotKind = "wrist" | "snap" | "slap" | "backhand";
 export type HudRelease = ShotKind | "pass" | "saucer";
 
@@ -58,6 +96,8 @@ export const MODE_LINEUPS: Record<PlayMode, { home: Lineup; away: Lineup }> = {
   scrimmage: { home: { g: 0, d: 2, o: 3 }, away: { g: 0, d: 2, o: 3 } },
   game: { home: { g: 1, d: 2, o: 3 }, away: { g: 1, d: 2, o: 3 } },
   drill: { home: { g: 0, d: 0, o: 1 }, away: { g: 0, d: 0, o: 0 } },
+  /** Same starting five as a game, so the first five shooters are those skaters. */
+  shootout: { home: { g: 1, d: 2, o: 3 }, away: { g: 1, d: 2, o: 3 } },
 };
 
 export function modeLineupCap(mode: PlayMode): number {
@@ -149,6 +189,13 @@ type GameUi = {
   controlProfile: ControlProfile;
   gameMinutes: number;
   rollerMinutes: number;
+  otFormat: OtFormat;
+  /** Roller overtime. Separate from the Game format so each mode keeps its own default. */
+  rollerOtFormat: OtFormat;
+  /** Initial shootout rounds for Reg OT and the Shootout minigame. */
+  shootoutRounds: ShootoutRounds;
+  /** Null outside a regular-season shootout. Kept after it ends until the next reset. */
+  shootout: ShootoutRecord | null;
   period: number;
   periodClock: number;
   periodOver: boolean;
@@ -222,6 +269,10 @@ type GameUi = {
   setControlProfile: (v: ControlProfile) => void;
   setGameMinutes: (n: number) => void;
   setRollerMinutes: (n: number) => void;
+  setOtFormat: (v: OtFormat) => void;
+  setRollerOtFormat: (v: OtFormat) => void;
+  setShootoutRounds: (n: ShootoutRounds) => void;
+  setShootout: (v: ShootoutRecord | null) => void;
   setPeriod: (n: number) => void;
   setPeriodClock: (n: number) => void;
   setPeriodOver: (v: boolean) => void;
@@ -310,6 +361,13 @@ function saveTargetCount(key: string, n: DrillTargets): void {
   }
 }
 
+/** sim.ts drops a pending scrimmage handicap when the player picks a count. */
+let scrimmageTargetsTouched: (() => void) | null = null;
+
+export function onScrimmageTargetsSet(fn: () => void): void {
+  scrimmageTargetsTouched = fn;
+}
+
 function loadDrillTargets(): DrillTargets {
   return loadTargetCount("hfb-drill-targets");
 }
@@ -356,12 +414,39 @@ export const PERIOD_MINUTE_STEPS = [1, 1.5, 2, 3, 4, 5] as const;
 /** Each period counts down 20:00, scaled to the real length. Regulation is three of them. */
 export const GAME_CLOCK_DISPLAY_MINUTES = 20;
 export const GAME_PERIODS = 3;
+/** Regular-season overtime shows 5:00 and runs at the same rate as the 20:00 clock. */
+export const REG_OT_SECONDS = 5 * 60;
 /** Each roller period counts down 18:00. A roller match is two of them. */
 export const ROLLER_CLOCK_DISPLAY_MINUTES = 18;
 export const ROLLER_PERIODS = 2;
 export const ROLLER_MINUTES_DEFAULT = 1.5;
+export const OT_FORMAT_DEFAULT: OtFormat = "playoff";
+/** Roller opens on the regular-season overtime. Game stays on playoff. */
+export const ROLLER_OT_FORMAT_DEFAULT: OtFormat = "reg";
+export const SHOOTOUT_ROUNDS_DEFAULT: ShootoutRounds = 3;
 const GAME_MINUTES_KEY = "hfb-game-minutes";
 const ROLLER_MINUTES_KEY = "hfb-roller-minutes";
+const OT_FORMAT_KEY = "hfb-ot-format";
+const ROLLER_OT_FORMAT_KEY = "hfb-roller-ot-format";
+const SHOOTOUT_ROUNDS_KEY = "hfb-shootout-rounds";
+
+export function clampOtFormat(v: unknown): OtFormat {
+  return v === "reg" ? "reg" : OT_FORMAT_DEFAULT;
+}
+
+export function clampRollerOtFormat(v: unknown): OtFormat {
+  return v === "playoff" ? "playoff" : ROLLER_OT_FORMAT_DEFAULT;
+}
+
+export function clampShootoutRounds(v: unknown): ShootoutRounds {
+  const n = typeof v === "number" ? v : Number(v);
+  return n === 5 ? 5 : n === 7 ? 7 : SHOOTOUT_ROUNDS_DEFAULT;
+}
+
+/** The Shootout minigame uses the saved 3/5/7 count. Every other mode stays at 3. */
+export function seriesShootoutRounds(mode: PlayMode, saved: ShootoutRounds): ShootoutRounds {
+  return mode === "shootout" ? clampShootoutRounds(saved) : SHOOTOUT_ROUNDS_DEFAULT;
+}
 
 export function clampPeriodMinutes(n: number, fallback: number): number {
   if (!Number.isFinite(n)) return fallback;
@@ -420,9 +505,10 @@ export function showsPeriodClock(mode: PlayMode): boolean {
   return mode === "game" || mode === "roller";
 }
 
-export function periodOrdinal(period: number): string {
-  if (period > GAME_PERIODS) {
-    const ot = period - GAME_PERIODS;
+export function periodOrdinal(period: number, mode: PlayMode = "game"): string {
+  const regulation = mode === "roller" ? ROLLER_PERIODS : GAME_PERIODS;
+  if (period > regulation) {
+    const ot = period - regulation;
     return ot === 1 ? "OT" : `${ot}OT`;
   }
   if (period === 2) return "2nd";
@@ -430,9 +516,14 @@ export function periodOrdinal(period: number): string {
   return "1st";
 }
 
-export function periodEndCopy(period: number, homeScore: number, awayScore: number): { title: string; score: string } {
+export function periodEndCopy(
+  period: number,
+  homeScore: number,
+  awayScore: number,
+  mode: PlayMode = "game",
+): { title: string; score: string } {
   return {
-    title: `END ${periodOrdinal(period).toUpperCase()}`,
+    title: `END ${periodOrdinal(period, mode).toUpperCase()}`,
     score: `YOU ${homeScore}-${awayScore} CPU`,
   };
 }
@@ -462,6 +553,54 @@ function loadGameMinutes(): number {
 
 function loadRollerMinutes(): number {
   return loadStoredMinutes(ROLLER_MINUTES_KEY, ROLLER_MINUTES_DEFAULT);
+}
+
+function loadOtFormat(): OtFormat {
+  try {
+    return clampOtFormat(localStorage.getItem(OT_FORMAT_KEY));
+  } catch {
+    return OT_FORMAT_DEFAULT;
+  }
+}
+
+function loadRollerOtFormat(): OtFormat {
+  try {
+    return clampRollerOtFormat(localStorage.getItem(ROLLER_OT_FORMAT_KEY));
+  } catch {
+    return ROLLER_OT_FORMAT_DEFAULT;
+  }
+}
+
+function saveOtFormat(v: OtFormat): void {
+  try {
+    localStorage.setItem(OT_FORMAT_KEY, v);
+  } catch {
+    /* ignore */
+  }
+}
+
+function saveRollerOtFormat(v: OtFormat): void {
+  try {
+    localStorage.setItem(ROLLER_OT_FORMAT_KEY, v);
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadShootoutRounds(): ShootoutRounds {
+  try {
+    return clampShootoutRounds(localStorage.getItem(SHOOTOUT_ROUNDS_KEY));
+  } catch {
+    return SHOOTOUT_ROUNDS_DEFAULT;
+  }
+}
+
+function saveShootoutRounds(n: ShootoutRounds): void {
+  try {
+    localStorage.setItem(SHOOTOUT_ROUNDS_KEY, String(n));
+  } catch {
+    /* ignore */
+  }
 }
 
 /** CPU kits already used in this sequence. The user kit is never an entry. */
@@ -589,6 +728,10 @@ export const useGame = create<GameUi>((set, get) => ({
   controlProfile: loadControlProfile(),
   gameMinutes: loadGameMinutes(),
   rollerMinutes: loadRollerMinutes(),
+  otFormat: loadOtFormat(),
+  rollerOtFormat: loadRollerOtFormat(),
+  shootoutRounds: loadShootoutRounds(),
+  shootout: null,
   period: 1,
   periodClock: INITIAL_MODE === "drill" ? 60 : 1200,
   periodOver: false,
@@ -739,7 +882,13 @@ export const useGame = create<GameUi>((set, get) => ({
       periodBreak: 0,
       period: 1,
       periodClock:
-        m === "drill" ? 60 : m === "scrimmage" ? 0 : m === "roller" ? ROLLER_CLOCK_DISPLAY_MINUTES * 60 : GAME_CLOCK_DISPLAY_MINUTES * 60,
+        m === "drill"
+          ? 60
+          : m === "scrimmage" || m === "shootout"
+            ? 0
+            : m === "roller"
+              ? ROLLER_CLOCK_DISPLAY_MINUTES * 60
+              : GAME_CLOCK_DISPLAY_MINUTES * 60,
       drillScore: 0,
       offsides: m === "game",
       ...(powerPlay === undefined ? {} : { powerPlay }),
@@ -755,6 +904,22 @@ export const useGame = create<GameUi>((set, get) => ({
     saveStoredMinutes(ROLLER_MINUTES_KEY, minutes);
     set({ rollerMinutes: minutes });
   },
+  setOtFormat: (v) => {
+    const otFormat = clampOtFormat(v);
+    saveOtFormat(otFormat);
+    set({ otFormat });
+  },
+  setRollerOtFormat: (v) => {
+    const rollerOtFormat = clampRollerOtFormat(v);
+    saveRollerOtFormat(rollerOtFormat);
+    set({ rollerOtFormat });
+  },
+  setShootoutRounds: (n) => {
+    const shootoutRounds = clampShootoutRounds(n);
+    saveShootoutRounds(shootoutRounds);
+    set({ shootoutRounds });
+  },
+  setShootout: (v) => set({ shootout: v }),
   setPeriod: (n) => set({ period: n }),
   setPeriodClock: (n) => set({ periodClock: n }),
   setPeriodOver: (v) => set({ periodOver: v }),
@@ -769,11 +934,13 @@ export const useGame = create<GameUi>((set, get) => ({
     const v = clampTargets(n);
     saveTargetCount("hfb-scrimmage-home", v);
     set({ scrimmageHomeTargets: v });
+    scrimmageTargetsTouched?.();
   },
   setScrimmageAwayTargets: (n) => {
     const v = clampTargets(n);
     saveTargetCount("hfb-scrimmage-away", v);
     set({ scrimmageAwayTargets: v });
+    scrimmageTargetsTouched?.();
   },
   setScrimmageDown: (home, away) => {
     set({

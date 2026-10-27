@@ -1,8 +1,8 @@
-import { useLayoutEffect, useMemo, useRef, type ReactElement, type RefObject } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactElement, type RefObject } from "react";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import { createNumberTexture } from "./iceTexture";
-import { attackDir, burstPoseWeight, checkedCyclePose, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, shotFollowTime, TUMBLE_PITCH_MAX, TUMBLE_PITCH_RATE, TUMBLE_STRIKE, TUMBLE_UP, world, type Referee, type Skater } from "./sim";
+import { attackDir, burstPoseWeight, checkedCyclePose, defendDir, drillFade, faceYaw, goalieButterflyPose, goaliePlaysPuck, goalieZKind, noteGoalieMidBlade, rageDraw, shootoutSkaterHidden, shotFollowTime, TUMBLE_PITCH_MAX, TUMBLE_PITCH_RATE, TUMBLE_STRIKE, TUMBLE_UP, world, type Referee, type Skater } from "./sim";
 import { GOALIE_BUTTERFLY_BLADE_LEAD, GOALIE_ICE_CENTER_Z, GOALIE_PADDLE_T, GOALIE_PADDLE_W, GOALIE_STICK_LEN, GOALIE_Z, GOALIE_Z_BLADE_LEAD, bodyToLocal, bodyToWorld, goalieIceGeo, goalieIceHeel, layoutGoalieStick, placeGoalieIceMesh, poseGoalieButterflyArms, poseGoalieButterflyLimbs, poseGoalieHand, poseGoalieButterflyStanceLimbs, poseGoaliePlay, poseGoalieZArms, poseGoalieZLimbs, posedBody, torsoPivotY, torsoPlacedY } from "./goalieStance";
 import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, SKATER_TAPE_Z0, SKATER_TAPE_Z1, burstCarryStickAim, carryStickAim, dekePull, dekeStickAim, neutralCarryBlend, neutralCarryStickAim, shotStickAim, skaterBladeCurveX, skaterBladeLiePoint, skillCarryStickAim, stickFrame, type StickAim } from "./stickSide";
 import { kitById, type UniformKit } from "./uniforms";
@@ -4167,8 +4167,12 @@ export function PlayerMesh({
 }) {
   const homeKit = useGame((s) => s.homeKit);
   const awayKit = useGame((s) => s.awayKit);
+  const shootoutAttempts = useGame((s) => s.shootout?.attempts.length ?? 0);
+  const [wornRev, setWornRev] = useState(0);
+  const wornWant = useRef<number | null>(null);
   const side = world.skaters[index]?.side;
-  const liveKitId = onJointRefs ? kitId : ((side === "away" ? awayKit : homeKit) ?? kitId);
+  const storeKit = side === "away" ? awayKit : side === "home" ? homeKit : kitId;
+  const liveKitId = onJointRefs ? kitId : storeKit;
   const root = useRef<THREE.Group>(null);
   const body = useRef<THREE.Group>(null);
   const torso = useRef<THREE.Group>(null);
@@ -4205,7 +4209,10 @@ export function PlayerMesh({
   const torsoPivot = torsoMeshCenterY(kit.id, false);
   const torsoDrop = torsoTopDrop(kit.id);
   const torsoShift = goalie ? torsoPivot : 0;
-  const mats = useMemo(() => makeKitMats(kit, skater.number, goalie), [liveKitId, kit, skater.number, goalie]);
+  const mats = useMemo(
+    () => makeKitMats(kit, skater.number, goalie),
+    [liveKitId, kit, skater.number, goalie, shootoutAttempts, wornRev],
+  );
   const layout = useMemo(() => stickLayout(goalie), [goalie]);
   const wristLeft = useRef(0);
   const wristSpan = useRef(0);
@@ -4313,6 +4320,17 @@ export function PlayerMesh({
   }, []);
 
   useFrame((_, delta) => {
+    if (!onJointRefs && !world.poseEditorActive && !world.poseEditorLock) {
+      const live = world.skaters[index];
+      if (live) {
+        const want = live.side === "away" ? useGame.getState().awayKit : useGame.getState().homeKit;
+        if (want === liveKitId) wornWant.current = want;
+        else if (wornWant.current !== want) {
+          wornWant.current = want;
+          setWornRev((n) => (n + 1) % 100000);
+        }
+      }
+    }
     if (world.poseEditorActive || world.poseEditorLock) {
       // The editor does not apply the goalie root scale, so the helmet stays at the skater size.
       if (head.current) head.current.scale.set(1, 1, 1);
@@ -4322,7 +4340,36 @@ export function PlayerMesh({
     const s: Skater | undefined = world.skaters[index];
     const g = root.current;
     if (!s || !g) return;
+    if (shootoutSkaterHidden(s.id)) {
+      g.visible = false;
+      g.position.set(s.x, 0, s.z);
+      g.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.material) return;
+        const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const mat of list) {
+          if (mat.userData.shootoutFade) continue;
+          mat.userData.shootoutFade = mat.opacity;
+          mat.transparent = true;
+          mat.opacity = 0;
+          mat.depthWrite = false;
+        }
+      });
+      return;
+    }
     g.visible = true;
+    g.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.material) return;
+      const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const mat of list) {
+        if (mat.userData.shootoutFade === undefined) continue;
+        mat.opacity = mat.userData.shootoutFade as number;
+        mat.transparent = mat.opacity < 1;
+        mat.depthWrite = mat.opacity >= 1;
+        delete mat.userData.shootoutFade;
+      }
+    });
     const diveU = Math.min(1, Math.max(0, s.dive / 0.95));
     const diving = !goalie && s.dive > 0.04;
     const tumbling = s.tumble !== 0 && s.struck > 0.1;
