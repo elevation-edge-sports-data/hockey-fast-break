@@ -48,7 +48,7 @@ const { useGame } = store;
 const { setInjectedKeys } = input;
 const { sweepCrowd, CROWD_PUCK_R, STANDS, PERSON_LIFT, JUMBO_Y, JUMBO_HW, outsideStandFootprint, SEAT_D } =
   crowd;
-const { resolveRink, RINK_L, RINK_W, FACEOFF_EZ_X, FACEOFF_NZ_X, FACEOFF_SPOT_Z } = rink;
+const { resolveRink, RINK_L, RINK_W } = rink;
 
 const DT = 1 / 60;
 
@@ -101,9 +101,8 @@ test("jumbotron side keeps speed, stops the clock, and faceoffs after 2s", () =>
   assert.equal(puck.owner, null);
   const faceX = world.faceX;
   const faceZ = world.faceZ;
-  const face = nearestFaceoff(0, JUMBO_HW);
-  assert.equal(faceX, face.x);
-  assert.equal(faceZ, face.z);
+  assert.equal(faceX, 0);
+  assert.equal(faceZ, 0);
   const clock = world.periodClock;
   const z0 = puck.z;
   const y0 = puck.y;
@@ -250,33 +249,6 @@ test("the stand footprint is the outer face of the last seat row", () => {
   }
 });
 
-const FACEOFF_DOTS = [
-  [0, 0],
-  [FACEOFF_EZ_X, FACEOFF_SPOT_Z],
-  [FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
-  [-FACEOFF_EZ_X, FACEOFF_SPOT_Z],
-  [-FACEOFF_EZ_X, -FACEOFF_SPOT_Z],
-  [FACEOFF_NZ_X, FACEOFF_SPOT_Z],
-  [FACEOFF_NZ_X, -FACEOFF_SPOT_Z],
-  [-FACEOFF_NZ_X, FACEOFF_SPOT_Z],
-  [-FACEOFF_NZ_X, -FACEOFF_SPOT_Z],
-];
-
-function nearestFaceoff(x, z) {
-  let bestX = 0;
-  let bestZ = 0;
-  let bestD = Infinity;
-  for (const [dx, dz] of FACEOFF_DOTS) {
-    const d = (dx - x) * (dx - x) + (dz - z) * (dz - z);
-    if (d < bestD) {
-      bestD = d;
-      bestX = dx;
-      bestZ = dz;
-    }
-  }
-  return { x: bestX, z: bestZ };
-}
-
 /** Over the upper deck and outside the jumbotron, toward the bench side. */
 function launchOverBowl() {
   const deckTop = STANDS.reduce((m, p) => Math.max(m, p.y), 0);
@@ -313,9 +285,8 @@ test("a puck that clears the bowl and lands whistles without touching a solid", 
   const vz0 = puck.vz;
   assert.ok(vz0 < -8, `incoming speed was cut, vz=${vz0}`);
   assert.equal(puck.owner, null);
-  const face = nearestFaceoff(puck.x, puck.z);
-  assert.equal(world.faceX, face.x);
-  assert.equal(world.faceZ, face.z);
+  assert.equal(world.faceX, 0);
+  assert.equal(world.faceZ, 0);
   assert.equal(world.stoppage, true);
   assert.equal(useGame.getState().whistle, "crowd");
   const clock = world.periodClock;
@@ -335,8 +306,8 @@ test("a puck that clears the bowl and lands whistles without touching a solid", 
   assert.ok(n >= 110 && n <= 132, `faceoff reset at step ${n}, want ~120`);
   assert.equal(world.whistle, null);
   assert.equal(world.faceoff, true);
-  assert.equal(world.puck.x, face.x);
-  assert.equal(world.puck.z, face.z);
+  assert.equal(world.puck.x, 0);
+  assert.equal(world.puck.z, 0);
   assert.equal(world.periodClock, clock);
 });
 
