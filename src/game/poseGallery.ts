@@ -191,6 +191,7 @@ function goalieSkater(): Skater {
     poke: 0,
     struck: 0,
     tumble: 0,
+    tumbleSpin: 0,
     windup: 0,
     follow: 0,
     trackZ: 0,

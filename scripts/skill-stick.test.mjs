@@ -940,7 +940,11 @@ test("sideways aim pokes and does not set the check struck impulse; stick-up sti
   setInjectedKeys(["KeyF"]);
   setInjectedAim(0, 0);
   step(1);
-  assert.equal(world.puck.owner, user().id, "X still picks up a loose puck");
+  assert.equal(world.puck.owner, null, "X knocks a loose puck and does not take it");
+  assert.ok(
+    Math.hypot(world.puck.vx, world.puck.vz) > 4,
+    `loose knock ${world.puck.vx} ${world.puck.vz}`,
+  );
   setInjectedKeys([]);
 
   fresh("classic", "roller");

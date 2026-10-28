@@ -1503,7 +1503,7 @@ export function seatGoalieRing(root: THREE.Object3D, ring: THREE.Object3D, puckX
 
 /** Backskate chest points at the other end. Otherwise the sim yaw, which already does. */
 function meshYaw(s: Skater): number {
-  if (s.kind !== "goalie" && s.backskate) return faceYaw(s.side);
+  if (s.backskate) return faceYaw(s.side);
   return s.yaw;
 }
 
@@ -3764,13 +3764,19 @@ function poseGoalieCover(s: Skater, _root: THREE.Group, _body: THREE.Group | nul
   return true;
 }
 
-function tumbleRoot(struck: number, tumble: number, yaw: number) {
+/** Spin, roll, and yaw offset. `spinAmt` is tumbleSpin, not the fall flag. */
+function tumbleSpinParts(struck: number, spinAmt: number): { roll: number; yawOff: number } {
+  const u = Math.min(1, Math.max(0, 1 - struck / TUMBLE_STRIKE));
+  const spin = u * 4.6 * spinAmt;
+  return { roll: Math.sin(spin) * 0.48, yawOff: spin * 0.45 };
+}
+
+function tumbleRoot(struck: number, spinAmt: number, yaw: number) {
   const u = Math.min(1, Math.max(0, 1 - struck / TUMBLE_STRIKE));
   const pitch = Math.min(TUMBLE_PITCH_MAX, u * TUMBLE_PITCH_RATE);
-  const spin = u * 4.6 * tumble;
-  const roll = Math.sin(spin) * 0.48;
-  const y = 0.1 + Math.sin(pitch) * 0.36 + Math.abs(roll) * 0.22;
-  return { y, rx: pitch, ry: yaw + Math.PI + spin * 0.45, rz: roll };
+  const twist = tumbleSpinParts(struck, spinAmt);
+  const y = 0.1 + Math.sin(pitch) * 0.36 + Math.abs(twist.roll) * 0.22;
+  return { y, rx: pitch, ry: yaw + Math.PI + twist.yawOff, rz: twist.roll };
 }
 
 /**
@@ -3978,7 +3984,7 @@ function poseGoalieGetUp(s: Skater, root: THREE.Group, body: THREE.Group | null,
   const smooth = p < 0.42 ? p / 0.42 : (p - 0.42) / 0.58;
   const u = smooth * smooth * (3 - 2 * smooth);
   const k = p < 0.42 ? mixGetUp(GOALIE_DOWN, GOALIE_ONE, u) : mixGetUp(GOALIE_ONE, GOALIE_BOTH, u);
-  const roll = Math.sign(s.tumble || 1) * 0.22 * (1 - p) * (1 - p);
+  const roll = s.tumbleSpin === 0 ? 0 : Math.sign(s.tumbleSpin) * 0.22 * (1 - p) * (1 - p);
   root.position.set(s.x, 0, s.z);
   root.rotation.set(0, s.yaw + Math.PI, roll);
   if (body) {
@@ -4378,12 +4384,18 @@ export function PlayerMesh({
     const fallHand = tumbling && !tumbleRise;
     const goalieUp = goalie && tumbling;
     if (tumbling && !goalieUp) {
-      const t = tumbleRoot(s.struck, s.tumble, s.yaw);
+      const t = tumbleRoot(s.struck, s.tumbleSpin, s.yaw);
       g.position.set(s.x, t.y, s.z);
       g.rotation.set(t.rx, t.ry, t.rz);
     } else if (!goalieUp) {
       g.position.set(s.x, diving ? 0.12 * diveU : s.struck > 0.2 ? Math.max(0, 0.04 - 0.04 * Math.min(1, s.struck)) : 0, s.z);
-      g.rotation.set(0, meshYaw(s) + Math.PI, 0);
+      const absorbTwist = !diving && s.tumble === 0 && s.struck > 0.2 && s.tumbleSpin !== 0;
+      if (absorbTwist) {
+        const twist = tumbleSpinParts(s.struck, s.tumbleSpin);
+        g.rotation.set(0, meshYaw(s) + Math.PI + twist.yawOff, twist.roll);
+      } else {
+        g.rotation.set(0, meshYaw(s) + Math.PI, 0);
+      }
     }
     if (goalie) {
       g.scale.set(1.14, 1, 1.14);
@@ -6087,7 +6099,8 @@ function poseRefChecked(
     const absorbK = refAbsorbK(r.struck);
     const sink = Math.max(0, 0.04 - 0.04 * Math.min(1, r.struck));
     root.position.set(r.x, sink, r.z);
-    root.rotation.set(0, r.yaw + Math.PI, 0);
+    const twist = tumbleSpinParts(r.struck, r.tumbleSpin);
+    root.rotation.set(0, r.yaw + Math.PI + twist.yawOff, twist.roll);
     const pitch = RECV_PITCH * absorbK;
     const knee = 0.24 + (RECV_KNEE - 0.24) * absorbK;
     const planted = checkPlant(pitch, knee, RECV_DORSI);
@@ -6101,7 +6114,7 @@ function poseRefChecked(
     restRefArm(lArm, lFore, -0.24);
     restRefArm(rArm, rFore, 0.24);
   } else {
-    const t = tumbleRoot(r.struck, r.tumble, r.yaw);
+    const t = tumbleRoot(r.struck, r.tumbleSpin, r.yaw);
     root.position.set(r.x, t.y, r.z);
     root.rotation.set(t.rx, t.ry, t.rz);
     body.position.set(0, 0, 0);

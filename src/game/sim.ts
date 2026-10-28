@@ -87,7 +87,10 @@ export type Skater = {
   stun: number;
   poke: number;
   struck: number;
+  /** Non-zero is a full fall. Zero is absorb, staying up. Not the twist. */
   tumble: number;
+  /** Reaction twist. Zero on a fall, signed on absorb. */
+  tumbleSpin: number;
   windup: number;
   follow: number;
   trackZ: number;
@@ -160,7 +163,10 @@ export type Referee = {
   vx: number;
   vz: number;
   struck: number;
+  /** Non-zero is a full fall. Zero is absorb. Not the twist. */
   tumble: number;
+  /** Reaction twist. Zero on a fall, signed on absorb. */
+  tumbleSpin: number;
 };
 
 export type FreeCam = {
@@ -471,6 +477,25 @@ const pressPeelEnd = new Map<number, number>();
 let stickLooseUntil = -1;
 let stickLooseBy = -1;
 let stickLooseFrom = -1;
+/** X went down while an opponent had the puck. That press may poke, not shoot. */
+let xPokePress = false;
+/** That X press may take the puck. A stick poke does not. */
+let xPokeArmed = false;
+
+function opponentOwnsPuck(user: Skater): boolean {
+  const id = world.puck.owner;
+  if (id === null || id === user.id) return false;
+  const holder = world.skaters[id];
+  return !!holder && holder.side !== user.side;
+}
+
+/** True on the poke press and its release. The release must not become a shot. */
+function blockShotFromPokePress(act: Actions): boolean {
+  if (!xPokePress) return false;
+  const block = act.xDown || act.xEdge || act.xTap || act.xHoldRel || act.xHeld;
+  if (!act.xDown) xPokePress = false;
+  return block;
+}
 let pressCacheT = Number.NaN;
 let pressPrimary = -1;
 let pressSecond = -1;
@@ -697,6 +722,7 @@ export const world: World = {
     vz: 0,
     struck: 0,
     tumble: 0,
+    tumbleSpin: 0,
   },
   ref2: {
     x: 0,
@@ -709,6 +735,7 @@ export const world: World = {
     vz: 0,
     struck: 0,
     tumble: 0,
+    tumbleSpin: 0,
   },
   ref3: {
     x: -(BLUE_X + 4.5),
@@ -721,6 +748,7 @@ export const world: World = {
     vz: 0,
     struck: 0,
     tumble: 0,
+    tumbleSpin: 0,
   },
   ref4: {
     x: -(BLUE_X + 4.5),
@@ -733,6 +761,7 @@ export const world: World = {
     vz: 0,
     struck: 0,
     tumble: 0,
+    tumbleSpin: 0,
   },
   stoppage: false,
   stoppageT: 0,
@@ -880,6 +909,7 @@ function makeSkater(
     poke: 0,
     struck: 0,
     tumble: 0,
+    tumbleSpin: 0,
     windup: 0,
     follow: 0,
     trackZ: 0,
@@ -1077,6 +1107,7 @@ function resetSkaters(): void {
     refLaneLocked = true;
   }
   placeRefsForFaceoff();
+  armFaceoffBackSkate();
   world.stoppage = false;
   world.stoppageT = 0;
   world.coverT = 0;
@@ -1146,6 +1177,8 @@ function resetSkaters(): void {
   stickLooseUntil = -1;
   stickLooseBy = -1;
   stickLooseFrom = -1;
+  xPokePress = false;
+  xPokeArmed = false;
   userStickCommit = false;
   userAProtectId = -1;
   userAProtectUntil = -1;
@@ -1491,12 +1524,12 @@ function tickPassChainHold(): void {
   publishPassChain();
 }
 
-function cpuPokeTune(): { reach: number; steal: number } {
+function cpuPokeTune(): { reach: number } {
   const n = world.passChain;
-  if (n >= 3) return { reach: 0.55, steal: 0 };
-  if (n === 2) return { reach: 0.72, steal: 0.01 };
-  if (n === 1) return { reach: 0.95, steal: 0.05 };
-  return { reach: 1.22, steal: 0.11 };
+  if (n >= 3) return { reach: 0.55 };
+  if (n === 2) return { reach: 0.72 };
+  if (n === 1) return { reach: 0.95 };
+  return { reach: 1.22 };
 }
 let shotIron: { kind: "post" | "bar"; z: number; y: number } | null = null;
 let shotSharp = 0;
@@ -2870,6 +2903,77 @@ function lockBackskateYaw(s: Skater): void {
   s.yaw = faceYaw(s.side);
 }
 
+const FACEOFF_BACK_P = 0.12;
+let faceoffBackId = -1;
+let faceoffBackSwingAt = Infinity;
+
+/** One defender, on about 12% of faceoffs, back skates and then throws a check. */
+function armFaceoffBackSkate(): void {
+  faceoffBackId = -1;
+  faceoffBackSwingAt = Infinity;
+  if (Math.random() > FACEOFF_BACK_P) return;
+  const cpu = world.skaters.filter(
+    (s) => s.id !== world.userId && s.kind !== "goalie" && s.id !== world.homeDot && s.id !== world.awayDot,
+  );
+  const defs = cpu.filter((s) => s.kind === "defense");
+  const pool = defs.length > 0 ? defs : cpu;
+  if (pool.length === 0) return;
+  const pick = pool[Math.floor(Math.random() * pool.length)]!;
+  faceoffBackId = pick.id;
+  faceoffBackSwingAt = world.time + 0.5;
+}
+
+/**
+ * CPU is closer to its own goal than the carrier, and the carrier sits in a
+ * ±30° cone along the line from the CPU away from that goal mouth.
+ */
+function cpuBetweenCarrier(s: Skater, holder: Skater): boolean {
+  const mouthX = defendDir(s.side) * GOAL_LINE_X;
+  const cpuGoal = Math.hypot(s.x - mouthX, s.z);
+  const carrierGoal = Math.hypot(holder.x - mouthX, holder.z);
+  if (carrierGoal <= cpuGoal + 0.05) return false;
+  const dx = holder.x - s.x;
+  const dz = holder.z - s.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 3 || d > 12) return false;
+  const axisX = s.x - mouthX;
+  const axisZ = s.z;
+  const axis = Math.hypot(axisX, axisZ) || 1;
+  const dot = (dx * axisX + dz * axisZ) / (d * axis);
+  const ang = Math.acos(Math.max(-1, Math.min(1, dot)));
+  return ang <= Math.PI / 6;
+}
+
+function cpuOffensiveBackBand(s: Skater): boolean {
+  if (s.kind === "goalie" || world.puck.owner !== s.id) return false;
+  const past = s.x * attackDir(s.side) - BLUE_X;
+  return past >= 0 && past <= SKATER_STICK_LEN;
+}
+
+/** Sets or clears backskate for one CPU skater or CPU goalie. */
+function refreshCpuBackskate(s: Skater): void {
+  if (s.id === world.userId) return;
+  if (s.dive > 0.04 || s.tumble !== 0 || s.stun > 0.04 || s.struck > 0.18 || world.stoppage) {
+    if (s.id !== faceoffBackId) s.backskate = false;
+    return;
+  }
+  if (s.id === faceoffBackId) {
+    s.backskate = true;
+    if (world.time >= faceoffBackSwingAt && s.hit <= 0) {
+      s.hit = 0.42;
+      armCheckSwing(s);
+      faceoffBackId = -1;
+    }
+    return;
+  }
+  if (cpuOffensiveBackBand(s)) {
+    s.backskate = true;
+    return;
+  }
+  const holder = world.puck.owner !== null ? world.skaters[world.puck.owner] : null;
+  s.backskate = !!holder && holder.side !== s.side && holder.kind !== "goalie" && cpuBetweenCarrier(s, holder);
+}
+
 /**
  * Loose puck running up to a skater who would skate past it.
  * Returns the pace to ease toward, or null when this is not a reception.
@@ -2983,8 +3087,9 @@ function integrateSkater(
       dx = wx * inv;
       dz = wz * inv;
       aimed = true;
-      s.vx += dx * 20 * dt;
-      s.vz += dz * 20 * dt;
+      // User, CPU, and goalie dives share this slide. 7 m/s² cannot close a wide gap.
+      s.vx += dx * 7 * dt;
+      s.vz += dz * 7 * dt;
     } else {
       const sp = Math.hypot(s.vx, s.vz);
       if (sp > 0.2) {
@@ -2996,9 +3101,9 @@ function integrateSkater(
     s.vx *= Math.exp(-1.6 * dt);
     s.vz *= Math.exp(-1.6 * dt);
     const spDive = Math.hypot(s.vx, s.vz);
-    if (spDive > 11) {
-      s.vx *= 11 / spDive;
-      s.vz *= 11 / spDive;
+    if (spDive > 6.5) {
+      s.vx *= 6.5 / spDive;
+      s.vz *= 6.5 / spDive;
     }
     if (aimed) s.yaw = turnToward(s.yaw, dx, dz, 4, dt);
     s.x += s.vx * dt;
@@ -3326,7 +3431,7 @@ function refIceRadius(r: Referee): number {
   if (r.tumble !== 0 && r.struck > 0.1) {
     const u = Math.min(1, Math.max(0, 1 - r.struck / 1.68));
     const pitch = Math.min(1.12, u * 1.55);
-    const roll = Math.abs(Math.sin(u * 4.6 * r.tumble)) * 0.48;
+    const roll = Math.abs(Math.sin(u * 4.6 * r.tumbleSpin)) * 0.48;
     return 0.57 + Math.sin(pitch) * 1.48 + roll * 0.55;
   }
   if (r.struck > 0.2) return 0.42 + Math.min(1, r.struck) * 1.23;
@@ -7212,7 +7317,10 @@ function decayGoalieDown(s: Skater, dt: number): void {
     const u = Math.max(0, (s.struck - 0.14) / 1.54);
     const sign = Math.sign(s.tumble) || 1;
     s.tumble = sign * Math.min(Math.abs(s.tumble), 1.3 * u);
-    if (u <= 0) s.tumble = 0;
+    if (u <= 0) {
+      s.tumble = 0;
+      s.tumbleSpin = 0;
+    }
   }
   syncCheckCycle(s);
 }
@@ -7874,9 +7982,13 @@ function stripByGoalie(g: Skater, holder: Skater): void {
     1.1 + Math.random() * 0.7,
   );
   holder.stun = 0.28;
+  holder.struck = 0.16;
   world.lastPass = world.time;
   world.lastShoot = world.time;
   world.goalieSaveT = world.time;
+  stickLooseUntil = world.time + 0.3;
+  stickLooseBy = g.id;
+  stickLooseFrom = holder.id;
 }
 
 function updateWrapFlag(holder: Skater): void {
@@ -7974,6 +8086,7 @@ function defendUserCarrier(s: Skater, holder: Skater): void {
 }
 
 function cpuDefend(s: Skater): void {
+  refreshCpuBackskate(s);
   if (periodEndLive()) return;
   if (dekeCommitBlocks(s.id)) {
     disarmDekeBite(s);
@@ -8000,8 +8113,18 @@ function cpuDefend(s: Skater): void {
     const attack = attackDir(shooter.side);
     const netX = attack * GOAL_LINE_X;
     const toward = puck.vx * attack > 4.2;
-    const lane =
-      Math.abs(s.z - puck.z) < 1.7 && (netX - s.x) * attack > 0.25 && (netX - s.x) * attack < 13;
+    // Perpendicular distance to the puck → net-mouth line. Puck (0, 0), mouth
+    // (10, 0), defender (5, 1) is 1 m off that line.
+    const abx = netX - puck.x;
+    const abz = -puck.z;
+    const ab = Math.hypot(abx, abz);
+    const lateral =
+      ab < 1e-4
+        ? Math.hypot(s.x - puck.x, s.z - puck.z)
+        : Math.abs((s.x - puck.x) * abz - (s.z - puck.z) * abx) / ab;
+    const depth = (netX - s.x) * attack;
+    const puckDepth = (netX - puck.x) * attack;
+    const lane = lateral <= 1 && depth > 0.25 && depth < 13 && depth < puckDepth;
     const dPuck = Math.hypot(s.x - puck.x, s.z - puck.z);
     const diveP = s.side === "away" ? 0.48 * cpuMul("def") : userIdle() ? 0.05 : 0.2;
     if (toward && lane && dPuck < 4.4 && sinceShot < 0.12 && Math.random() < diveP) {
@@ -8592,6 +8715,28 @@ export function stickBlade(s: Skater): { x: number; z: number } {
  * yaw −π/2 faces +X: heading is (1, 0), so the puck is at x + GOALIE_HOLD_AHEAD.
  */
 const GOALIE_HOLD_AHEAD = 1.05;
+
+/**
+ * The user's own goalie takes the puck when the carrier skates into him.
+ * Opponent goalies are not affected.
+ */
+function ownGoalieTakeUserPuck(user: Skater): void {
+  if (periodEndLive() || world.faceoff || world.stoppage) return;
+  if (user.kind === "goalie" || world.puck.owner !== user.id) return;
+  const g = world.skaters.find((s) => s.kind === "goalie" && s.side === user.side);
+  if (!g || g.tumble !== 0 || g.dive > 0.04 || g.stun > 0.2) return;
+  const reach = g.radius + user.radius + 0.45;
+  if (Math.hypot(user.x - g.x, user.z - g.z) > reach) return;
+  const hold = goaliePuckHold(g);
+  world.puck.owner = g.id;
+  world.puck.x = hold.x;
+  world.puck.z = hold.z;
+  world.puck.y = PUCK_Y;
+  world.puck.vx = g.vx;
+  world.puck.vz = g.vz;
+  world.puck.vy = 0;
+  noteControl(g, "play");
+}
 
 function goaliePuckHold(s: Skater): { x: number; z: number } {
   const { fx, fz } = heading(s.yaw);
@@ -13457,7 +13602,127 @@ function failShootoutGoaliePoke(poker: Skater): void {
   publishShootout();
 }
 
+/** Same launch as a carrier strip. The loose puck stays where it was hit. */
+function knockLooseLikeStrip(user: Skater, diveKnock: boolean): void {
+  if (stickLooseBy === user.id && world.time < stickLooseUntil) return;
+  const puck = world.puck;
+  const { fx, fz } = heading(user.yaw);
+  const lx = -fz;
+  const lz = fx;
+  const side = Math.sign((puck.x - user.x) * lx + (puck.z - user.z) * lz) || 1;
+  const pop = diveKnock ? 12.5 : 8.5;
+  const fwd = diveKnock ? 4.2 : 2.8;
+  const x = puck.x;
+  const z = puck.z;
+  noteRelease("poke", user);
+  launchPuck(user, fx * fwd + lx * side * pop, fz * fwd + lz * side * pop, diveKnock ? 0.7 : 0.4);
+  puck.x = x;
+  puck.z = z;
+  world.lastPass = world.time;
+  stickLooseUntil = world.time + (diveKnock ? 0.26 : 0.3);
+  stickLooseBy = user.id;
+  stickLooseFrom = user.id;
+}
+
+/** Peak absorb twist. Perpendicular velocities reach it. Parallel or head-on stay at 0. */
+const POKE_ABSORB_SPIN = 0.6;
+const DIVE_ABSORB_SPIN = 0.9;
+const CPU_DIVE_ABSORB_SPIN = 0.5;
+const CHECK_ABSORB_SPIN = 1;
+/** Old reactionSpin ceiling (0.85..1.3). Goalie and referee absorb still peak here. */
+const REACT_ABSORB_SPIN = 1.3;
+/** Dive poke. Modestly past a check (1.5–1.7). Carrier, loose knock, and crowd share these. */
+const DIVE_POKE_BLADE = 2;
+const DIVE_POKE_BODY = 2.2;
+
+type DivePokeOutcome = { stun: number; struck: number; fallP: number; maxSpin: number };
+
+const USER_DIVE_POKE: DivePokeOutcome = {
+  stun: 0.55,
+  struck: 0.4,
+  fallP: 0.2,
+  maxSpin: DIVE_ABSORB_SPIN,
+};
+const CPU_DIVE_POKE: DivePokeOutcome = {
+  stun: 0.4,
+  struck: 0.3,
+  fallP: 0.1,
+  maxSpin: CPU_DIVE_ABSORB_SPIN,
+};
+
+/**
+ * |sin θ| between two planar velocities. θ is 0° parallel, 90° perpendicular,
+ * 180° head-on. A body slower than 0.05 m/s has no direction, so the spin is 0.
+ */
+function impactSpeedSin(hvx: number, hvz: number, vvx: number, vvz: number): number {
+  const hm = Math.hypot(hvx, hvz);
+  const vm = Math.hypot(vvx, vvz);
+  if (hm < 0.05 || vm < 0.05) return 0;
+  const cross = hvx * vvz - hvz * vvx;
+  return Math.min(1, Math.abs(cross) / (hm * vm));
+}
+
+/**
+ * +1 when the hitter is on the body's right, −1 on the left.
+ * Same +x as skaterLocal, which is the body's left.
+ * yaw 0 faces −Z, so a hitter at world +X is on the right and this returns +1.
+ * A dead-center contact (lx === 0) is +1. No coin flip.
+ */
+function impactSideSign(body: { x: number; z: number; yaw: number }, hx: number, hz: number): number {
+  const { c, sn } = yawBasis(body.yaw);
+  const lx = (hx - body.x) * c - (hz - body.z) * sn;
+  // sin(π) is not exact 0, so a contact on the facing axis can be a few ulps off center.
+  if (Math.abs(lx) < 1e-4) return 1;
+  return lx > 0 ? -1 : 1;
+}
+
+function impactTumbleSpin(
+  victim: { x: number; z: number; yaw: number; vx: number; vz: number },
+  hitter: { x: number; z: number; vx: number; vz: number },
+  maxSpin: number,
+): number {
+  const mag = maxSpin * impactSpeedSin(hitter.vx, hitter.vz, victim.vx, victim.vz);
+  if (mag === 0) return 0;
+  return impactSideSign(victim, hitter.x, hitter.z) * mag;
+}
+
+/** Dive-poke outcome. Fall stays a coin flip. Absorb twist comes from the impact. */
+function applyDivePokeVictim(s: Skater, hitter: Skater, hit: DivePokeOutcome): void {
+  s.stun = hit.stun;
+  s.struck = hit.struck;
+  if (Math.random() < hit.fallP) {
+    s.tumble = Math.random() < 0.5 ? 1 : -1;
+    s.tumbleSpin = 0;
+  } else {
+    s.tumble = 0;
+    s.tumbleSpin = impactTumbleSpin(s, hitter, hit.maxSpin);
+  }
+}
+
+/** Opposing skaters in the dive blade or body reach, ahead of the diver. */
+function markDivePokeCrowd(
+  diver: Skater,
+  blade: { x: number; z: number },
+  fx: number,
+  fz: number,
+  skipId: number | null,
+  hit: DivePokeOutcome,
+): void {
+  for (const s of world.skaters) {
+    if (s.id === diver.id || s.side === diver.side || s.kind === "goalie") continue;
+    if (skipId !== null && s.id === skipId) continue;
+    const dx = s.x - diver.x;
+    const dz = s.z - diver.z;
+    const ahead = dx * fx + dz * fz;
+    if (ahead <= -0.85) continue;
+    const dBody = Math.hypot(dx, dz);
+    const dBlade = Math.hypot(blade.x - s.x, blade.z - s.z);
+    if (dBlade < DIVE_POKE_BLADE || dBody < DIVE_POKE_BODY) applyDivePokeVictim(s, diver, hit);
+  }
+}
+
 function pokeCheck(user: Skater): void {
+  if (user.id === world.userId && user.poke <= 0) xPokeArmed = false;
   if (dekeCommitBlocks(user.id)) return;
   if (userPassInFlight() && (world.puck.owner === null || user.id === world.userId)) return;
   const puck = world.puck;
@@ -13465,15 +13730,35 @@ function pokeCheck(user: Skater): void {
   const blade = stickBlade(user);
   const { fx, fz } = heading(user.yaw);
   const stance = user.backskate && user.id === world.userId;
-  const reachMul = stance && user.poke > 0 ? 1.35 : 1;
+  const dive = user.dive > 0.04;
+  // Dive reach stays at 1. A standing poke may still widen while backskating.
+  const reachMul = dive ? 1 : stance && user.poke > 0 ? 1.35 : 1;
+  // Player hits do not wait for the puck. Goalies do not use this crowd pass.
+  const sweepDive = (skipId: number | null) => {
+    if (user.kind === "goalie" || !dive || user.poke <= 0) return;
+    const hit = user.id === world.userId ? USER_DIVE_POKE : CPU_DIVE_POKE;
+    markDivePokeCrowd(user, blade, fx, fz, skipId, hit);
+  };
   if (puck.owner !== null) {
     if (user.poke <= 0) return;
     const holder = world.skaters[puck.owner];
-    if (!holder || holder.side === user.side) return;
-    if (userStickCommitHolds(holder.id)) return;
+    if (!holder || holder.side === user.side) {
+      sweepDive(null);
+      return;
+    }
+    if (userStickCommitHolds(holder.id)) {
+      sweepDive(holder.id);
+      return;
+    }
     const goaliePoke = userControlsGoalie(user);
-    if (holder.deke > 0.06 && !goaliePoke) return;
-    if (skillProtectBlocks(holder, user) && !goaliePoke) return;
+    if (holder.deke > 0.06 && !goaliePoke) {
+      sweepDive(holder.id);
+      return;
+    }
+    if (skillProtectBlocks(holder, user) && !goaliePoke) {
+      sweepDive(holder.id);
+      return;
+    }
     let dBlade = Math.hypot(blade.x - puck.x, blade.z - puck.z);
     if (goaliePoke) {
       const hand = goalieBlockerHand(user);
@@ -13502,22 +13787,32 @@ function pokeCheck(user: Skater): void {
         world.lastPass = world.time;
         world.lastPasser = user.id;
         world.lastPassTo = null;
+        if (user.kind === "goalie") {
+          stickLooseUntil = world.time + 0.3;
+          stickLooseBy = user.id;
+          stickLooseFrom = holder.id;
+        }
       }
+      sweepDive(null);
       return;
     }
     const cpu = user.id !== world.userId;
-    const dive = user.dive > 0.04;
     const poke = cpuPokeTune();
-    const reach = (dive ? 3.15 : cpu ? poke.reach : goaliePoke ? GOALIE_STICK_LEN + 0.2 : 1.95) * (cpu ? 1 : reachMul);
-    const bodyR = (dive ? 3.35 : cpu ? 0 : 2.25) * (cpu ? 1 : reachMul);
+    const reach = (dive ? DIVE_POKE_BLADE : cpu ? poke.reach : goaliePoke ? GOALIE_STICK_LEN + 0.2 : 1.95) * (cpu ? 1 : reachMul);
+    const bodyR = (dive ? DIVE_POKE_BODY : cpu ? 0 : 2.25) * (cpu ? 1 : reachMul);
     const aheadMin = cpu && !dive ? 0.22 : -0.85;
+    let carrierHandled = false;
     if ((dBlade < reach || (bodyR > 0 && dBody < bodyR)) && ahead > aheadMin) {
+      carrierHandled = true;
       failShootoutGoaliePoke(user);
       const lx = -fz;
       const lz = fx;
       const side = Math.sign((holder.x - user.x) * lx + (holder.z - user.z) * lz) || 1;
-      if (cpu && !dive && Math.random() < poke.steal) {
-        noteControl(user, "play");
+      // X on an opponent carrier gives the user the puck. Goalie and CPU pokes only knock it free.
+      const userSteal =
+        xPokeArmed && user.id === world.userId && !cpu && !dive && !goaliePoke && !skillSweepPoke;
+      if (userSteal) {
+        noteRelease("poke", user);
         puck.owner = user.id;
         puck.x = blade.x;
         puck.z = blade.z;
@@ -13525,33 +13820,50 @@ function pokeCheck(user: Skater): void {
         puck.vx = user.vx;
         puck.vz = user.vz;
         puck.vy = 0;
-        holder.stun = 0.22;
-        holder.struck = 0.14;
-        stickLooseUntil = -1;
-        stickLooseBy = -1;
-        stickLooseFrom = -1;
+      } else {
+        const pop = dive ? 12.5 : cpu ? 4.8 : 8.5;
+        const fwd = dive ? 4.2 : cpu ? -2.2 : 2.8;
+        noteRelease("poke", user);
+        launchPuck(
+          holder,
+          fx * fwd + lx * side * pop,
+          fz * fwd + lz * side * pop,
+          dive ? 0.7 : cpu ? 0.22 : 0.4,
+        );
+      }
+      // Non-goalie victim. Fall is tumble; twist is tumbleSpin. A fall does not
+      // change these stun/struck numbers. A diving CPU uses the dive outcome
+      // with weaker numbers. A standing CPU poke never falls and never spins.
+      if (dive && user.kind !== "goalie") {
+        applyDivePokeVictim(holder, user, cpu ? CPU_DIVE_POKE : USER_DIVE_POKE);
+      } else if (cpu) {
+        holder.stun = 0.24;
+        holder.struck = 0.16;
+        holder.tumble = 0;
+        holder.tumbleSpin = 0;
+      } else if (dive) {
+        applyDivePokeVictim(holder, user, USER_DIVE_POKE);
+      } else {
+        holder.stun = 0.4;
+        holder.struck = 0.4;
+        if (Math.random() < 0.15) {
+          holder.tumble = Math.random() < 0.5 ? 1 : -1;
+          holder.tumbleSpin = 0;
+        } else {
+          holder.tumble = 0;
+          holder.tumbleSpin = impactTumbleSpin(holder, user, POKE_ABSORB_SPIN);
+        }
+      }
+      if (skillSweepPoke && user.id === world.userId) skillSweepBat = true;
+      world.lastPass = world.time;
+      if (userSteal) {
         world.lastPassTo = null;
-        world.lastPasser = null;
         world.oneTimerArmed = false;
         world.oneTimerSlap = false;
         world.oneTimerPass = false;
         world.oneTimerSaucer = false;
-        return;
       }
-      const pop = dive ? 12.5 : cpu ? 4.8 : 8.5;
-      const fwd = dive ? 4.2 : cpu ? -2.2 : 2.8;
-      noteRelease("poke", user);
-      launchPuck(
-        holder,
-        fx * fwd + lx * side * pop,
-        fz * fwd + lz * side * pop,
-        dive ? 0.7 : cpu ? 0.22 : 0.4,
-      );
-      holder.stun = dive ? 0.62 : cpu ? 0.24 : 0.42;
-      holder.struck = dive ? 0.48 : cpu ? 0.16 : 0.32;
-      if (skillSweepPoke && user.id === world.userId) skillSweepBat = true;
-      world.lastPass = world.time;
-      if (cpu) {
+      if (cpu || goaliePoke) {
         world.lastPassTo = null;
         world.lastPasser = null;
         world.oneTimerArmed = false;
@@ -13563,9 +13875,23 @@ function pokeCheck(user: Skater): void {
         stickLooseFrom = holder.id;
       }
     }
+    sweepDive(carrierHandled ? holder.id : null);
     return;
   }
-  if (user.dive > 0) return;
+  if (user.dive > 0) {
+    // Dive can knock a loose puck. It never takes possession.
+    // Players in the dive volume are hit even when the puck is not.
+    if (user.kind !== "goalie" && dive && user.poke > 0) {
+      const dLoose = Math.hypot(blade.x - puck.x, blade.z - puck.z);
+      const bodyLoose = Math.hypot(user.x - puck.x, user.z - puck.z);
+      const aheadLoose = (puck.x - user.x) * fx + (puck.z - user.z) * fz;
+      if ((dLoose < DIVE_POKE_BLADE || bodyLoose < DIVE_POKE_BODY) && aheadLoose > -0.85 && puck.y < 1.2) {
+        knockLooseLikeStrip(user, true);
+      }
+    }
+    sweepDive(null);
+    return;
+  }
   if (user.id !== world.userId && userJustReleasedPuck()) return;
   // A post slide flares the stick for the mesh. That pose must not cover the
   // puck here; tryDefendPost is the save, and a miss still hits iron.
@@ -13582,7 +13908,12 @@ function pokeCheck(user: Skater): void {
   const pokeReach =
     userControlsGoalie(user) ? GOALIE_STICK_LEN + 0.2 : 0.95 * (stance ? 1.35 : 1);
   const bladeHit = user.poke > 0 && d < pokeReach && puck.y < 0.4;
-  const throughBody = stance && !liveShotFlight() && dBody < user.radius * 1.35 && puck.y < 1.2;
+  const throughBody =
+    user.id === world.userId &&
+    user.kind !== "goalie" &&
+    !liveShotFlight() &&
+    dBody < user.radius * 1.35 &&
+    puck.y < 1.2;
   if (skillSweepPoke && user.id === world.userId && user.poke > 0 && sweepLooseContact(user)) {
     if (!skillSweepBat) {
       skillSweepBat = true;
@@ -13594,6 +13925,14 @@ function pokeCheck(user: Skater): void {
       world.lastPass = world.time;
       world.lastPasser = user.id;
       world.lastPassTo = null;
+    }
+    return;
+  }
+  // X pokes at a loose puck. It knocks the puck and does not take it.
+  if (user.id === world.userId && user.poke > 0) {
+    if (bladeHit) {
+      failShootoutGoaliePoke(user);
+      knockLooseLikeStrip(user, false);
     }
     return;
   }
@@ -13985,14 +14324,37 @@ function userGoalieHandSave(user: Skater, hand: "glove" | "blocker", dive: boole
   if (shootoutUserGoalie(user)) failShootoutGoaliePoke(user);
 }
 
-/** LT/RT are the standing saves. LB/RB are the dives. Left buttons are screen-left. */
+/** Dive toward the stick or the glove. Velocity first, otherwise the puck. */
+function startGoalieDiveSave(user: Skater): void {
+  if (user.dive > 0) return;
+  user.dive = 1.5;
+  let dx = user.vx;
+  let dz = user.vz;
+  if (Math.hypot(dx, dz) < 0.35) {
+    dx = world.puck.x - user.x;
+    dz = world.puck.z - user.z;
+  }
+  const pose = goalieDivePoseFor(user, dx, dz);
+  const hand = pose === "goalieDivingGloveSave" ? "glove" : "blocker";
+  const z = goalieHandZ(user, hand);
+  user.vx = 0;
+  user.vz = z * 7.5;
+  goalieDiveSave.set(user.id, pose);
+  if (!goalieHandContactsPuck(user, hand)) return;
+  const end: 1 | -1 = defendDir(user.side) >= 0 ? 1 : -1;
+  applyGoalieSave(user, world.puck, 0.7, end * GOAL_LINE_X - end * 0.8, hand === "glove", false, hand === "blocker");
+  user.poke = 0;
+  if (shootoutUserGoalie(user)) failShootoutGoaliePoke(user);
+}
+
+/** LT/RT stay the standing saves. LB is back skate. RB is the diving save. */
 function stepUserGoaliePads(user: Skater, act: Actions): void {
   if (user.kind !== "goalie" || world.puck.owner === user.id) {
-    if (user.dive > 1 && !act.lbDown && !act.rbDown) user.dive = 0.95;
+    if (user.dive > 1 && !act.rbDown) user.dive = 0.95;
     return;
   }
-  if (act.lbEdge || act.rbEdge) {
-    userGoalieHandSave(user, goalieButtonHand(act.lbEdge && !act.rbEdge), true);
+  if (act.rbEdge) {
+    startGoalieDiveSave(user);
   } else if (act.ltEdge || act.rtEdge) {
     userGoalieHandSave(user, goalieButtonHand(act.ltEdge && !act.rtEdge), false);
   } else if (act.ltDown || act.rtDown) {
@@ -14002,7 +14364,7 @@ function stepUserGoaliePads(user: Skater, act: Actions): void {
       until: world.time + 0.4,
     });
   }
-  if (user.dive > 1 && !act.lbDown && !act.rbDown) user.dive = 0.95;
+  if (user.dive > 1 && !act.rbDown) user.dive = 0.95;
 }
 
 /** Y, and a Skill Stick stick-up or pull-back with no puck. A sideways push pokes instead. Stoppage is the frozen-puck check. */
@@ -14179,8 +14541,9 @@ const CHECK_RECOIL = 0.6;
 const CHECK_POSE = 0.22;
 // User body checks. CPU stays on checkSpot (bodies + CHECK_PAD, about 1.06 m).
 // Struck used to fall at 1/s for everyone. A tumble set stun 1.45 (goalie 1.55),
-// struck 1.68, tumble ±(0.85..1.3). An absorb set stun 1.2 (goalie 1.55), struck
-// 1.25 (goalie 1.7), tumble 0. decayGoalieDown clears a goalie tumble at struck
+// struck 1.68, tumble ±(0.85..1.3), tumbleSpin 0. An absorb set stun 1.2
+// (goalie 1.55), struck 1.25 (goalie 1.7), tumble 0, tumbleSpin ±(0.85..1.3).
+// decayGoalieDown clears a goalie tumble at struck
 // <= 0.14. A referee absorbed first (struck 1.25), restarted at 1.68 with a
 // tumble when that crossed 0.2, and cleared both at struck <= 0.1, on that same
 // 1/s clock (about 2.63 s, longer than a skater tumble, which is up around 1.58 s).
@@ -14188,7 +14551,8 @@ const CHECK_POSE = 0.22;
 // falls through TUMBLE_STRIKE * (1 - TUMBLE_UP) (about 0.466), then recover until
 // struck <= 0.1. User, CPU, chain, and close-step checks skipped struck > 0.45,
 // so knockout and the first instant of recover could not be hit again.
-// User reach is 1.5 (×1.35 in backskate), lateral 0.9, ahead -0.2, cap 1.7.
+// User reach is 1.5 with or without backskate, lateral 0.9, ahead -0.2
+// (-0.25 while backskating), cap 1.7.
 // The 0.12 s close adds up to 0.384 and never passes that cap. CPU reach is the
 // two radii plus CHECK_PAD, lateral half the radii. A celebration did not change it.
 // The skip is now only CHECK_REHIT_S after the strike opens, so the rest of the
@@ -14251,11 +14615,11 @@ function checkSpot(hitterR: number, targetR: number): { reach: number; lateral: 
 function userCheckMetrics(user: Skater): { reach: number; lateral: number; aheadMin: number } {
   const stance = user.backskate;
   const left = Math.max(0, checkCloseLeft.get(user.id) ?? 0);
-  const base = USER_CHECK_REACH * (stance ? 1.35 : 1);
+  const base = USER_CHECK_REACH;
   return {
     reach: Math.min(USER_CHECK_CAP, base + CHECK_CLOSE_V * left),
     lateral: USER_CHECK_LAT,
-    aheadMin: stance ? -0.22 : USER_CHECK_AHEAD,
+    aheadMin: stance ? -0.25 : USER_CHECK_AHEAD,
   };
 }
 
@@ -14389,8 +14753,13 @@ function layDownSkater(
   ivx: number,
   ivz: number,
   tumbleP = 0.45,
+  hitter: { x: number; z: number; vx: number; vz: number } | null = null,
 ): void {
   const rewound = rewindCheckedCycle(s);
+  // Spin reads the velocities from the moment of impact, before the shove.
+  const absorbSpin = hitter
+    ? impactTumbleSpin(s, hitter, s.kind === "goalie" ? REACT_ABSORB_SPIN : CHECK_ABSORB_SPIN)
+    : 0;
   if (s.kind === "goalie") {
     const out = attackDir(s.side);
     if (!rewound) s.stun = 1.55;
@@ -14404,24 +14773,28 @@ function layDownSkater(
       if (Math.random() < tumbleP) {
         s.struck = TUMBLE_STRIKE;
         s.tumble = (Math.random() < 0.5 ? 1 : -1) * (0.85 + Math.random() * 0.45);
+        s.tumbleSpin = 0;
       } else {
         s.struck = GOALIE_ABSORB_STRIKE;
         s.tumble = 0;
+        s.tumbleSpin = absorbSpin;
       }
     }
   } else if (rewound) {
     s.vx = fx * 12 + ivx * 0.45;
     s.vz = fz * 12 + ivz * 0.45;
   } else if (Math.random() < tumbleP) {
-    s.stun = 1.45;
-    s.struck = TUMBLE_STRIKE;
-    s.tumble = (Math.random() < 0.5 ? 1 : -1) * (0.85 + Math.random() * 0.45);
+    s.stun = 1.4;
+    s.struck = 1.65;
+    s.tumble = Math.random() < 0.5 ? 1 : -1;
+    s.tumbleSpin = 0;
     s.vx = fx * 12 + ivx * 0.45;
     s.vz = fz * 12 + ivz * 0.45;
   } else {
-    s.stun = 1.2;
-    s.struck = ABSORB_STRIKE;
+    s.stun = 1.1;
+    s.struck = 1.2;
     s.tumble = 0;
+    s.tumbleSpin = absorbSpin;
     s.vx = fx * 12 + ivx * 0.45;
     s.vz = fz * 12 + ivz * 0.45;
   }
@@ -14467,7 +14840,7 @@ function syncCheckCycle(s: Skater): void {
   if (!checkedCyclePose(s.struck, s.tumble)) checkCycleIds.delete(s.id);
 }
 
-/** Keep a full tumble so a rewind plays the same spin from the first frame. */
+/** Keep a full fall flag so a rewind plays the same knockdown from the first frame. */
 function heldTumble(tumble: number): number {
   const sign = tumble < 0 ? -1 : 1;
   return sign * Math.min(1.3, Math.max(0.85, Math.abs(tumble)));
@@ -14501,19 +14874,28 @@ function rewindCheckedCycle(s: Skater): boolean {
   const pose = checkedCyclePose(s.struck, s.tumble);
   const goalie = s.kind === "goalie";
   if (pose === "absorb") {
-    s.stun = goalie ? 1.55 : 1.2;
-    s.struck = goalie ? GOALIE_ABSORB_STRIKE : ABSORB_STRIKE;
+    s.stun = goalie ? 1.55 : 1.1;
+    s.struck = goalie ? GOALIE_ABSORB_STRIKE : 1.2;
     s.tumble = 0;
   } else {
-    s.stun = goalie ? 1.55 : 1.45;
-    s.struck = TUMBLE_STRIKE;
+    s.stun = goalie ? 1.55 : 1.4;
+    s.struck = goalie ? TUMBLE_STRIKE : 1.65;
     s.tumble = heldTumble(s.tumble);
+    s.tumbleSpin = 0;
   }
   return true;
 }
 
-function layDownRef(r: Referee, fx: number, fz: number, ivx: number, ivz: number): void {
+function layDownRef(
+  r: Referee,
+  fx: number,
+  fz: number,
+  ivx: number,
+  ivz: number,
+  hitter: { x: number; z: number; vx: number; vz: number },
+): void {
   refStayPut.add(r);
+  r.tumbleSpin = impactTumbleSpin(r, hitter, REACT_ABSORB_SPIN);
   r.vx = fx * 11 + ivx * 0.45;
   r.vz = fz * 11 + ivz * 0.45;
   r.pose = "idle";
@@ -14530,10 +14912,12 @@ function advanceCheckedRef(r: Referee, dt: number): void {
     refOnAbsorb.delete(r);
     r.struck = TUMBLE_STRIKE;
     r.tumble = (Math.random() < 0.5 ? 1 : -1) * (0.85 + Math.random() * 0.45);
+    r.tumbleSpin = 0;
     return;
   }
   if (r.tumble !== 0 && r.struck <= 0.1) {
     r.tumble = 0;
+    r.tumbleSpin = 0;
     r.struck = 0;
   }
 }
@@ -15008,7 +15392,7 @@ function applyUserHit(user: Skater): boolean {
   const ui = useGame.getState();
   const stance = user.backskate;
   const band = userCheckMetrics(user);
-  const tumbleP = stance ? 0.72 : 0.45;
+  const tumbleP = stance ? 0.4 : 0.3;
   const best: { s: Skater | null; r: Referee | null; ahead: number; lat: number } = {
     s: null,
     r: null,
@@ -15069,7 +15453,7 @@ function applyUserHit(user: Skater): boolean {
       world.lastHitTime = world.time;
       return true;
     }
-    layDownSkater(best.s, fx, fz, user.vx, user.vz, tumbleP);
+    layDownSkater(best.s, fx, fz, user.vx, user.vz, tumbleP, user);
     absorbHitterMomentum(user);
     userCheckSkaters.add(best.s.id);
     if (world.puck.owner === best.s.id) spillCheckedPuck(best.s, user);
@@ -15092,7 +15476,7 @@ function applyUserHit(user: Skater): boolean {
     }
     notePasserChecked(best.s);
   } else if (best.r) {
-    layDownRef(best.r, fx, fz, user.vx, user.vz);
+    layDownRef(best.r, fx, fz, user.vx, user.vz, user);
     absorbHitterMomentum(user);
     userCheckRefs.add(best.r);
   }
@@ -15170,12 +15554,12 @@ function bowlUserChecks(): void {
     const dirX = f.vx / sp;
     const dirZ = f.vz / sp;
     if (bestS && takeChainDown(bestS)) {
-      layDownSkater(bestS, dirX, dirZ, 0, 0);
+      layDownSkater(bestS, dirX, dirZ, 0, 0, 0.45, { x: f.x, z: f.z, vx: f.vx, vz: f.vz });
       userCheckSkaters.add(bestS.id);
       if (world.puck.owner === bestS.id) spillCheckedPuck(bestS);
       notePasserChecked(bestS);
     } else if (bestR && takeChainDown(bestR)) {
-      layDownRef(bestR, dirX, dirZ, 0, 0);
+      layDownRef(bestR, dirX, dirZ, 0, 0, { x: f.x, z: f.z, vx: f.vx, vz: f.vz });
       userCheckRefs.add(bestR);
     }
   }
@@ -15198,7 +15582,7 @@ function applyHit(user: Skater): boolean {
     if (lane.ok) {
       connected = true;
       landed = true;
-      layDownSkater(s, fx, fz, user.vx, user.vz);
+      layDownSkater(s, fx, fz, user.vx, user.vz, user.backskate ? 0.4 : 0.3, user);
       if (world.puck.owner === s.id && !userStickCommitHolds(s.id)) spillCheckedPuck(s, user);
       else if (
         world.puck.owner === null &&
@@ -15231,7 +15615,7 @@ function applyHit(user: Skater): boolean {
       const lane = checkLane(dx, dz, fx, fz, spot.reach, spot.lateral);
       if (lane.ok) {
         landed = true;
-        layDownRef(r, fx, fz, user.vx, user.vz);
+        layDownRef(r, fx, fz, user.vx, user.vz, user);
       }
     }
   }
@@ -17933,6 +18317,7 @@ function beginDrillDrop(): void {
   refStayPut.delete(r);
   refOnAbsorb.delete(r);
   placeDrillBoxRef(world.ref);
+  armFaceoffBackSkate();
   world.puck.x = world.faceX;
   world.puck.z = world.faceZ;
   world.puck.y = r.handY;
@@ -19985,6 +20370,7 @@ type ReplayBody = {
   stun: number;
   struck: number;
   tumble: number;
+  tumbleSpin: number;
   celebrate: number;
   smash: number;
   smashKind: number;
@@ -20009,6 +20395,7 @@ type ReplayRef = {
   vz: number;
   struck: number;
   tumble: number;
+  tumbleSpin: number;
 };
 
 type ReplaySnap = {
@@ -20094,6 +20481,7 @@ function snapOneRef(r: Referee): ReplayRef {
     vz: r.vz,
     struck: r.struck,
     tumble: r.tumble,
+    tumbleSpin: r.tumbleSpin,
   };
 }
 
@@ -20116,6 +20504,7 @@ function applyOneRef(r: Referee, snap: ReplayRef): void {
   r.vz = snap.vz;
   r.struck = snap.struck;
   r.tumble = snap.tumble ?? 0;
+  r.tumbleSpin = snap.tumbleSpin ?? 0;
 }
 
 function snapBody(s: Skater): ReplayBody {
@@ -20140,6 +20529,7 @@ function snapBody(s: Skater): ReplayBody {
     stun: s.stun,
     struck: s.struck,
     tumble: s.tumble,
+    tumbleSpin: s.tumbleSpin,
     celebrate: s.celebrate,
     smash: s.smash,
     smashKind: s.smashKind,
@@ -20267,6 +20657,7 @@ function applyReplaySnap(snap: ReplaySnap): void {
     s.stun = b.stun;
     s.struck = b.struck;
     s.tumble = b.tumble;
+    s.tumbleSpin = b.tumbleSpin ?? 0;
     s.celebrate = b.celebrate;
     s.smash = b.smash ?? 0;
     s.smashKind = b.smashKind ?? 0;
@@ -21319,6 +21710,7 @@ function silenceForRage(s: Skater): void {
   s.struck = 0;
   s.dive = 0;
   s.tumble = 0;
+  s.tumbleSpin = 0;
   s.coverPose = 0;
 }
 
@@ -21693,7 +22085,7 @@ function stepGoalRefChecks(dt: number): void {
     if (d < 1.35) {
       const { fx, fz } = heading(s.yaw);
       s.hit = Math.max(s.hit, 0.48);
-      layDownRef(r, fx, fz, s.vx, s.vz);
+      layDownRef(r, fx, fz, s.vx, s.vz, s);
       job.done = true;
       s.vx *= 0.25;
       s.vz *= 0.25;
@@ -21819,8 +22211,8 @@ function clearBackskate(): void {
 }
 
 function applyBackskate(user: Skater, act: Actions): void {
-  clearBackskate();
-  if (!act.lbDown || user.kind === "goalie" || user.dive > 0 || world.faceoff) return;
+  user.backskate = false;
+  if (!act.lbDown || user.dive > 0 || world.faceoff) return;
   user.backskate = true;
   lockBackskateYaw(user);
 }
@@ -22890,8 +23282,12 @@ function stepCpuDrillWatch(dt: number): void {
   if (world.faceoff) stepDrillDrop(dt);
   const dropping = world.faceoff;
   for (const s of world.skaters) {
+    refreshCpuBackskate(s);
     const ai = thinkAi(s, dt);
-    if (s.kind !== "goalie") {
+    if (s.kind === "goalie") {
+      refreshCpuBackskate(s);
+      if (s.backskate) lockBackskateYaw(s);
+    } else {
       integrateSkater(s, ai.wx, ai.wz, ai.mag, ai.burst, dt);
       keepInBowl(s);
     }
@@ -22923,8 +23319,12 @@ function stepOpenIce(dt: number, act: Actions): void {
     releaseFaceoffCenters();
   }
   for (const s of world.skaters) {
+    refreshCpuBackskate(s);
     const ai = thinkAi(s, dt);
-    if (s.kind !== "goalie") {
+    if (s.kind === "goalie") {
+      refreshCpuBackskate(s);
+      if (s.backskate) lockBackskateYaw(s);
+    } else {
       integrateSkater(s, ai.wx, ai.wz, ai.mag, ai.burst, dt);
       keepInBowl(s);
     }
@@ -23420,12 +23820,18 @@ function stepPlay(dt: number, act: Actions): void {
     stepFaceoff(dt, act, taker);
     for (const s of world.skaters) {
       if (s.id === world.homeDot || s.id === world.awayDot || s.kind === "goalie") {
-        if (s.kind === "goalie" && s.id !== world.userId) thinkGoalie(s, dt);
+        if (s.kind === "goalie" && s.id !== world.userId) {
+          thinkGoalie(s, dt);
+          refreshCpuBackskate(s);
+          if (s.backskate) lockBackskateYaw(s);
+        }
         continue;
       }
+      refreshCpuBackskate(s);
       if (world.faceoffPhase !== "live" && s.kind === "winger") continue;
       const ai = thinkWithoutPuck(s);
       integrateSkater(s, ai.wx, ai.wz, ai.mag * 0.5, false, dt);
+      if (s.hit > 0) applyHit(s);
       keepOutOfCircle(s);
       keepInBowl(s);
     }
@@ -23518,6 +23924,13 @@ function stepPlay(dt: number, act: Actions): void {
   // B while A is down latches a cancel. Releasing A after that must not pass.
   if (!periodEndLive() && canChargePass && act.bEdge && (act.aDown || act.aHoldRel || act.aTap)) passChargeCancel = true;
 
+  if (act.xEdge && opponentOwnsPuck(user)) {
+    xPokePress = true;
+    xPokeArmed = true;
+    world.shotWindupT = 0;
+    user.windup = 0;
+  }
+  const pokePressShot = blockShotFromPokePress(act);
   if ((!periodEndLive() || periodEndUserPlay) && hasPuck) {
     if (user.kind === "goalie") {
       const aim = shotAim(act);
@@ -23531,7 +23944,7 @@ function stepPlay(dt: number, act: Actions): void {
           doGoalieOutlet(user, aim.mx, aim.my, act.viewDown);
         }, true);
       }
-      if ((act.xTap || act.xHoldRel) && world.time - world.lastShoot > 0.25) {
+      if (!pokePressShot && (act.xTap || act.xHoldRel) && world.time - world.lastShoot > 0.25) {
         doShot(user, act.moveX, act.moveY, act.xHoldRel, world.shotWindupT);
       }
     } else {
@@ -23553,9 +23966,10 @@ function stepPlay(dt: number, act: Actions): void {
         world.oneTimerPass = false;
         world.oneTimerSaucer = false;
       }
-      const snapped = !passedThis && tryReboundSnap(user, act);
+      const snapped = !passedThis && !pokePressShot && tryReboundSnap(user, act);
       const shotWait = ui.clockMode === "drill" ? 0.02 : 0.25;
       if (
+        !pokePressShot &&
         !passedThis &&
         !snapped &&
         !world.windupCancel &&
@@ -23565,6 +23979,7 @@ function stepPlay(dt: number, act: Actions): void {
         doShot(user, aim.mx, aim.my, false, world.shotWindupT);
       }
       if (
+        !pokePressShot &&
         !passedThis &&
         !snapped &&
         !world.windupCancel &&
@@ -23590,7 +24005,7 @@ function stepPlay(dt: number, act: Actions): void {
       }
     }
     if (user.deke > 0) tickDeke(user, dt);
-    if (act.xDown && !world.windupCancel) {
+    if (!pokePressShot && act.xDown && !world.windupCancel) {
       accumulateOwnedShotWindup(user, dt);
       capBackhandWindup(user);
       if (act.bEdge) {
@@ -23614,6 +24029,7 @@ function stepPlay(dt: number, act: Actions): void {
     const sweep = !yHit && !rbPoke && skillStickSweep(user, act);
     const skillPoke = rbPoke || sweep;
     if (sweep) skillSweepPoke = true;
+    if (skillPoke && !act.xEdge) xPokeArmed = false;
     if (skillPoke) skillPokePush = true;
     else armSkillStickHit(user, act, false);
     if (user.kind !== "goalie") stepSkillStick(user, act, false);
@@ -23648,7 +24064,7 @@ function stepPlay(dt: number, act: Actions): void {
       world.oneTimerPass = false;
       world.oneTimerSaucer = false;
       user.poke = 0;
-    } else if (tryReboundSnap(user, act)) {
+    } else if (!pokePressShot && tryReboundSnap(user, act)) {
       user.poke = 0;
     } else if (
       (act.xEdge || skillPoke) &&
@@ -23689,7 +24105,7 @@ function stepPlay(dt: number, act: Actions): void {
         if (!act.xDown) world.shotWindupT = 0;
       }
       if (!act.xDown) world.windupCancel = false;
-    } else if (!world.oneTimerArmed && user.kind !== "goalie" && !goalieHas) {
+    } else if (!pokePressShot && !world.oneTimerArmed && user.kind !== "goalie" && !goalieHas) {
       if (act.xDown && !world.windupCancel) {
         world.shotWindupT += dt;
         user.windup = Math.min(1, world.shotWindupT / SHOT_FULL_HOLD);
@@ -23741,7 +24157,8 @@ function stepPlay(dt: number, act: Actions): void {
 
   applyBackskate(user, act);
   keepSkillPokeFacing(user);
-  if (user.poke > 0 || user.backskate) pokeCheck(user);
+  // Through-body pickup has to run when the user is not backskating.
+  pokeCheck(user);
   keepSkillHitFacing(user);
   if (user.hit > 0) {
     if (applyHit(user)) world.whiffPending = false;
@@ -23850,15 +24267,15 @@ function stepPlay(dt: number, act: Actions): void {
   } else if (userDiving) {
     goalieCircleChase.delete(user.id);
     integrateSkater(user, wx, wz, mag, false, dt);
-  } else if (!periodEndLive() && !world.shootout?.goalieUser && (userEscape || userNet)) {
+  } else if (!user.backskate && !periodEndLive() && !world.shootout?.goalieUser && (userEscape || userNet)) {
     skateGoalieBack(user, dt);
-  } else if (!periodEndLive() && userLoose && !world.shootout?.goalieUser) {
+  } else if (!user.backskate && !periodEndLive() && userLoose && !world.shootout?.goalieUser) {
     if (puckAtGoalieCircleTop(user.side)) goalieCircleChase.add(user.id);
     const spot = goalieRetrievePoint(user);
     skateGoalieTo(user, spot.x, spot.z, dt);
   } else {
     integrateSkater(user, wx, wz, mag, act.burst && !user.backskate, dt);
-    if (user.kind === "goalie" && user.dive <= 0) orientGoalieOut(user, dt);
+    if (user.kind === "goalie" && user.dive <= 0 && !user.backskate) orientGoalieOut(user, dt);
   }
   keepInBowl(user);
   refreshUserStickCommit(act);
@@ -23885,8 +24302,12 @@ function stepPlay(dt: number, act: Actions): void {
       keepInBowl(s);
       continue;
     }
+    refreshCpuBackskate(s);
     const ai = thinkAi(s, dt);
-    if (s.kind !== "goalie") {
+    if (s.kind === "goalie") {
+      refreshCpuBackskate(s);
+      if (s.backskate) lockBackskateYaw(s);
+    } else {
       integrateSkater(s, ai.wx, ai.wz, ai.mag, ai.burst, dt);
       keepInBowl(s);
     }
@@ -23902,6 +24323,7 @@ function stepPlay(dt: number, act: Actions): void {
 
   separateSkaters();
   for (const s of world.skaters) keepInBowl(s);
+  ownGoalieTakeUserPuck(user);
   sealGoalieCircleChases(user.kind === "goalie" && !userStickIdle);
 
   if (!periodEndLive() && hasPuck && user.kind !== "goalie") {
