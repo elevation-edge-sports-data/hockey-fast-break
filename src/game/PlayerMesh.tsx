@@ -8,7 +8,8 @@ import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, SKATER_TAPE_Z0, SKA
 import { kitById, type UniformKit } from "./uniforms";
 import { useGame } from "./store";
 import { BLUE_X, GOAL_H, GOAL_LINE_X } from "./rink";
-import { applyPoseJoints, namedPoseFor, poseHasJoint, stampPoseOverride, type PoseJointId } from "./poseOverrides";
+import { applyPoseJoints, DEBUG_POSE_FALLBACK, namedPoseFor, poseHasJoint, stampPoseOverride, type PoseJointId } from "./poseOverrides";
+import { functionViewerGoalie, functionViewerPreview, functionViewerRef, readViewerArgs, runFunctionPreview, viewerFlag, viewerNum } from "./functionViewerGate";
 import { pivotGoalieStickOnKnob, releaseStickFromHand, restoreGoalieStickGrip, setGoalieKnobShift } from "./stickKnobPivot";
 
 export const USER_MARK_INNER = 0.44;
@@ -4156,6 +4157,853 @@ function GoalieMask({ material }: { material: THREE.Material }) {
   );
 }
 
+export type PreviewParts = {
+  s: Skater;
+  root: THREE.Group;
+  body: THREE.Group;
+  head: THREE.Group | null;
+  lLeg: THREE.Group | null;
+  rLeg: THREE.Group | null;
+  lShin: THREE.Group | null;
+  rShin: THREE.Group | null;
+  lBoot: THREE.Group | null;
+  rBoot: THREE.Group | null;
+  lArm: THREE.Group | null;
+  rArm: THREE.Group | null;
+  lFore: THREE.Group | null;
+  rFore: THREE.Group | null;
+  lHand: THREE.Object3D | null;
+  rHand: THREE.Object3D | null;
+  stick: THREE.Group | null;
+  shaft: THREE.Group | null;
+  blade: THREE.Group | null;
+  layout: { len: number };
+  torsoPivot: number;
+  upperSleeve: THREE.Group | null;
+  foreSleeve: THREE.Group | null;
+};
+
+function previewSkater(p: PreviewParts): p is PreviewParts & {
+  lLeg: THREE.Group;
+  rLeg: THREE.Group;
+  lArm: THREE.Group;
+  rArm: THREE.Group;
+  lFore: THREE.Group;
+  rFore: THREE.Group;
+  stick: THREE.Group;
+  blade: THREE.Group;
+} {
+  return !!(p.lLeg && p.rLeg && p.lArm && p.rArm && p.lFore && p.rFore && p.stick && p.blade);
+}
+
+function relaxPreview(p: PreviewParts & { lLeg: THREE.Group; rLeg: THREE.Group; lArm: THREE.Group; rArm: THREE.Group; stick: THREE.Group; blade: THREE.Group }): void {
+  p.body.position.set(0, torsoPlacedY(p.body, 0), 0);
+  p.body.rotation.set(0, 0, 0);
+  restHead(p.head);
+  const hangLeg = (leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number) => {
+    leg.position.set(x, SKATER_HIP_Y, 0);
+    leg.rotation.set(0, 0, 0);
+    if (shin) shin.rotation.set(0.15, 0, 0);
+    if (boot) boot.rotation.set(-0.15, 0, 0);
+  };
+  hangLeg(p.lLeg, p.lShin, p.lBoot, -SKATER_HIP_X);
+  hangLeg(p.rLeg, p.rShin, p.rBoot, SKATER_HIP_X);
+  hangSkaterArm(p.lArm, p.lFore, -1);
+  hangSkaterArm(p.rArm, p.rFore, 1);
+  p.stick.position.set(0, 0, 0);
+  p.stick.rotation.set(0, 0, 0);
+  p.blade.rotation.set(0, 0, 0);
+}
+
+function restHead(head: THREE.Group | null): void {
+  if (!head) return;
+  head.position.set(0, 1.54, 0.02);
+  head.rotation.order = "XYZ";
+  head.rotation.set(0, 0, 0);
+}
+
+function previewWristPlant(p: PreviewParts & { stick: THREE.Group; blade: THREE.Group; lLeg: THREE.Group; rLeg: THREE.Group; lArm: THREE.Group; rArm: THREE.Group; lFore: THREE.Group; rFore: THREE.Group }, a: Record<string, boolean | number>): void {
+  const key = WRIST_PLANT;
+  const knee = viewerNum(a, "knee", Math.PI / 2);
+  const hip = viewerNum(a, "hip", key.hip);
+  const drop = viewerNum(a, "drop", key.drop);
+  const lift = viewerNum(a, "lift", 0);
+  const flat = viewerFlag(a, "flat", true);
+  const { body } = p;
+  body.position.x = 0;
+  body.position.y = torsoPlacedY(body, drop);
+  body.position.z = 0;
+  body.rotation.x = hip;
+  body.rotation.y = 0;
+  body.rotation.z = 0;
+  poseWristLeg(p.lLeg, p.lShin, p.lBoot, -SKATER_HIP_X, knee, hip, drop, flat, null, 0, lift, p.torsoPivot);
+  poseWristLeg(p.rLeg, p.rShin, p.rBoot, SKATER_HIP_X, knee, hip, drop, flat, null, 0, 0, p.torsoPivot);
+  if (flat && p.lBoot && p.rBoot) {
+    body.updateWorldMatrix(true, true);
+    let low = Infinity;
+    const boots = lift > 0.15 ? [p.rBoot] : [p.lBoot, p.rBoot];
+    for (const boot of boots) {
+      _corner.set(0, -0.1375, 0.02);
+      boot.localToWorld(_corner);
+      if (_corner.y < low) low = _corner.y;
+    }
+    if (low < Infinity) body.position.y -= low - 0.02;
+  }
+  const aimKey = { ...key, hip, drop, flat, kneeL: knee, kneeR: knee, lift };
+  applyStickAim(p.stick, flat ? mountWristAim(body, wristStickAim(aimKey)) : wristStickAim(aimKey));
+  poseWristBlade(p.blade, p.stick, key.roll, key.yaw);
+  if (flat) seatBlade(p.stick, p.blade);
+  p.stick.updateWorldMatrix(true, true);
+  body.updateWorldMatrix(true, false);
+  _handTop.set(0, p.layout.len * SKATER_GRIP_TOP, 0);
+  p.stick.localToWorld(_handTop);
+  bodyToLocal(body, _handTop);
+  _handBot.set(0, p.layout.len * key.botGrip, 0);
+  p.stick.localToWorld(_handBot);
+  bodyToLocal(body, _handBot);
+  gripSkaterHand(body, p.rArm, p.rFore, 0.24, 1.46, 0.06, _handTop.x, _handTop.y, _handTop.z, 1, true, p.stick, flat ? _wristTopPole : null, flat, flat ? WRIST_TOP_BEND : 1);
+  gripSkaterHand(body, p.lArm, p.lFore, -0.26, 1.46, 0.06, _handBot.x, _handBot.y, _handBot.z, -1, true, null, null, flat, 1);
+  restHead(p.head);
+  if (p.upperSleeve) p.upperSleeve.rotation.y = flat ? Math.PI / 2 : 0;
+  if (p.foreSleeve) {
+    if (flat) {
+      _ikInv.copy(p.rFore.quaternion).invert();
+      _ikN.set(1, 0, 0).applyQuaternion(_ikInv);
+      p.foreSleeve.rotation.y = Math.atan2(_ikN.x, _ikN.z);
+    } else p.foreSleeve.rotation.y = 0;
+  }
+}
+
+function previewSlapWind(p: PreviewParts & { stick: THREE.Group; blade: THREE.Group; lLeg: THREE.Group; rLeg: THREE.Group; lArm: THREE.Group; rArm: THREE.Group; lFore: THREE.Group; rFore: THREE.Group }, a: Record<string, boolean | number>): void {
+  const slap = slapStick(1, 0);
+  if (!slap) return;
+  const knee = viewerNum(a, "knee", slap.key.kneeL);
+  const hip = viewerNum(a, "hip", slap.key.hip);
+  const abduct = viewerNum(a, "abduct", slap.key.abduct);
+  const lift = viewerNum(a, "lift", 0);
+  const wide = viewerFlag(a, "wide", false);
+  const { body } = p;
+  body.position.set(0, torsoPlacedY(body, slap.key.drop), slap.key.bz);
+  body.rotation.set(hip, slap.key.open, 0);
+  poseSlapLeg(p.lLeg, p.lShin, p.lBoot, -SKATER_HIP_X, knee, hip, -1, slap.key.zL, slap.key.toeL, abduct, wide, lift);
+  poseSlapLeg(p.rLeg, p.rShin, p.rBoot, SKATER_HIP_X, knee, hip, 1, slap.key.zR, slap.key.toeR, abduct, wide, 0);
+  if (p.lBoot && p.rBoot) {
+    body.updateWorldMatrix(true, true);
+    let low = Infinity;
+    let high = -Infinity;
+    for (const boot of [p.lBoot, p.rBoot]) {
+      _corner.set(0, -0.1375, 0.02);
+      boot.localToWorld(_corner);
+      if (_corner.y < low) low = _corner.y;
+      if (_corner.y > high) high = _corner.y;
+    }
+    if (lift > 0.15) {
+      _corner.set(0, -0.1375, 0.02);
+      p.rBoot.localToWorld(_corner);
+      body.position.y -= _corner.y - 0.02;
+    } else if (low < Infinity) body.position.y -= (low + high) * 0.5 - 0.02;
+  }
+  applyStickAim(p.stick, wristStickAim(slap.key));
+  poseWristBlade(p.blade, p.stick, slap.key.roll, slap.key.yaw);
+  seatBlade(p.stick, p.blade, slap.lock);
+  p.stick.updateWorldMatrix(true, false);
+  body.updateWorldMatrix(true, false);
+  _handTop.set(0, p.layout.len * SLAP_TOP, 0);
+  p.stick.localToWorld(_handTop);
+  bodyToLocal(body, _handTop);
+  _handBot.set(0, p.layout.len * slap.bot, 0);
+  p.stick.localToWorld(_handBot);
+  bodyToLocal(body, _handBot);
+  gripSkaterHand(body, p.rArm, p.rFore, SLAP_SH_L.x, SLAP_SH_L.y, SLAP_SH_L.z, _handTop.x, _handTop.y, _handTop.z, 1, true, p.stick, _slapTopPole, true, 1);
+  gripSkaterHand(body, p.lArm, p.lFore, slap.shR.x, slap.shR.y, slap.shR.z, _handBot.x, _handBot.y, _handBot.z, -1, true, null, _slapBotPole, true, 1);
+  restHead(p.head);
+}
+
+function capturePose(objs: (THREE.Object3D | null)[]): { obj: THREE.Object3D; q: THREE.Quaternion; p: THREE.Vector3 }[] {
+  const snaps = [];
+  for (const obj of objs) {
+    if (!obj) continue;
+    snaps.push({ obj, q: obj.quaternion.clone(), p: obj.position.clone() });
+  }
+  return snaps;
+}
+
+function blendPose(snaps: { obj: THREE.Object3D; q: THREE.Quaternion; p: THREE.Vector3 }[], progress: number): void {
+  const u = progress < 0 ? 0 : progress > 1 ? 1 : progress;
+  for (const snap of snaps) {
+    const toQ = snap.obj.quaternion.clone();
+    const toP = snap.obj.position.clone();
+    snap.obj.quaternion.copy(snap.q).slerp(toQ, u);
+    snap.obj.position.copy(snap.p).lerp(toP, u);
+  }
+}
+
+function previewPoke(p: PreviewParts & { stick: THREE.Group; blade: THREE.Group; lLeg: THREE.Group; rLeg: THREE.Group; lArm: THREE.Group; rArm: THREE.Group; lFore: THREE.Group; rFore: THREE.Group }, progress: number): void {
+  const before = capturePose([p.body, p.head, p.lArm, p.lFore, p.lHand, p.rArm, p.rFore, p.rHand, p.lLeg, p.lShin, p.lBoot, p.rLeg, p.rShin, p.rBoot, p.stick, p.shaft, p.blade]);
+  const { body } = p;
+  const pitch = POKE_HIP;
+  body.position.set(0, torsoPlacedY(body, pokeBodyDrop(pitch)), 0);
+  body.rotation.set(pitch, 0, 0);
+  const pivot = torsoPivotY(body);
+  const drop = body.position.y - pivot;
+  const frontThigh = plantThigh(pitch, drop, POKE_FRONT_KNEE, -1.85, -1.35, POKE_FRONT_FOOT_Z, pivot);
+  const backThigh = plantThigh(pitch, drop, POKE_BACK_KNEE, -0.35, 0.55, POKE_BACK_FOOT_Z, pivot);
+  posePokeLeg(p.lLeg, p.lShin, p.lBoot, -SKATER_HIP_X, frontThigh, POKE_FRONT_KNEE, pitch);
+  posePokeLeg(p.rLeg, p.rShin, p.rBoot, SKATER_HIP_X, backThigh, POKE_BACK_KNEE, pitch);
+  posePokeReachArms(body, p.lArm, p.lFore, p.rArm, p.rFore, p.stick, p.layout);
+  if (p.head) p.head.position.set(0, 1.54, 0.02);
+  posePoke(body, p.head, p.lArm, p.lFore, p.lHand, p.rArm, p.rFore, p.rHand, p.lLeg, p.lShin, p.lBoot, p.rLeg, p.rShin, p.rBoot, p.stick, p.shaft, p.blade);
+  blendPose(before, progress);
+}
+
+const DEFAULT_SKATE_AMP = 0.52;
+
+type ResidualLimbs = {
+  body: THREE.Group;
+  lLeg: THREE.Group | null;
+  rLeg: THREE.Group | null;
+  lShin: THREE.Group | null;
+  rShin: THREE.Group | null;
+  lBoot: THREE.Group | null;
+  rBoot: THREE.Group | null;
+  lArm: THREE.Group | null;
+  rArm: THREE.Group | null;
+  lFore: THREE.Group | null;
+  rFore: THREE.Group | null;
+  stick: THREE.Group | null;
+  blade: THREE.Group | null;
+  layout: { len: number };
+  torsoPivot: number;
+  root: THREE.Group | null;
+};
+
+function blendSkateLeg(leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number, thigh: number, knee: number, bootX: number, w: number) {
+  leg.position.set(x, SKATER_HIP_Y, 0);
+  leg.rotation.x += (thigh - leg.rotation.x) * w;
+  leg.rotation.y = 0;
+  leg.rotation.z += (0 - leg.rotation.z) * w;
+  if (shin) {
+    shin.rotation.x += (knee - shin.rotation.x) * w;
+    shin.rotation.y = 0;
+    shin.rotation.z += (0 - shin.rotation.z) * w;
+  }
+  if (boot) {
+    boot.rotation.x += (bootX - boot.rotation.x) * w;
+    boot.rotation.y = 0;
+    boot.rotation.z += (0 - boot.rotation.z) * w;
+  }
+}
+
+function checkDeliverChannels(pitch: number, drop: number, yaw: number, roll: number, checkT: CheckTargets) {
+  const w = checkT.influence;
+  return {
+    pitch: pitch + (checkT.pitch - pitch) * w,
+    drop: drop + (checkT.drop - drop) * w,
+    yaw: yaw + (checkT.yaw - yaw) * w,
+    roll: roll * (1 - w),
+    bz: checkT.bz * w,
+  };
+}
+
+function gripShaft(
+  body: THREE.Group,
+  stick: THREE.Group,
+  lArm: THREE.Group,
+  lFore: THREE.Group,
+  rArm: THREE.Group,
+  rFore: THREE.Group,
+  layout: { len: number },
+  topAlong: number,
+  botAlong: number,
+  rX: number,
+  rY: number,
+  rZ: number,
+  lX: number,
+  lY: number,
+  lZ: number,
+  handsOn: boolean,
+  topPole: THREE.Vector3 | null,
+  botPole: THREE.Vector3 | null,
+  free: boolean,
+  topBend: number,
+  botBend: number,
+) {
+  stick.updateWorldMatrix(true, false);
+  body.updateWorldMatrix(true, false);
+  _handTop.set(0, layout.len * topAlong, 0);
+  stick.localToWorld(_handTop);
+  bodyToLocal(body, _handTop);
+  _handBot.set(0, layout.len * botAlong, 0);
+  stick.localToWorld(_handBot);
+  bodyToLocal(body, _handBot);
+  gripSkaterHand(body, rArm, rFore, rX, rY, rZ, _handTop.x, _handTop.y, _handTop.z, 1, handsOn, stick, topPole, free, topBend);
+  gripSkaterHand(body, lArm, lFore, lX, lY, lZ, _handBot.x, _handBot.y, _handBot.z, -1, handsOn, null, botPole, free, botBend);
+}
+
+/** Default skate. Thighs are sin(stride); the ready grip's shoulders use the same sine. */
+function poseDefaultSkate(m: ResidualLimbs, stride: number, carryExtra: boolean, part: "legs" | "arms" | "all" = "all") {
+  const a = Math.sin(stride) * DEFAULT_SKATE_AMP;
+  const b = Math.sin(stride + Math.PI) * DEFAULT_SKATE_AMP;
+  if (part !== "arms") {
+    if (m.lLeg) {
+      m.lLeg.position.set(-SKATER_HIP_X, SKATER_HIP_Y, 0);
+      m.lLeg.rotation.x = a;
+      m.lLeg.rotation.z = 0;
+    }
+    if (m.rLeg) {
+      m.rLeg.position.set(SKATER_HIP_X, SKATER_HIP_Y, 0);
+      m.rLeg.rotation.x = b;
+      m.rLeg.rotation.z = 0;
+    }
+    const kneeL = 0.22 + Math.max(0, -a) * 1.15;
+    const kneeR = 0.22 + Math.max(0, -b) * 1.15;
+    if (m.lShin) m.lShin.rotation.set(kneeL, 0, 0);
+    if (m.rShin) m.rShin.rotation.set(kneeR, 0, 0);
+    if (m.lBoot) m.lBoot.rotation.set(-0.1 - kneeL * 0.32 + Math.max(0, a) * 0.18, 0, 0);
+    if (m.rBoot) m.rBoot.rotation.set(-0.1 - kneeR * 0.32 + Math.max(0, b) * 0.18, 0, 0);
+    if (carryExtra) {
+      const extraKnee = CARRY_KNEE - 0.22;
+      const bootDelta = CARRY_BOOT - (-0.1 - 0.22 * 0.32);
+      if (m.lShin) m.lShin.rotation.x += extraKnee;
+      if (m.rShin) m.rShin.rotation.x += extraKnee;
+      if (m.lBoot) m.lBoot.rotation.x += bootDelta;
+      if (m.rBoot) m.rBoot.rotation.x += bootDelta;
+    }
+  }
+  if (part === "legs") return;
+  if (part === "all") {
+    m.body.position.set(0, torsoPlacedY(m.body, 0), 0);
+    m.body.rotation.set(0, 0, 0);
+  }
+  const arm = Math.sin(stride) * STRIDE_ARM;
+  if (m.stick && m.blade && m.lArm && m.rArm && m.lFore && m.rFore) {
+    applyStickAim(m.stick, readyStickAim());
+    m.blade.rotation.set(0, 0, 0);
+    gripShaft(m.body, m.stick, m.lArm, m.lFore, m.rArm, m.rFore, m.layout, SKATER_GRIP_TOP, SKATER_GRIP_BOT, 0.24, 1.46, 0.06 + arm, -0.26, 1.46, 0.06 - arm, true, null, null, false, 1, 1);
+  }
+}
+
+/** Carry skate. `carry` blends the stride-knee pose in. 1 is the live carry block. */
+function poseCarrySkate(m: ResidualLimbs, stride: number, carry: number, part: "legs" | "all" = "all") {
+  const u = carry < 0 ? 0 : carry > 1 ? 1 : carry;
+  const sinL = Math.sin(stride);
+  const a = Math.sin(stride) * DEFAULT_SKATE_AMP;
+  const b = Math.sin(stride + Math.PI) * DEFAULT_SKATE_AMP;
+  const kneeA = 0.22 + Math.max(0, -a) * 1.15;
+  const kneeB = 0.22 + Math.max(0, -b) * 1.15;
+  const bootA = -0.1 - kneeA * 0.32 + Math.max(0, a) * 0.18;
+  const bootB = -0.1 - kneeB * 0.32 + Math.max(0, b) * 0.18;
+  const kneeL = strideKnee(sinL);
+  const kneeR = strideKnee(-sinL);
+  const thighL = strideThigh(kneeL);
+  const thighR = strideThigh(kneeR);
+  const mix = (from: number, to: number) => from + (to - from) * u;
+  if (m.lLeg) {
+    m.lLeg.position.set(-SKATER_HIP_X, SKATER_HIP_Y, 0);
+    m.lLeg.rotation.set(mix(a, thighL), 0, 0);
+  }
+  if (m.rLeg) {
+    m.rLeg.position.set(SKATER_HIP_X, SKATER_HIP_Y, 0);
+    m.rLeg.rotation.set(mix(b, thighR), 0, 0);
+  }
+  if (m.lShin) m.lShin.rotation.set(mix(kneeA, kneeL), 0, 0);
+  if (m.rShin) m.rShin.rotation.set(mix(kneeB, kneeR), 0, 0);
+  if (m.lBoot) m.lBoot.rotation.set(mix(bootA, -(CARRY_HIP + thighL + kneeL)), 0, 0);
+  if (m.rBoot) m.rBoot.rotation.set(mix(bootB, -(CARRY_HIP + thighR + kneeR)), 0, 0);
+  if (part === "legs") return;
+  m.body.position.set(0, torsoPlacedY(m.body, CARRY_DROP * u), 0);
+  m.body.rotation.set(CARRY_HIP * u, 0, 0);
+  const arm = Math.sin(stride) * STRIDE_ARM;
+  if (m.stick && m.blade && m.lArm && m.rArm && m.lFore && m.rFore) {
+    applyStickAim(m.stick, carryOwnStickAim());
+    m.blade.rotation.set(0, 0, 0);
+    gripShaft(m.body, m.stick, m.lArm, m.lFore, m.rArm, m.rFore, m.layout, SKATER_GRIP_TOP, SKATER_GRIP_BOT, 0.24, 1.46, 0.06 + arm, -0.26, 1.46, 0.06 - arm, true, null, null, false, 1, 1);
+  }
+}
+
+/** Dive legs, blended from the stride skate toward the dive tuck. */
+function poseDive(m: ResidualLimbs, diveU: number, stride: number, lean = 0, full = false) {
+  const a = Math.sin(stride) * DEFAULT_SKATE_AMP;
+  const b = Math.sin(stride + Math.PI) * DEFAULT_SKATE_AMP;
+  const mix = (from: number, to: number) => from + (to - from) * diveU;
+  const kneeL = 0.22 + Math.max(0, -a) * 1.15;
+  const kneeR = 0.22 + Math.max(0, -b) * 1.15;
+  const bootL = -0.1 - kneeL * 0.32 + Math.max(0, a) * 0.18;
+  const bootR = -0.1 - kneeR * 0.32 + Math.max(0, b) * 0.18;
+  if (m.lLeg) {
+    m.lLeg.position.set(-SKATER_HIP_X, SKATER_HIP_Y, 0);
+    m.lLeg.rotation.set(mix(a, DIVE_THIGH), 0, 0);
+  }
+  if (m.rLeg) {
+    m.rLeg.position.set(SKATER_HIP_X, SKATER_HIP_Y, 0);
+    m.rLeg.rotation.set(mix(b, DIVE_THIGH), 0, 0);
+  }
+  if (m.lShin) m.lShin.rotation.set(mix(kneeL, DIVE_KNEE), 0, 0);
+  if (m.rShin) m.rShin.rotation.set(mix(kneeR, DIVE_KNEE), 0, 0);
+  if (m.lBoot) m.lBoot.rotation.set(mix(bootL, DIVE_BOOT), 0, 0);
+  if (m.rBoot) m.rBoot.rotation.set(mix(bootR, DIVE_BOOT), 0, 0);
+  if (!full) return;
+  m.body.position.set(0, torsoPlacedY(m.body, DIVE_DROP * diveU), 0);
+  m.body.rotation.set(lean + (DIVE_PITCH - lean) * diveU, 0, 0);
+  if (m.lArm && m.rArm) {
+    m.lArm.rotation.set(-0.15, 0.4, 1.15);
+    m.rArm.rotation.set(-0.15, -0.4, -1.15);
+    if (m.lFore) m.lFore.rotation.set(-0.2, 0, 0);
+    if (m.rFore) m.rFore.rotation.set(-0.2, 0, 0);
+  }
+}
+
+/** Tumble tuck, then the rise back toward the carry stride when `rise` is set. */
+function poseTumble(m: ResidualLimbs, progress: number, stride: number, rise: boolean) {
+  const u = progress < 0 ? 0 : progress > 1 ? 1 : progress;
+  const tuck = u * u * (3 - 2 * u);
+  if (m.lLeg) {
+    m.lLeg.position.set(-SKATER_HIP_X, SKATER_HIP_Y, 0);
+    m.lLeg.rotation.set(0.05 + 0.8 * tuck, 0, -0.22 * tuck);
+  }
+  if (m.rLeg) {
+    m.rLeg.position.set(SKATER_HIP_X, SKATER_HIP_Y, 0);
+    m.rLeg.rotation.set(0.05 + 1.1 * tuck, 0, 0.28 * tuck);
+  }
+  if (m.lShin) m.lShin.rotation.set(0.25 + 0.45 * tuck, 0, 0);
+  if (m.rShin) m.rShin.rotation.set(0.25 + 0.6 * tuck, 0, 0);
+  if (m.lBoot) m.lBoot.rotation.set(-0.16 + 0.26 * tuck, 0, 0);
+  if (m.rBoot) m.rBoot.rotation.set(-0.16 + 0.28 * tuck, 0, 0);
+  if (!rise) return;
+  const back = struckRise(u);
+  const sinL = Math.sin(stride);
+  const kneeL = strideKnee(sinL);
+  const kneeR = strideKnee(-sinL);
+  const thighL = strideThigh(kneeL);
+  const thighR = strideThigh(kneeR);
+  const mix = (from: number, to: number) => from + (to - from) * back;
+  if (m.lLeg) {
+    m.lLeg.rotation.x = mix(m.lLeg.rotation.x, thighL);
+    m.lLeg.rotation.z = mix(m.lLeg.rotation.z, 0);
+  }
+  if (m.rLeg) {
+    m.rLeg.rotation.x = mix(m.rLeg.rotation.x, thighR);
+    m.rLeg.rotation.z = mix(m.rLeg.rotation.z, 0);
+  }
+  if (m.lShin) m.lShin.rotation.x = mix(m.lShin.rotation.x, kneeL);
+  if (m.rShin) m.rShin.rotation.x = mix(m.rShin.rotation.x, kneeR);
+  if (m.lBoot) m.lBoot.rotation.x = mix(m.lBoot.rotation.x, -(CARRY_HIP + thighL + kneeL));
+  if (m.rBoot) m.rBoot.rotation.x = mix(m.rBoot.rotation.x, -(CARRY_HIP + thighR + kneeR));
+}
+
+function poseCheckArms(m: ResidualLimbs, checkT: CheckTargets, side: 1 | -1) {
+  if (!m.lArm || !m.rArm || !m.lFore || !m.rFore || !m.stick || !m.root) return;
+  const w = checkT.influence;
+  const checkArm = side > 0 ? m.rArm : m.lArm;
+  const checkFore = side > 0 ? m.rFore : m.lFore;
+  const offArm = side > 0 ? m.lArm : m.rArm;
+  const offFore = side > 0 ? m.lFore : m.rFore;
+  const sockX = side > 0 ? 0.24 : -0.26;
+  const offX = side > 0 ? -0.26 : 0.24;
+  checkArm.position.set(sockX, 1.46, 0.06 + (checkT.armZ - 0.06) * w);
+  slerpRot(checkArm, checkT.armRx, checkT.armRy, checkT.armRz, w);
+  slerpRot(checkFore, checkT.foreRx, 0, 0, w);
+  offArm.position.set(offX, 1.46, 0.06);
+  slerpRot(offArm, 0.3, 0, -side * 0.35, w);
+  slerpRot(offFore, -0.55, 0, 0, w);
+  if (w > 0.4) poseStickOneHand(m.stick, m.root, offFore, m.layout);
+  if (offFore === m.rFore) orientTopHand(m.body, m.rFore, m.stick);
+  else releaseTopGlove(m.rFore, w);
+}
+
+/** Check delivery. `side` is -1 or 1. Influence blends the full drive onto the current limbs. */
+function poseCheckDeliver(m: ResidualLimbs, checkT: CheckTargets, side: 1 | -1, base: { pitch: number; drop: number; yaw: number; roll: number } | null, arms = true) {
+  const frontLeft = side < 0;
+  if (base) {
+    const ch = checkDeliverChannels(base.pitch, base.drop, base.yaw, base.roll, checkT);
+    m.body.position.x = 0;
+    m.body.position.y = torsoPlacedY(m.body, ch.drop);
+    m.body.position.z = ch.bz;
+    m.body.rotation.x = ch.pitch;
+    m.body.rotation.y = ch.yaw;
+    m.body.rotation.z = ch.roll;
+  }
+  if (m.lLeg && m.rLeg) {
+    const w = checkT.influence;
+    blendSkateLeg(m.lLeg, m.lShin, m.lBoot, -SKATER_HIP_X, frontLeft ? checkT.thighF : checkT.thighB, frontLeft ? checkT.kneeF : checkT.kneeB, frontLeft ? checkT.bootF : checkT.bootB, w);
+    blendSkateLeg(m.rLeg, m.rShin, m.rBoot, SKATER_HIP_X, frontLeft ? checkT.thighB : checkT.thighF, frontLeft ? checkT.kneeB : checkT.kneeF, frontLeft ? checkT.bootB : checkT.bootF, w);
+  }
+  if (arms) poseCheckArms(m, checkT, side);
+}
+
+/** Absorb into the receive crouch. Blends from the limbs already written. */
+function poseCheckReceive(m: ResidualLimbs, absorbK: number) {
+  const pitch = m.body.rotation.x;
+  const knee = 0.24 + (RECV_KNEE - 0.24) * absorbK;
+  const planted = checkPlant(pitch, knee, RECV_DORSI, 0, 0, m.torsoPivot);
+  const bootX = checkBoot(pitch, planted.thigh, knee, RECV_DORSI);
+  if (m.lLeg && m.rLeg) {
+    blendSkateLeg(m.lLeg, m.lShin, m.lBoot, -SKATER_HIP_X, planted.thigh, knee, bootX, absorbK);
+    blendSkateLeg(m.rLeg, m.rShin, m.rBoot, SKATER_HIP_X, planted.thigh, knee, bootX, absorbK);
+  }
+}
+
+function wristSequenceKey(progress: number, backhand: boolean): WristKey {
+  const u = progress < 0 ? 0 : progress > 1 ? 1 : progress;
+  const keys = backhand ? [BH_LOAD, BH_PLANT, BH_RELEASE, BH_FOLLOW] : [WRIST_LOAD, WRIST_PLANT, WRIST_RELEASE, WRIST_FOLLOW];
+  const span = (keys.length - 1) * u;
+  const i = Math.min(keys.length - 2, Math.floor(span));
+  return lerpWrist(keys[i]!, keys[i + 1]!, span - i);
+}
+
+/** Wrist load, plant, release, and follow. Live passes the key it already built. */
+function poseWristSequence(m: ResidualLimbs, key: WristKey, hipYaw: number, plantIce: boolean, part: "body" | "arms" | "all") {
+  if (part !== "arms") {
+    m.body.position.x = key.weight;
+    m.body.position.y = torsoPlacedY(m.body, key.drop);
+    m.body.position.z = (key.bz * (SKATER_HIP_Y - m.torsoPivot)) / SKATER_HIP_Y;
+    m.body.rotation.x = key.hip;
+    m.body.rotation.y = hipYaw;
+    m.body.rotation.z = 0;
+  }
+  if (part === "all" && m.lLeg && m.rLeg) {
+    const followFeet = key.flat && (Math.abs(key.bz) > 1e-3 || Math.abs(key.toeL) > 1e-3 || Math.abs(key.toeR) > 1e-3);
+    poseWristLeg(m.lLeg, m.lShin, m.lBoot, -SKATER_HIP_X, key.kneeL, key.hip, key.drop, key.flat, followFeet ? key.zL : null, followFeet ? key.toeL : 0, key.lift, m.torsoPivot);
+    poseWristLeg(m.rLeg, m.rShin, m.rBoot, SKATER_HIP_X, key.kneeR, key.hip, key.drop, key.flat, followFeet ? key.zR : null, followFeet ? key.toeR : 0, 0, m.torsoPivot);
+  }
+  if (part === "body" || !m.stick || !m.blade || !m.lArm || !m.rArm || !m.lFore || !m.rFore) return;
+  applyStickAim(m.stick, key.flat ? mountWristAim(m.body, wristStickAim(key)) : wristStickAim(key));
+  poseWristBlade(m.blade, m.stick, key.roll, key.yaw);
+  if (plantIce) seatBlade(m.stick, m.blade);
+  const followArms = key.lift > 0.35;
+  const wristHands = key.flat;
+  gripShaft(
+    m.body,
+    m.stick,
+    m.lArm,
+    m.lFore,
+    m.rArm,
+    m.rFore,
+    m.layout,
+    SKATER_GRIP_TOP,
+    key.botGrip,
+    0.24,
+    1.46,
+    0.06,
+    -0.26,
+    1.46,
+    0.06,
+    true,
+    followArms ? _followTopPole : wristHands ? _wristTopPole : null,
+    followArms ? _followBotPole : null,
+    wristHands || followArms,
+    wristHands ? (followArms ? 0.85 : WRIST_TOP_BEND) : 1,
+    followArms ? 0.12 : 1,
+  );
+}
+
+function slapSequenceSample(progress: number) {
+  const u = progress < 0 ? 0 : progress > 1 ? 1 : progress;
+  // slapStick returns nothing at wind <= 0.5. 0 is the plant; 0.5 is fully loaded; 1 is the end of the follow.
+  if (u <= 0.5) return slapStick(0.5 + u + 1e-4, 0);
+  return slapStick(1, 0.62 * (1 - (u - 0.5) / 0.5));
+}
+
+/** Slap load then follow. Live passes the slapStick sample it already built. */
+function poseSlapSequence(m: ResidualLimbs, slap: { key: WristKey; lock: boolean; bot: number; shR: { x: number; y: number; z: number }; wide: boolean }, part: "body" | "arms" | "all") {
+  if (part !== "arms") {
+    m.body.position.set(0, torsoPlacedY(m.body, slap.key.drop), slap.key.bz);
+    m.body.rotation.set(slap.key.hip, slap.key.open, 0);
+  }
+  if (part === "all" && m.lLeg && m.rLeg) {
+    poseSlapLeg(m.lLeg, m.lShin, m.lBoot, -SKATER_HIP_X, slap.key.kneeL, slap.key.hip, -1, slap.key.zL, slap.key.toeL, slap.key.abduct, slap.wide, slap.key.lift);
+    poseSlapLeg(m.rLeg, m.rShin, m.rBoot, SKATER_HIP_X, slap.key.kneeR, slap.key.hip, 1, slap.key.zR, slap.key.toeR, slap.key.abduct, slap.wide, 0);
+  }
+  if (part === "body" || !m.stick || !m.blade || !m.lArm || !m.rArm || !m.lFore || !m.rFore) return;
+  applyStickAim(m.stick, wristStickAim(slap.key));
+  poseWristBlade(m.blade, m.stick, slap.key.roll, slap.key.yaw);
+  seatBlade(m.stick, m.blade, slap.lock);
+  const followArms = slap.key.lift > 0.35;
+  gripShaft(
+    m.body,
+    m.stick,
+    m.lArm,
+    m.lFore,
+    m.rArm,
+    m.rFore,
+    m.layout,
+    SLAP_TOP,
+    slap.bot,
+    SLAP_SH_L.x,
+    SLAP_SH_L.y,
+    SLAP_SH_L.z,
+    slap.shR.x,
+    slap.shR.y,
+    slap.shR.z,
+    true,
+    followArms ? _followTopPole : _slapTopPole,
+    followArms ? _followBotPole : _slapBotPole,
+    true,
+    1,
+    followArms ? 0.12 : 1,
+  );
+}
+
+function previewLimbs(p: PreviewParts): ResidualLimbs {
+  return {
+    body: p.body,
+    lLeg: p.lLeg,
+    rLeg: p.rLeg,
+    lShin: p.lShin,
+    rShin: p.rShin,
+    lBoot: p.lBoot,
+    rBoot: p.rBoot,
+    lArm: p.lArm,
+    rArm: p.rArm,
+    lFore: p.lFore,
+    rFore: p.rFore,
+    stick: p.stick,
+    blade: p.blade,
+    layout: p.layout,
+    torsoPivot: p.torsoPivot,
+    root: p.root,
+  };
+}
+
+/** Procedural preview. Live play never calls this. Argument values come from the visualizer store. */
+export function applyFunctionPreview(id: string, p: PreviewParts): void {
+  const a = readViewerArgs(id);
+  if (p.rFore) resetTopGlove(p.rFore);
+  if (p.lFore) resetFistGlove(p.lFore);
+  if (id === "poseSkaterReady" && previewSkater(p)) {
+    // The live frame already wrote ready. Start from a hang so weight can blend into it.
+    relaxPreview(p);
+    poseSkaterReady(p.body, p.head, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot, p.lArm, p.rArm, p.lFore, p.rFore, p.stick, p.blade, p.layout, viewerNum(a, "weight", 1));
+    return;
+  }
+  if (id === "poseNeutralCarry" && previewSkater(p)) {
+    poseNeutralCarry(p.body, p.head, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot, p.lArm, p.rArm, p.lFore, p.rFore, p.stick, p.blade, p.layout, viewerNum(a, "weight", 1), viewerNum(a, "shX", 0), viewerNum(a, "armZ", 0));
+    return;
+  }
+  if (id === "poseBurstCarry" && previewSkater(p)) {
+    poseBurstCarry(p.body, p.head, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot, p.lArm, p.rArm, p.lFore, p.rFore, p.stick, p.blade, p.layout, viewerNum(a, "weight", 1), viewerNum(a, "stride", 0));
+    return;
+  }
+  if (id === "posePoke" && previewSkater(p)) {
+    previewPoke(p, viewerNum(a, "progress", 1));
+    return;
+  }
+  if (id === "poseWristLeg" && previewSkater(p)) {
+    previewWristPlant(p, a);
+    return;
+  }
+  if (id === "poseSlapLeg" && previewSkater(p)) {
+    previewSlapWind(p, a);
+    return;
+  }
+  if (id === "poseCheer" && previewSkater(p)) {
+    const celebrate = p.s.celebrate;
+    p.s.celebrate = viewerNum(a, "celebrate", 0);
+    try {
+      poseCheer(p.s, p.root, p.body, p.head, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot, p.lArm, p.rArm, p.lFore, p.rFore, p.stick, p.blade, p.layout);
+    } finally {
+      p.s.celebrate = celebrate;
+    }
+    return;
+  }
+  if (id === "posePuckDrop" && previewSkater(p)) {
+    posePuckDrop(p.body, p.head, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot, p.lArm, p.rArm, p.lFore, p.rFore, p.stick, p.blade, p.layout, viewerFlag(a, "keepStick", false));
+    return;
+  }
+  if (id === "poseFaceoffDraw" && previewSkater(p)) {
+    const faceX = world.faceX;
+    const faceZ = world.faceZ;
+    world.faceX = 0;
+    world.faceZ = 0;
+    try {
+      poseFaceoffDraw(p.body, p.head, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot, p.lArm, p.rArm, p.lFore, p.rFore, p.stick, p.blade, p.layout, p.root, viewerNum(a, "sweep", 0));
+    } finally {
+      world.faceX = faceX;
+      world.faceZ = faceZ;
+    }
+    return;
+  }
+  if (id === "poseBrawl" && previewSkater(p)) {
+    restHead(p.head);
+    p.body.rotation.set(0, 0, 0);
+    p.body.position.y = torsoPlacedY(p.body, 0);
+    const kind = viewerNum(a, "kind", 0) >= 0.5 ? 1 : 0;
+    poseBrawl(kind, viewerNum(a, "swing", 0.5), p.body, p.lArm, p.rArm, p.lFore, p.rFore, p.stick, p.root, p.layout, false);
+    p.lLeg.position.set(-0.18, 0.82, 0.04);
+    p.rLeg.position.set(0.18, 0.82, 0.04);
+    p.lLeg.rotation.set(0.32, 0, -0.04);
+    p.rLeg.rotation.set(0.32, 0, 0.04);
+    if (p.lShin) p.lShin.rotation.set(0.4, 0, 0);
+    if (p.rShin) p.rShin.rotation.set(0.4, 0, 0);
+    return;
+  }
+  if (previewSkater(p)) {
+    const m = previewLimbs(p);
+    if (id === "poseDefaultSkate") {
+      poseDefaultSkate(m, viewerNum(a, "stride", 0), false, "all");
+      return;
+    }
+    if (id === "poseCarrySkate") {
+      poseCarrySkate(m, viewerNum(a, "stride", 0), viewerNum(a, "carry", 1), "all");
+      return;
+    }
+    if (id === "poseDive") {
+      poseDive(m, viewerNum(a, "diveU", 1), viewerNum(a, "stride", 0), 0, true);
+      return;
+    }
+    if (id === "poseTumble") {
+      const progress = viewerNum(a, "progress", 0);
+      poseTumble(m, progress, viewerNum(a, "stride", 0), progress >= TUMBLE_UP);
+      return;
+    }
+    if (id === "poseCheckDeliver") {
+      const side: 1 | -1 = viewerNum(a, "side", 1) < 0 ? -1 : 1;
+      poseDefaultSkate(m, 0, false, "all");
+      const targets = checkTargets(side, CHECK_DOWN_S + CHECK_DRIVE_S, 1, m.torsoPivot);
+      targets.influence = viewerNum(a, "influence", 1);
+      poseCheckDeliver(m, targets, side, { pitch: 0, drop: 0, yaw: 0, roll: 0 }, true);
+      return;
+    }
+    if (id === "poseCheckReceive") {
+      const absorb = viewerNum(a, "absorb", 1);
+      poseDefaultSkate(m, 0, false, "legs");
+      const knee = 0.24 + (RECV_KNEE - 0.24) * absorb;
+      const planted = checkPlant(RECV_PITCH * absorb, knee, RECV_DORSI, 0, 0, m.torsoPivot);
+      const pitch = RECV_PITCH * absorb;
+      m.body.position.set(0, torsoPlacedY(m.body, planted.drop * absorb), -Math.sin(pitch) * (SKATER_HIP_Y - m.torsoPivot) * absorb);
+      m.body.rotation.set(pitch, 0, 0);
+      poseCheckReceive(m, absorb);
+      return;
+    }
+    if (id === "poseWristSequence") {
+      const key = wristSequenceKey(viewerNum(a, "progress", 0), viewerFlag(a, "backhand", false));
+      poseWristSequence(m, key, key.open, key.flat, "all");
+      return;
+    }
+    if (id === "poseSlapSequence") {
+      const slap = slapSequenceSample(viewerNum(a, "progress", 0));
+      if (slap) poseSlapSequence(m, slap, "all");
+      return;
+    }
+  }
+  if (id === "poseGoaliePads") {
+    const cover = p.s.coverPose;
+    const lPad = p.s.lPad;
+    const rPad = p.s.rPad;
+    const bank = p.s.bank;
+    p.s.coverPose = viewerNum(a, "cover", 0);
+    p.s.lPad = viewerNum(a, "lPad", 0.18);
+    p.s.rPad = viewerNum(a, "rPad", 0.18);
+    p.s.bank = viewerNum(a, "bank", 0);
+    try {
+      poseGoaliePads(p.s, p.root, p.body, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot);
+    } finally {
+      p.s.coverPose = cover;
+      p.s.lPad = lPad;
+      p.s.rPad = rPad;
+      p.s.bank = bank;
+    }
+    return;
+  }
+  if (id === "poseGoalieStance" && p.lArm && p.rArm) {
+    const cover = p.s.coverPose;
+    p.s.coverPose = viewerNum(a, "cover", 0);
+    try {
+      poseGoalieStance(p.s, p.lArm, p.rArm, p.lFore, p.rFore);
+    } finally {
+      p.s.coverPose = cover;
+    }
+    return;
+  }
+  if (id === "poseGoalieCheer" && p.lArm && p.rArm) {
+    const pump = viewerNum(a, "pump", 0.5);
+    const time = world.time;
+    const theta = Math.asin(Math.max(-1, Math.min(1, pump * 2 - 1)));
+    world.time = (theta - p.s.id) / 5.4;
+    try {
+      poseGoalieCheer(p.s, p.body, p.lArm, p.rArm, p.lFore, p.rFore, p.stick);
+    } finally {
+      world.time = time;
+    }
+    return;
+  }
+  if (id === "poseGoalieCover" && p.lArm && p.rArm) {
+    const cover = p.s.coverPose;
+    p.s.coverPose = viewerNum(a, "cover", 1);
+    try {
+      poseGoaliePads(p.s, p.root, p.body, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot);
+      poseGoalieCover(p.s, p.root, p.body, p.lLeg, p.rLeg, p.lArm, p.rArm, p.lFore, p.rFore, p.stick);
+    } finally {
+      p.s.coverPose = cover;
+    }
+    return;
+  }
+  if (id === "poseGoalieArms" && p.lArm && p.rArm) {
+    const cover = p.s.coverPose;
+    p.s.coverPose = viewerNum(a, "cover", 0);
+    try {
+      poseGoalieArms(p.s, p.lArm, p.rArm, p.lFore, p.rFore, p.s.coverPose);
+    } finally {
+      p.s.coverPose = cover;
+    }
+    return;
+  }
+  if (id === "poseGoalieZLimbs" && p.lLeg && p.rLeg && p.lShin && p.rShin) {
+    const midTorso = (31.5 * Math.PI) / 180;
+    poseGoalieZLimbs(p.root, p.body, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot, {
+      torso: viewerNum(a, "torso", midTorso),
+      thigh: viewerNum(a, "thigh", (58 * Math.PI) / 180),
+      shin: viewerNum(a, "shin", (54 * Math.PI) / 180),
+      abduct: viewerNum(a, "abduct", (30 * Math.PI) / 180),
+      shinOut: viewerNum(a, "shinOut", (16 * Math.PI) / 180),
+    }, viewerNum(a, "bank", 0));
+    return;
+  }
+  if (id === "poseGoalieZArms" && p.lArm && p.rArm && p.lFore && p.rFore) {
+    const kinds = ["upright", "perimeter", "mid", "butterfly"] as const;
+    const kind = kinds[Math.max(0, Math.min(3, Math.round(viewerNum(a, "kind", 2))))] ?? "mid";
+    poseGoalieZArms(kind, p.lArm, p.rArm, p.lFore, p.rFore, _goaliePalmAxis, _goalieBoardAxis);
+    return;
+  }
+  if (id === "poseGoalieButterflyLimbs" && p.lLeg && p.rLeg && p.lShin && p.rShin) {
+    const before = capturePose([p.body, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot]);
+    poseGoalieButterflyLimbs(p.root, p.body, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot);
+    blendPose(before, viewerNum(a, "progress", 1));
+    return;
+  }
+  if (id === "poseGoalieButterflyStanceLimbs" && p.lLeg && p.rLeg && p.lShin && p.rShin) {
+    poseGoalieButterflyStanceLimbs(p.root, p.body, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lBoot, p.rBoot, viewerNum(a, "bank", 0));
+    return;
+  }
+  if (id === "poseGoalieButterflyArms" && p.lArm && p.rArm && p.lFore && p.rFore) {
+    const before = capturePose([p.lArm, p.rArm, p.lFore, p.rFore]);
+    poseGoalieButterflyArms(p.lArm, p.rArm, p.lFore, p.rFore, _goaliePalmAxis, _goalieBoardAxis);
+    blendPose(before, viewerNum(a, "progress", 1));
+    return;
+  }
+  if (id === "poseGoaliePlay" && p.lArm && p.rArm && p.lFore && p.rFore && p.stick) {
+    poseGoaliePlay(p.lArm, p.lFore, p.rArm, p.rFore, p.stick, viewerNum(a, "puckX", 0), viewerNum(a, "puckZ", -1.2), viewerNum(a, "padFront", 0.42), _goaliePalmAxis, _goalieBoardAxis);
+    return;
+  }
+  if (id === "poseGoalieGetUp") {
+    const struck = p.s.struck;
+    const tumble = p.s.tumble;
+    const spin = p.s.tumbleSpin;
+    const progress = viewerNum(a, "p", 0.42);
+    p.s.tumble = 1;
+    p.s.tumbleSpin = 0;
+    // p = (1.68 - struck) / 1.52, so struck is the value poseGoalieGetUp already reads.
+    p.s.struck = 1.68 - progress * 1.52;
+    try {
+      poseGoalieGetUp(p.s, p.root, p.body, p.lLeg, p.rLeg, p.lShin, p.rShin, p.lArm, p.rArm, p.lFore, p.rFore, p.stick, p.lBoot, p.rBoot);
+    } finally {
+      p.s.struck = struck;
+      p.s.tumble = tumble;
+      p.s.tumbleSpin = spin;
+    }
+  }
+}
+
 export function PlayerMesh({
   index,
   kitId,
@@ -4466,8 +5314,6 @@ export function PlayerMesh({
     }
     if (wristLeft.current > 0) wristLeft.current = Math.max(0, wristLeft.current - Math.min(0.05, delta || 0));
     let wristKey: WristKey | null = null;
-    let wristIce = false;
-    let wristWatch: "puck" | "net" = "puck";
     const ownsPuck = world.puck.owner === index;
     if (forehandFollow) {
       const total = shotFollowTime(world.lastShotKind, world.lastShotSlap);
@@ -4485,8 +5331,6 @@ export function PlayerMesh({
           wristKey.flat = true;
         }
       } else wristKey = lerpWrist(WRIST_FOLLOW, settleKey, after.u);
-      wristIce = after.phase === "release" && !world.lastShotSlap;
-      wristWatch = "net";
     } else if (!wristBlocked && !slapRelease && !slapLoad && wristLeft.current > 0 && wristSpan.current > 0) {
       const elapsed = wristSpan.current - wristLeft.current;
       const after = wristAfter(elapsed, wristSpan.current);
@@ -4497,8 +5341,6 @@ export function PlayerMesh({
       if (after.phase === "release") wristKey = lerpWrist(from, releaseKey, after.u);
       else if (after.phase === "follow") wristKey = lerpWrist(releaseKey, followKey, after.u);
       else wristKey = lerpWrist(followKey, settleKey, after.u);
-      wristIce = after.phase === "release";
-      wristWatch = "net";
     } else if (!wristBlocked && !slapRelease && !slapLoad && follow <= 0.02 && wind > 0.04 && wind <= 0.5 && ownsPuck && !world.windupCancel) {
       const backhandWind = world.lastShotBackhand && s.id === world.userId;
       const loadKey = backhandWind ? BH_LOAD : WRIST_LOAD;
@@ -4507,8 +5349,6 @@ export function PlayerMesh({
       if (prep < 0.5) wristKey = lerpWrist(WRIST_CARRY, loadKey, prep / 0.5);
       else wristKey = lerpWrist(loadKey, plantKey, (prep - 0.5) / 0.5);
       wristFrom.current = wristKey;
-      wristIce = true;
-      wristWatch = "puck";
     }
     const wrist = wristKey !== null;
     const slap = !wrist && slapLoad ? slapStick(wind, follow) : null;
@@ -4540,13 +5380,7 @@ export function PlayerMesh({
       !rage;
     const pokeReach = !puckDrop && !faceoffTaker && !goalie && world.puck.owner !== index && (poke || puckNearSkater(s)) && !slapping && !wrist && !diving && !tumbling && !cheer && !rage && s.hit <= 0 && s.struck <= 0.2 && !brawlPoseFor(s.id);
     let pokePosed = false;
-    let pokeToeX = 0;
-    let pokeToeZ = 1;
     const pokeStop = puckDrop || faceoffTaker || diving || tumbling || cheer || !!rage || !!brawlPoseFor(s.id) || slapping || wrist || s.hit > 0 || s.struck > 0.2;
-    if (goalie && !tumbling && !rage) {
-      poseGoaliePads(s, g, body.current, lLeg.current, rLeg.current, lShin.current, rShin.current, lBoot.current, rBoot.current);
-    }
-    const butterflied = goalie && !tumbling && !goalieCheer && !rage && poseGoalieCover(s, g, body.current, lLeg.current, rLeg.current, lArm.current, rArm.current, lFore.current, rFore.current, stick.current);
     const checking = !goalie && s.hit > 0 && !diving && !tumbling && s.struck <= 0.2 && !slapping && !wrist && !rage;
     if (checking) {
       if (!checkWas.current) {
@@ -4558,284 +5392,31 @@ export function PlayerMesh({
     checkWas.current = checking;
     const checkT = checking ? checkTargets(checkSide.current, checkElapsed.current, s.hit, torsoPivot) : null;
     const absorbK = !goalie && !tumbling && !diving && !rage && !checking && s.struck > 0.2 ? smooth01(Math.min(1, (Math.min(s.struck, 1.15) - 0.2) / 0.7)) : 0;
-    if (body.current && !butterflied && !goalie && !rage) {
-      if (wrist && wristKey) {
-        body.current.position.x = wristKey.weight;
-        body.current.position.y = torsoPlacedY(body.current, wristKey.drop);
-        body.current.position.z = (wristKey.bz * (SKATER_HIP_Y - torsoPivot)) / SKATER_HIP_Y;
-        body.current.rotation.x = wristKey.hip;
-        body.current.rotation.y = wristHipYaw(s, wristKey.aim, wristKey.open);
-        body.current.rotation.z = 0;
-      } else if (slap) {
-        body.current.position.set(0, torsoPlacedY(body.current, slap.key.drop), slap.key.bz);
-        body.current.rotation.set(slap.key.hip, slap.key.open, 0);
-      } else {
-        body.current.position.x = 0;
-        let pitch = s.lean;
-        if (slapping) pitch += swingT * 0.28;
-        if (carryPose) pitch = CARRY_HIP;
-        if (pokeReach) pitch += POKE_HIP;
-        if (diving) pitch = s.lean + (DIVE_PITCH - s.lean) * diveU;
-        let roll = diving ? 0 : dekePose ? s.bank : s.deke > 0.02 ? dekeA * 0.16 : s.bank;
-        let drop = diving ? DIVE_DROP * diveU : carryPose ? CARRY_DROP : pokeReach ? pokeBodyDrop(pitch) : 0;
-        let yaw = slapping ? swingT * 0.4 : -DEKE_HIP_YAW * dekeAmt;
-        let bz = 0;
-        if (checkT) {
-          const w = checkT.influence;
-          pitch += (checkT.pitch - pitch) * w;
-          drop += (checkT.drop - drop) * w;
-          yaw += (checkT.yaw - yaw) * w;
-          roll *= 1 - w;
-          bz = checkT.bz * w;
-        } else if (absorbK > 0) {
-          pitch += (RECV_PITCH - pitch) * absorbK;
-          const knee = 0.24 + (RECV_KNEE - 0.24) * absorbK;
-          const planted = checkPlant(pitch, knee, RECV_DORSI, 0, 0, torsoPivot);
-          drop += (planted.drop - drop) * absorbK;
-          bz = -Math.sin(pitch) * (SKATER_HIP_Y - torsoPivot) * absorbK;
-          roll *= 1 - absorbK;
-        }
-        body.current.position.y = torsoPlacedY(body.current, drop);
-        body.current.position.z = bz;
-        body.current.rotation.x = pitch;
-        body.current.rotation.z = roll;
-        body.current.rotation.y = yaw;
-      }
-    }
-    const amp = s.kind === "goalie" ? 0.08 : 0.52;
-    const a = Math.sin(s.stride) * amp;
-    const b = Math.sin(s.stride + Math.PI) * amp;
-    if (!goalie && diving) {
-      const mix = (from: number, to: number) => from + (to - from) * diveU;
-      const kneeL = 0.22 + Math.max(0, -a) * 1.15;
-      const kneeR = 0.22 + Math.max(0, -b) * 1.15;
-      const bootL = -0.1 - kneeL * 0.32 + Math.max(0, a) * 0.18;
-      const bootR = -0.1 - kneeR * 0.32 + Math.max(0, b) * 0.18;
-      if (lLeg.current) {
-        lLeg.current.position.set(-SKATER_HIP_X, SKATER_HIP_Y, 0);
-        lLeg.current.rotation.set(mix(a, DIVE_THIGH), 0, 0);
-      }
-      if (rLeg.current) {
-        rLeg.current.position.set(SKATER_HIP_X, SKATER_HIP_Y, 0);
-        rLeg.current.rotation.set(mix(b, DIVE_THIGH), 0, 0);
-      }
-      if (lShin.current) lShin.current.rotation.set(mix(kneeL, DIVE_KNEE), 0, 0);
-      if (rShin.current) rShin.current.rotation.set(mix(kneeR, DIVE_KNEE), 0, 0);
-      if (lBoot.current) lBoot.current.rotation.set(mix(bootL, DIVE_BOOT), 0, 0);
-      if (rBoot.current) rBoot.current.rotation.set(mix(bootR, DIVE_BOOT), 0, 0);
-    } else if (tumbling && goalie) {
-      poseGoalieGetUp(s, g, body.current, lLeg.current, rLeg.current, lShin.current, rShin.current, lArm.current, rArm.current, lFore.current, rFore.current, stick.current, lBoot.current, rBoot.current);
-    } else if (tumbling) {
-      const u = tumbleU;
-      const tuck = u * u * (3 - 2 * u);
-      if (lLeg.current) {
-        lLeg.current.position.set(-SKATER_HIP_X, SKATER_HIP_Y, 0);
-        lLeg.current.rotation.set(0.05 + 0.8 * tuck, 0, -0.22 * tuck);
-      }
-      if (rLeg.current) {
-        rLeg.current.position.set(SKATER_HIP_X, SKATER_HIP_Y, 0);
-        rLeg.current.rotation.set(0.05 + 1.1 * tuck, 0, 0.28 * tuck);
-      }
-      if (lShin.current) lShin.current.rotation.set(0.25 + 0.45 * tuck, 0, 0);
-      if (rShin.current) rShin.current.rotation.set(0.25 + 0.6 * tuck, 0, 0);
-      if (lBoot.current) lBoot.current.rotation.set(-0.16 + 0.26 * tuck, 0, 0);
-      if (rBoot.current) rBoot.current.rotation.set(-0.16 + 0.28 * tuck, 0, 0);
-      if (tumbleRise && world.puck.owner === index) {
-        const rise = struckRise(u);
-        const sinL = Math.sin(s.stride);
-        const kneeL = strideKnee(sinL);
-        const kneeR = strideKnee(-sinL);
-        const thighL = strideThigh(kneeL);
-        const thighR = strideThigh(kneeR);
-        const mix = (from: number, to: number) => from + (to - from) * rise;
-        if (lLeg.current) {
-          lLeg.current.rotation.x = mix(lLeg.current.rotation.x, thighL);
-          lLeg.current.rotation.z = mix(lLeg.current.rotation.z, 0);
-        }
-        if (rLeg.current) {
-          rLeg.current.rotation.x = mix(rLeg.current.rotation.x, thighR);
-          rLeg.current.rotation.z = mix(rLeg.current.rotation.z, 0);
-        }
-        if (lShin.current) lShin.current.rotation.x = mix(lShin.current.rotation.x, kneeL);
-        if (rShin.current) rShin.current.rotation.x = mix(rShin.current.rotation.x, kneeR);
-        if (lBoot.current) lBoot.current.rotation.x = mix(lBoot.current.rotation.x, -(CARRY_HIP + thighL + kneeL));
-        if (rBoot.current) rBoot.current.rotation.x = mix(rBoot.current.rotation.x, -(CARRY_HIP + thighR + kneeR));
-      }
-    } else if (!goalie && wrist && wristKey && s.poke <= 0.04) {
-      const followFeet = wristKey.flat && (Math.abs(wristKey.bz) > 1e-3 || Math.abs(wristKey.toeL) > 1e-3 || Math.abs(wristKey.toeR) > 1e-3);
-      if (lLeg.current)
-        poseWristLeg(
-          lLeg.current,
-          lShin.current,
-          lBoot.current,
-          -SKATER_HIP_X,
-          wristKey.kneeL,
-          wristKey.hip,
-          wristKey.drop,
-          wristKey.flat,
-          followFeet ? wristKey.zL : null,
-          followFeet ? wristKey.toeL : 0,
-          wristKey.lift,
-          torsoPivot,
-        );
-      if (rLeg.current)
-        poseWristLeg(
-          rLeg.current,
-          rShin.current,
-          rBoot.current,
-          SKATER_HIP_X,
-          wristKey.kneeR,
-          wristKey.hip,
-          wristKey.drop,
-          wristKey.flat,
-          followFeet ? wristKey.zR : null,
-          followFeet ? wristKey.toeR : 0,
-          0,
-          torsoPivot,
-        );
-      if (wristKey.flat && body.current && lBoot.current && rBoot.current) {
-        body.current.updateWorldMatrix(true, true);
-        let low = Infinity;
-        const boots = wristKey.lift > 0.15 ? [rBoot.current] : [lBoot.current, rBoot.current];
-        for (const boot of boots) {
-          _corner.set(0, -0.1375, 0.02);
-          boot.localToWorld(_corner);
-          if (_corner.y < low) low = _corner.y;
-        }
-        if (low < Infinity) body.current.position.y -= low - 0.02;
-      }
-    } else if (!goalie && slap) {
-      if (lLeg.current) poseSlapLeg(lLeg.current, lShin.current, lBoot.current, -SKATER_HIP_X, slap.key.kneeL, slap.key.hip, -1, slap.key.zL, slap.key.toeL, slap.key.abduct, slap.wide, slap.key.lift);
-      if (rLeg.current) poseSlapLeg(rLeg.current, rShin.current, rBoot.current, SKATER_HIP_X, slap.key.kneeR, slap.key.hip, 1, slap.key.zR, slap.key.toeR, slap.key.abduct, slap.wide, 0);
-      if (body.current && lBoot.current && rBoot.current) {
-        body.current.updateWorldMatrix(true, true);
-        let low = Infinity;
-        let high = -Infinity;
-        for (const boot of [lBoot.current, rBoot.current]) {
-          _corner.set(0, -0.1375, 0.02);
-          boot.localToWorld(_corner);
-          if (_corner.y < low) low = _corner.y;
-          if (_corner.y > high) high = _corner.y;
-        }
-        if (slap.key.lift > 0.15 && rBoot.current) {
-          _corner.set(0, -0.1375, 0.02);
-          rBoot.current.localToWorld(_corner);
-          body.current.position.y -= _corner.y - 0.02;
-        } else if (low < Infinity) body.current.position.y -= (low + high) * 0.5 - 0.02;
-      }
-    } else if (!goalie && carryPose && s.poke <= 0.04) {
-      const sinL = Math.sin(s.stride);
-      const kneeL = strideKnee(sinL);
-      const kneeR = strideKnee(-sinL);
-      const thighL = strideThigh(kneeL);
-      const thighR = strideThigh(kneeR);
-      if (lLeg.current) {
-        lLeg.current.position.set(-SKATER_HIP_X, SKATER_HIP_Y, 0);
-        lLeg.current.rotation.set(thighL, 0, 0);
-      }
-      if (rLeg.current) {
-        rLeg.current.position.set(SKATER_HIP_X, SKATER_HIP_Y, 0);
-        rLeg.current.rotation.set(thighR, 0, 0);
-      }
-      if (lShin.current) lShin.current.rotation.set(kneeL, 0, 0);
-      if (rShin.current) rShin.current.rotation.set(kneeR, 0, 0);
-      if (lBoot.current) lBoot.current.rotation.set(-(CARRY_HIP + thighL + kneeL), 0, 0);
-      if (rBoot.current) rBoot.current.rotation.set(-(CARRY_HIP + thighR + kneeR), 0, 0);
-    } else if (pokeReach && body.current) {
-      const pitch = body.current.rotation.x;
-      const pivot = torsoPivotY(body.current);
-      const drop = body.current.position.y - pivot;
-      const frontThigh = plantThigh(pitch, drop, POKE_FRONT_KNEE, -1.85, -1.35, POKE_FRONT_FOOT_Z, pivot);
-      const backThigh = plantThigh(pitch, drop, POKE_BACK_KNEE, -0.35, 0.55, POKE_BACK_FOOT_Z, pivot);
-      if (lLeg.current) posePokeLeg(lLeg.current, lShin.current, lBoot.current, -SKATER_HIP_X, frontThigh, POKE_FRONT_KNEE, pitch);
-      if (rLeg.current) posePokeLeg(rLeg.current, rShin.current, rBoot.current, SKATER_HIP_X, backThigh, POKE_BACK_KNEE, pitch);
-    } else if (!goalie) {
-      if (lLeg.current) {
-        lLeg.current.position.set(-SKATER_HIP_X, SKATER_HIP_Y, 0);
-        lLeg.current.rotation.x = a;
-        lLeg.current.rotation.z = 0;
-      }
-      if (rLeg.current) {
-        rLeg.current.position.set(SKATER_HIP_X, SKATER_HIP_Y, 0);
-        rLeg.current.rotation.x = b;
-        rLeg.current.rotation.z = 0;
-      }
-      const kneeL = 0.22 + Math.max(0, -a) * 1.15;
-      const kneeR = 0.22 + Math.max(0, -b) * 1.15;
-      if (lShin.current) lShin.current.rotation.set(kneeL, 0, 0);
-      if (rShin.current) rShin.current.rotation.set(kneeR, 0, 0);
-      if (lBoot.current) lBoot.current.rotation.set(-0.1 - kneeL * 0.32 + Math.max(0, a) * 0.18, 0, 0);
-      if (rBoot.current) rBoot.current.rotation.set(-0.1 - kneeR * 0.32 + Math.max(0, b) * 0.18, 0, 0);
-      if (carryPose) {
-        const extraKnee = CARRY_KNEE - 0.22;
-        const bootDelta = CARRY_BOOT - (-0.1 - 0.22 * 0.32);
-        if (lShin.current) lShin.current.rotation.x += extraKnee;
-        if (rShin.current) rShin.current.rotation.x += extraKnee;
-        if (lBoot.current) lBoot.current.rotation.x += bootDelta;
-        if (rBoot.current) rBoot.current.rotation.x += bootDelta;
-      }
-    }
-    if (!goalie && lLeg.current && rLeg.current && (checkT || absorbK > 0)) {
-      const blendLeg = (leg: THREE.Group, shin: THREE.Group | null, boot: THREE.Group | null, x: number, thigh: number, knee: number, bootX: number, w: number) => {
-        leg.position.set(x, SKATER_HIP_Y, 0);
-        leg.rotation.x += (thigh - leg.rotation.x) * w;
-        leg.rotation.y = 0;
-        leg.rotation.z += (0 - leg.rotation.z) * w;
-        if (shin) {
-          shin.rotation.x += (knee - shin.rotation.x) * w;
-          shin.rotation.y = 0;
-          shin.rotation.z += (0 - shin.rotation.z) * w;
-        }
-        if (boot) {
-          boot.rotation.x += (bootX - boot.rotation.x) * w;
-          boot.rotation.y = 0;
-          boot.rotation.z += (0 - boot.rotation.z) * w;
-        }
-      };
-      if (checkT) {
-        const w = checkT.influence;
-        const frontLeft = checkSide.current < 0;
-        blendLeg(lLeg.current, lShin.current, lBoot.current, -SKATER_HIP_X, frontLeft ? checkT.thighF : checkT.thighB, frontLeft ? checkT.kneeF : checkT.kneeB, frontLeft ? checkT.bootF : checkT.bootB, w);
-        blendLeg(rLeg.current, rShin.current, rBoot.current, SKATER_HIP_X, frontLeft ? checkT.thighB : checkT.thighF, frontLeft ? checkT.kneeB : checkT.kneeF, frontLeft ? checkT.bootB : checkT.bootF, w);
-      } else {
-        const pitch = body.current ? body.current.rotation.x : RECV_PITCH;
-        const knee = 0.24 + (RECV_KNEE - 0.24) * absorbK;
-        const planted = checkPlant(pitch, knee, RECV_DORSI, 0, 0, torsoPivot);
-        const bootX = checkBoot(pitch, planted.thigh, knee, RECV_DORSI);
-        blendLeg(lLeg.current, lShin.current, lBoot.current, -SKATER_HIP_X, planted.thigh, knee, bootX, absorbK);
-        blendLeg(rLeg.current, rShin.current, rBoot.current, SKATER_HIP_X, planted.thigh, knee, bootX, absorbK);
-      }
+    // These poses are gallery stamps. Poke and a plain shot swing still use the body below.
+    const defaultSkate = !diving && !(tumbling && !goalie) && !carryPose && !(wrist && wristKey) && !slap && !slapping && !pokeReach && !checkT && absorbK <= 0;
+    const stampedPose = diving || (!!tumbling && !goalie) || carryPose || (!!wrist && !!wristKey) || !!slap || !!checkT || absorbK > 0 || defaultSkate;
+    if (body.current && !goalie && !rage && !stampedPose) {
+      body.current.position.x = 0;
+      let pitch = s.lean;
+      if (slapping) pitch += swingT * 0.28;
+      if (pokeReach) pitch += POKE_HIP;
+      const roll = s.deke > 0.02 ? dekeA * 0.16 : s.bank;
+      const drop = pokeReach ? pokeBodyDrop(pitch) : 0;
+      const yaw = slapping ? swingT * 0.4 : 0;
+      body.current.position.y = torsoPlacedY(body.current, drop);
+      body.current.position.z = 0;
+      body.current.rotation.x = pitch;
+      body.current.rotation.z = roll;
+      body.current.rotation.y = yaw;
     }
     if (!goalie && rFore.current) resetTopGlove(rFore.current);
     if (!goalie && lFore.current) resetFistGlove(lFore.current);
-    if (lArm.current && rArm.current && !butterflied && !rage) {
-      if (goalieCheer && body.current) {
-        poseGoalieCheer(s, body.current, lArm.current, rArm.current, lFore.current, rFore.current, stick.current);
-      } else if (s.dive > 0.04 && !goalie) {
-        lArm.current.rotation.set(-0.15, 0.4, 1.15);
-        rArm.current.rotation.set(-0.15, -0.4, -1.15);
-        if (lFore.current) lFore.current.rotation.set(-0.2, 0, 0);
-        if (rFore.current) rFore.current.rotation.set(-0.2, 0, 0);
-      } else if (goalie && !tumbling) {
-        poseGoalieStance(s, lArm.current, rArm.current, lFore.current, rFore.current);
-      } else if (!goalie && stick.current && body.current && lFore.current && rFore.current) {
+    if (lArm.current && rArm.current && !rage && !(s.dive > 0.04 && !goalie)) {
+      if (!goalie && stick.current && body.current && lFore.current && rFore.current) {
         const hasPuck = world.puck.owner === index;
         const reach = !hasPuck && (poke || puckNearSkater(s));
-        if (fallHand) {
-          lArm.current.position.set(-0.26, 1.46, 0.06);
-          rArm.current.position.set(0.24, 1.46, 0.06);
-          lArm.current.rotation.set(0.7, -0.25, 0.15);
-          rArm.current.rotation.set(-0.45, 0.35, -0.4);
-          lFore.current.rotation.set(-0.85, 0, 0);
-          rFore.current.rotation.set(-0.55, 0, 0);
-        } else if (wrist && wristKey && bladeGrp.current) {
-          applyStickAim(stick.current, wristKey.flat ? mountWristAim(body.current, wristStickAim(wristKey)) : wristStickAim(wristKey));
-          poseWristBlade(bladeGrp.current, stick.current, wristKey.roll, wristKey.yaw);
-          if (wristIce) seatBlade(stick.current, bladeGrp.current);
-        } else if (slap && bladeGrp.current) {
-          applyStickAim(stick.current, wristStickAim(slap.key));
-          poseWristBlade(bladeGrp.current, stick.current, slap.key.roll, slap.key.yaw);
-          seatBlade(stick.current, bladeGrp.current, slap.lock);
+        if (fallHand || (wrist && wristKey) || slap) {
+          // Fall, wrist, and slap joints come from the gallery stamp.
         } else if (slapping) applyStickAim(stick.current, shotStickAim(swingT));
         else if (pokeReach) {
           body.current.updateWorldMatrix(true, false);
@@ -4849,8 +5430,6 @@ export function PlayerMesh({
           g.worldToLocal(_ikTo);
           const aim = pokeStickAim(shX, shY, shZ, _ikTo.x, _ikTo.z);
           applyStickAim(stick.current, aim);
-          pokeToeX = aim.blade[0];
-          pokeToeZ = aim.blade[2];
           pokePosed = true;
         } else if (tumbleRise && hasPuck) applyStickAim(stick.current, carryOwnStickAim());
         else if (tumbleRise) applyStickAim(stick.current, readyStickAim());
@@ -4859,7 +5438,7 @@ export function PlayerMesh({
         else if (!(puckDrop && !faceoffTaker) && !poseHasJoint(namedPoseFor(s, index), "stick")) {
           applyStickAim(stick.current, readyStickAim());
         }
-        if (!fallHand && !wrist && !slapping && !hasPuck && !reach) {
+        if (!stampedPose && !fallHand && !wrist && !slapping && !hasPuck && !reach) {
           stick.current.updateWorldMatrix(true, false);
           body.current.updateWorldMatrix(true, false);
           _handTop.set(0, layout.len * SKATER_GRIP_TOP, 0);
@@ -4870,83 +5449,27 @@ export function PlayerMesh({
           bodyToLocal(body.current, _handBot);
           gripSkaterHand(body.current, rArm.current, rFore.current, 0.24, 1.46, 0.06, _handTop.x, _handTop.y, _handTop.z, 1, true, stick.current);
           gripSkaterHand(body.current, lArm.current, lFore.current, -0.26, 1.46, 0.06, _handBot.x, _handBot.y, _handBot.z, -1, true);
-        } else if (!fallHand) {
+        } else if (!stampedPose && !fallHand && !wrist && !slap) {
           stick.current.updateWorldMatrix(true, false);
           body.current.updateWorldMatrix(true, false);
-          _handTop.set(0, layout.len * (slap ? SLAP_TOP : SKATER_GRIP_TOP), 0);
+          _handTop.set(0, layout.len * SKATER_GRIP_TOP, 0);
           stick.current.localToWorld(_handTop);
           bodyToLocal(body.current, _handTop);
-          _handBot.set(0, layout.len * (wrist && wristKey ? wristKey.botGrip : slap ? slap.bot : SKATER_GRIP_BOT), 0);
+          _handBot.set(0, layout.len * SKATER_GRIP_BOT, 0);
           stick.current.localToWorld(_handBot);
           bodyToLocal(body.current, _handBot);
           const armOpp = carryPose && s.poke <= 0.04 ? Math.sin(s.stride) * STRIDE_ARM : 0;
           const shX = -DEKE_SHOULDER * dekeAmt;
-          const handsOn = carryPose || wrist || !!slap || (tumbleRise && hasPuck);
-          const wristHands = !!(wrist && wristKey && wristKey.flat);
-          const followArms = (!!slap && slap.key.lift > 0.35) || (!!wristKey && wristKey.lift > 0.35);
-          const pokeArm = poke && reach && !slapping && !wrist && !tumbleRise && !checkT;
-          if (pokeArm) posePokeReachArms(body.current, lArm.current, lFore.current, rArm.current, rFore.current, stick.current, layout);
-          else gripSkaterHand(
-            body.current,
-            rArm.current,
-            rFore.current,
-            slap ? SLAP_SH_L.x : 0.24 + shX,
-            slap ? SLAP_SH_L.y : 1.46,
-            slap ? SLAP_SH_L.z : 0.06 + armOpp,
-            _handTop.x,
-            _handTop.y,
-            _handTop.z,
-            1,
-            handsOn,
-            stick.current,
-            followArms ? _followTopPole : slap ? _slapTopPole : wristHands ? _wristTopPole : null,
-            !!slap || wristHands || followArms,
-            wristHands ? (followArms ? 0.85 : WRIST_TOP_BEND) : 1,
-          );
-          if (!pokeArm && reach && !slapping && !wrist && !tumbleRise && !checkT) hangSkaterArm(lArm.current, lFore.current, -1, 0.25);
-          else if (!pokeArm)
-            gripSkaterHand(
-              body.current,
-              lArm.current,
-              lFore.current,
-              slap ? slap.shR.x : -0.26 + shX,
-              slap ? slap.shR.y : 1.46,
-              slap ? slap.shR.z : 0.06 - armOpp,
-              _handBot.x,
-              _handBot.y,
-              _handBot.z,
-              -1,
-              handsOn,
-              null,
-              followArms ? _followBotPole : slap ? _slapBotPole : null,
-              !!slap || wristHands || followArms,
-              followArms ? 0.12 : 1,
-            );
+          const handsOn = carryPose || (tumbleRise && hasPuck);
+          gripSkaterHand(body.current, rArm.current, rFore.current, 0.24 + shX, 1.46, 0.06 + armOpp, _handTop.x, _handTop.y, _handTop.z, 1, handsOn, stick.current);
+          if (reach && !slapping && !tumbleRise && !checkT) hangSkaterArm(lArm.current, lFore.current, -1, 0.25);
+          else gripSkaterHand(body.current, lArm.current, lFore.current, -0.26 + shX, 1.46, 0.06 - armOpp, _handBot.x, _handBot.y, _handBot.z, -1, handsOn, null);
         }
-        if (checkT && lFore.current && rFore.current) {
-          const w = checkT.influence;
-          const side = checkSide.current;
-          const checkArm = side > 0 ? rArm.current : lArm.current;
-          const checkFore = side > 0 ? rFore.current : lFore.current;
-          const offArm = side > 0 ? lArm.current : rArm.current;
-          const offFore = side > 0 ? lFore.current : rFore.current;
-          const sockX = side > 0 ? 0.24 : -0.26;
-          const offX = side > 0 ? -0.26 : 0.24;
-          checkArm.position.set(sockX, 1.46, 0.06 + (checkT.armZ - 0.06) * w);
-          slerpRot(checkArm, checkT.armRx, checkT.armRy, checkT.armRz, w);
-          slerpRot(checkFore, checkT.foreRx, 0, 0, w);
-          offArm.position.set(offX, 1.46, 0.06);
-          slerpRot(offArm, 0.3, 0, -side * 0.35, w);
-          slerpRot(offFore, -0.55, 0, 0, w);
-          if (w > 0.4) poseStickOneHand(stick.current, g, offFore, layout);
-          if (offFore === rFore.current && body.current && stick.current) orientTopHand(body.current, rFore.current, stick.current);
-          else releaseTopGlove(rFore.current, w);
-        }
+
       }
     }
-    if (stick.current && !butterflied && !rage && !goalieCheer) {
+    if (stick.current && !rage && !goalieCheer) {
       if (goalie && !tumbling) {
-        poseGoalieStick(stick.current, s.coverPose, s, rArm.current, rFore.current);
         // Both hands are on this shaft. A rotation lift would pull the catcher off it.
         if (!goaliePlaysPuck(s)) keepGoalieStickOnIce(stick.current);
         const ice = stick.current.getObjectByName("goalieIce");
@@ -4956,8 +5479,6 @@ export function PlayerMesh({
         }
       } else if (s.dive > 0.04) {
         applyStickAim(stick.current, carryStickAim());
-      } else if (!goalie && fallHand && lFore.current) {
-        poseStickOneHand(stick.current, g, lFore.current, layout);
       }
     }
     if (!goalie && shaftHold.current && bladeGrp.current && knobRef.current && stick.current) {
@@ -4966,8 +5487,7 @@ export function PlayerMesh({
       shaftHold.current.position.set(0, layout.len * 0.5, 0);
       shaftHold.current.scale.set(1, layout.len, 1);
       bladeGrp.current.visible = true;
-      if (pokePosed) posePokeBlade(bladeGrp.current, stick.current, pokeToeX, pokeToeZ);
-      else if (!poseHasJoint(namedPoseFor(s, index), "bladeGrp") && (tumbling || (!wrist && !slap))) {
+      if (!poseHasJoint(namedPoseFor(s, index), "bladeGrp") && (tumbling || (!wrist && !slap))) {
         const bladeYaw = !tumbling && (dekePose || sidePose) ? -DEKE_BLADE_YAW * dekeAmt : 0;
         bladeGrp.current.rotation.set(0, bladeYaw, 0);
       }
@@ -4985,27 +5505,6 @@ export function PlayerMesh({
     const lLegM = lLeg.current;
     const rLegM = rLeg.current;
     if (!goalie && bodyM && stickM && bladeM && lArmM && rArmM && lForeM && rForeM && lLegM && rLegM) {
-      if (poke && pokePosed) {
-        posePoke(
-          bodyM,
-          head.current,
-          lArmM,
-          lForeM,
-          lGlove.current,
-          rArmM,
-          rForeM,
-          rGlove.current,
-          lLegM,
-          lShin.current,
-          lBoot.current,
-          rLegM,
-          rShin.current,
-          rBoot.current,
-          stickM,
-          shaftHold.current,
-          bladeM,
-        );
-      }
       if (pokePosed) {
         const snap = pokeSnap.current ?? (pokeSnap.current = freshPokeSnap());
         snap.stickQ.copy(stickM.quaternion);
@@ -5077,16 +5576,13 @@ export function PlayerMesh({
         poseGloveAt(body.current, lArm.current, lFore.current, -0.26, 1.46, 0.06, -0.32, 1.94, 0.16, -1);
         poseGloveAt(body.current, rArm.current, rFore.current, 0.24, 1.46, 0.06, 0.28, 1.9, 0.18, 1);
         if (!goalie && stick.current) poseStickOneHand(stick.current, g, lFore.current, layout);
-      } else {
-        poseBrawl(bp.kind, bp.swing, body.current, lArm.current, rArm.current, lFore.current, rFore.current, stick.current, g, layout, goalie);
-        if (!goalie && lLeg.current && rLeg.current) {
-          lLeg.current.position.set(-0.18, 0.82, 0.04);
-          rLeg.current.position.set(0.18, 0.82, 0.04);
-          lLeg.current.rotation.set(0.32, 0, -0.04);
-          rLeg.current.rotation.set(0.32, 0, 0.04);
-          if (lShin.current) lShin.current.rotation.set(0.4, 0, 0);
-          if (rShin.current) rShin.current.rotation.set(0.4, 0, 0);
-        }
+      } else if (!goalie && lLeg.current && rLeg.current) {
+        lLeg.current.position.set(-0.18, 0.82, 0.04);
+        rLeg.current.position.set(0.18, 0.82, 0.04);
+        lLeg.current.rotation.set(0.32, 0, -0.04);
+        rLeg.current.rotation.set(0.32, 0, 0.04);
+        if (lShin.current) lShin.current.rotation.set(0.4, 0, 0);
+        if (rShin.current) rShin.current.rotation.set(0.4, 0, 0);
       }
     }
     if (ring.current) {
@@ -5102,312 +5598,54 @@ export function PlayerMesh({
         else ring.current.position.set(0, 0, 0);
       }
     }
-    if (!goalie && head.current) {
-      if (checkT) {
-        const w = checkT.influence;
-        const baseRx = carryPose ? -CARRY_HIP * 0.5 : 0;
-        head.current.position.set(0, 1.54, 0.02 + (checkT.headZ - 0.02) * w);
-        head.current.rotation.order = "XYZ";
-        head.current.rotation.set(baseRx + (checkT.headRx - baseRx) * w, 0, 0);
-      } else if (absorbK > 0) {
-        head.current.position.set(0, 1.54, 0.02);
-        head.current.rotation.order = "XYZ";
-        head.current.rotation.set(0, 0, 0);
-      } else if (wrist && wristKey && body.current) {
-        head.current.position.set(0, 1.54, 0.02);
-        if (wristWatch === "puck") watchPoint(head.current, body.current, world.puck.x, world.puck.y, world.puck.z);
-        else watchPoint(head.current, body.current, attackDir(s.side) * GOAL_LINE_X, GOAL_H * 0.45, 0);
-        head.current.rotation.x = Math.min(head.current.rotation.x, WRIST_HEAD_DOWN);
-      } else if (slap && slapRelease && body.current) {
-        head.current.position.set(0, 1.54, 0.02);
-        watchPoint(head.current, body.current, attackDir(s.side) * GOAL_LINE_X, GOAL_H * 0.45, 0);
-        head.current.rotation.x = Math.min(head.current.rotation.x, WRIST_HEAD_DOWN);
-      } else if ((dekePose || sidePose) && body.current) {
-        head.current.position.set(0, 1.54, 0.02);
-        watchPoint(head.current, body.current, attackDir(s.side) * GOAL_LINE_X, GOAL_H * 0.45, 0);
-      } else {
-        head.current.position.set(0, 1.54, 0.02);
-        head.current.rotation.order = "XYZ";
-        head.current.rotation.y = 0;
-        head.current.rotation.z = 0;
-        head.current.rotation.x = carryPose ? -CARRY_HIP * 0.5 : 0;
+    if (!goalie && head.current && !stampedPose) {
+      head.current.position.set(0, 1.54, 0.02);
+      head.current.rotation.order = "XYZ";
+      head.current.rotation.y = 0;
+      head.current.rotation.z = 0;
+      head.current.rotation.x = 0;
+    }
+    // Visualizer only. Live play leaves this null and still stamps below.
+    const previewId = functionViewerPreview(index);
+    const showPreview = previewId !== null && goalie === functionViewerGoalie();
+    if (!showPreview) {
+      const stamped = stampPoseOverride(index, s, poseGroups());
+      if (
+        stamped &&
+        pokePosed &&
+        pokeSnap.current &&
+        stick.current &&
+        bladeGrp.current &&
+        rArm.current &&
+        rFore.current &&
+        lArm.current &&
+        lFore.current &&
+        body.current &&
+        lLeg.current &&
+        rLeg.current
+      ) {
+        const snap = pokeSnap.current;
+        snap.stickQ.copy(stick.current.quaternion);
+        snap.stickP.copy(stick.current.position);
+        snap.bladeQ.copy(bladeGrp.current.quaternion);
+        snap.topQ.copy(rArm.current.quaternion);
+        snap.topF.copy(rFore.current.quaternion);
+        snap.botQ.copy(lArm.current.quaternion);
+        snap.botF.copy(lFore.current.quaternion);
+        snap.topP.copy(rArm.current.position);
+        snap.botP.copy(lArm.current.position);
+        snap.pitch = body.current.rotation.x;
+        snap.drop = body.current.position.y;
+        snap.lThigh = lLeg.current.rotation.x;
+        snap.rThigh = rLeg.current.rotation.x;
+        snap.lKnee = lShin.current ? lShin.current.rotation.x : 0;
+        snap.rKnee = rShin.current ? rShin.current.rotation.x : 0;
+        snap.lBoot = lBoot.current ? lBoot.current.rotation.x : 0;
+        snap.rBoot = rBoot.current ? rBoot.current.rotation.x : 0;
       }
     }
-    const neutralW =
-      carryPose && s.burst <= 0 && s.poke <= 0.04 && s.hit <= 0 && !puckDrop && pokeLeft.current <= 0
-        ? neutralCarryBlend(s.deke, s.stickPull)
-        : 0;
-    if (
-      neutralW > 0 &&
-      body.current &&
-      stick.current &&
-      bladeGrp.current &&
-      lArm.current &&
-      rArm.current &&
-      lFore.current &&
-      rFore.current &&
-      lLeg.current &&
-      rLeg.current
-    ) {
-      poseNeutralCarry(
-        body.current,
-        head.current,
-        lLeg.current,
-        rLeg.current,
-        lShin.current,
-        rShin.current,
-        lBoot.current,
-        rBoot.current,
-        lArm.current,
-        rArm.current,
-        lFore.current,
-        rFore.current,
-        stick.current,
-        bladeGrp.current,
-        layout,
-        neutralW,
-        -DEKE_SHOULDER * dekeAmt,
-        Math.sin(s.stride) * STRIDE_ARM,
-      );
-    }
-    const burstW = goalie ? 0 : burstPoseWeight(s.id);
-    const burstPose =
-      burstW > 0 &&
-      carryPose &&
-      s.deke <= 0.02 &&
-      Math.abs(s.stickPull) <= 0.02 &&
-      s.poke <= 0.04 &&
-      s.hit <= 0 &&
-      !puckDrop &&
-      pokeLeft.current <= 0;
-    if (
-      burstPose &&
-      body.current &&
-      stick.current &&
-      bladeGrp.current &&
-      lArm.current &&
-      rArm.current &&
-      lFore.current &&
-      rFore.current &&
-      lLeg.current &&
-      rLeg.current
-    ) {
-      poseBurstCarry(
-        body.current,
-        head.current,
-        lLeg.current,
-        rLeg.current,
-        lShin.current,
-        rShin.current,
-        lBoot.current,
-        rBoot.current,
-        lArm.current,
-        rArm.current,
-        lFore.current,
-        rFore.current,
-        stick.current,
-        bladeGrp.current,
-        layout,
-        burstW,
-        s.stride,
-      );
-    }
-    const readyHold =
-      s.kind !== "goalie" &&
-      world.puck.owner !== index &&
-      !(world.faceoff && world.faceoffPhase !== "live") &&
-      !carryPose &&
-      s.deke <= 0.02 &&
-      Math.abs(s.stickPull) <= 0.02 &&
-      !poke &&
-      !puckNearSkater(s) &&
-      s.hit <= 0 &&
-      !slapping &&
-      !wrist &&
-      s.dive <= 0.04 &&
-      !tumbling &&
-      !brawlPoseFor(s.id) &&
-      s.celebrate <= 0.05 &&
-      !rage &&
-      s.struck <= 0.2 &&
-      pokeLeft.current <= 0;
-    const readyW = readyHold ? skaterReadyWeight(Math.hypot(s.vx, s.vz)) : 0;
-    if (
-      readyW > 0 &&
-      body.current &&
-      stick.current &&
-      bladeGrp.current &&
-      lArm.current &&
-      rArm.current &&
-      lFore.current &&
-      rFore.current &&
-      lLeg.current &&
-      rLeg.current
-    ) {
-      poseSkaterReady(
-        body.current,
-        head.current,
-        lLeg.current,
-        rLeg.current,
-        lShin.current,
-        rShin.current,
-        lBoot.current,
-        rBoot.current,
-        lArm.current,
-        rArm.current,
-        lFore.current,
-        rFore.current,
-        stick.current,
-        bladeGrp.current,
-        layout,
-        readyW,
-      );
-    }
-    if (
-      puckDrop &&
-      !faceoffTaker &&
-      body.current &&
-      stick.current &&
-      bladeGrp.current &&
-      lArm.current &&
-      rArm.current &&
-      lFore.current &&
-      rFore.current &&
-      lLeg.current &&
-      rLeg.current
-    ) {
-      posePuckDrop(
-        body.current,
-        head.current,
-        lLeg.current,
-        rLeg.current,
-        lShin.current,
-        rShin.current,
-        lBoot.current,
-        rBoot.current,
-        lArm.current,
-        rArm.current,
-        lFore.current,
-        rFore.current,
-        stick.current,
-        bladeGrp.current,
-        layout,
-        poseHasJoint(namedPoseFor(s, index), "stick"),
-      );
-    }
-    if (
-      faceoffTaker &&
-      body.current &&
-      stick.current &&
-      bladeGrp.current &&
-      lArm.current &&
-      rArm.current &&
-      lFore.current &&
-      rFore.current &&
-      lLeg.current &&
-      rLeg.current
-    ) {
-      poseFaceoffDraw(
-        body.current,
-        head.current,
-        lLeg.current,
-        rLeg.current,
-        lShin.current,
-        rShin.current,
-        lBoot.current,
-        rBoot.current,
-        lArm.current,
-        rArm.current,
-        lFore.current,
-        rFore.current,
-        stick.current,
-        bladeGrp.current,
-        layout,
-        g,
-        faceoffDrawSweep(),
-      );
-    }
-    if (
-      cheer &&
-      s.hit <= 0 &&
-      !tumbling &&
-      s.struck <= 0.2 &&
-      !brawlPoseFor(s.id) &&
-      !rage &&
-      s.dive <= 0.04 &&
-      body.current &&
-      stick.current &&
-      bladeGrp.current &&
-      lArm.current &&
-      rArm.current &&
-      lFore.current &&
-      rFore.current &&
-      lLeg.current &&
-      rLeg.current
-    ) {
-      poseCheer(
-        s,
-        g,
-        body.current,
-        head.current,
-        lLeg.current,
-        rLeg.current,
-        lShin.current,
-        rShin.current,
-        lBoot.current,
-        rBoot.current,
-        lArm.current,
-        rArm.current,
-        lFore.current,
-        rFore.current,
-        stick.current,
-        bladeGrp.current,
-        layout,
-      );
-    }
-    const stamped = stampPoseOverride(index, s, poseGroups());
-    if (
-      stamped &&
-      pokePosed &&
-      pokeSnap.current &&
-      stick.current &&
-      bladeGrp.current &&
-      rArm.current &&
-      rFore.current &&
-      lArm.current &&
-      lFore.current &&
-      body.current &&
-      lLeg.current &&
-      rLeg.current
-    ) {
-      const snap = pokeSnap.current;
-      snap.stickQ.copy(stick.current.quaternion);
-      snap.stickP.copy(stick.current.position);
-      snap.bladeQ.copy(bladeGrp.current.quaternion);
-      snap.topQ.copy(rArm.current.quaternion);
-      snap.topF.copy(rFore.current.quaternion);
-      snap.botQ.copy(lArm.current.quaternion);
-      snap.botF.copy(lFore.current.quaternion);
-      snap.topP.copy(rArm.current.position);
-      snap.botP.copy(lArm.current.position);
-      snap.pitch = body.current.rotation.x;
-      snap.drop = body.current.position.y;
-      snap.lThigh = lLeg.current.rotation.x;
-      snap.rThigh = rLeg.current.rotation.x;
-      snap.lKnee = lShin.current ? lShin.current.rotation.x : 0;
-      snap.rKnee = rShin.current ? rShin.current.rotation.x : 0;
-      snap.lBoot = lBoot.current ? lBoot.current.rotation.x : 0;
-      snap.rBoot = rBoot.current ? rBoot.current.rotation.x : 0;
-    }
-    if (rSleeve.current) rSleeve.current.rotation.y = !goalie && wrist && wristKey?.flat ? Math.PI / 2 : 0;
-    if (rForeSleeve.current) {
-      if (!goalie && wrist && wristKey?.flat && rFore.current) {
-        // Upper blue is arm-local +X after the sleeve yaw. Match the forearm's +Z to it.
-        _ikInv.copy(rFore.current.quaternion).invert();
-        _ikN.set(1, 0, 0).applyQuaternion(_ikInv);
-        rForeSleeve.current.rotation.y = Math.atan2(_ikN.x, _ikN.z);
-      } else rForeSleeve.current.rotation.y = 0;
-    }
+    if (rSleeve.current) rSleeve.current.rotation.y = 0;
+    if (rForeSleeve.current) rForeSleeve.current.rotation.y = 0;
     if (shadow.current || ring.current) playerShadowCom(body.current ?? g, _shadowCom);
     if (shadow.current) plantRinkShadowAt(shadow.current, _shadowCom.x, _shadowCom.z, goalie ? 1.14 : 1);
     if (ring.current) {
@@ -5420,7 +5658,45 @@ export function PlayerMesh({
     // Skater rage blends rage1 into rage2. A goalie smash blends goalieRage1 into goalieRage2.
     // A scored-on goalie with no smash clock stamps goalieRage1, then goalieRage2, and does not blend.
     // Puck possess blends puckPossess1 into puckPossess2 on the stride clock.
-    stampPoseOverride(index, s, poseGroups());
+    // A selected visualizer function is the last joint write instead, so the stamp cannot hide it.
+    if (showPreview && previewId && body.current) {
+      runFunctionPreview(previewId, {
+        s,
+        root: g,
+        body: body.current,
+        head: head.current,
+        lLeg: lLeg.current,
+        rLeg: rLeg.current,
+        lShin: lShin.current,
+        rShin: rShin.current,
+        lBoot: lBoot.current,
+        rBoot: rBoot.current,
+        lArm: lArm.current,
+        rArm: rArm.current,
+        lFore: lFore.current,
+        rFore: rFore.current,
+        lHand: lGlove.current ?? blocker.current,
+        rHand: rGlove.current ?? catcherGrp.current,
+        stick: stick.current,
+        shaft: shaftHold.current,
+        blade: bladeGrp.current,
+        layout,
+        torsoPivot,
+        upperSleeve: rSleeve.current,
+        foreSleeve: rForeSleeve.current,
+      });
+      if (shadow.current || ring.current) playerShadowCom(body.current, _shadowCom);
+      if (shadow.current) plantRinkShadowAt(shadow.current, _shadowCom.x, _shadowCom.z, goalie ? 1.14 : 1);
+      if (ring.current) {
+        const fit = goalie ? 1.14 : 1;
+        plantFlatRinkMark(ring.current, _shadowCom.x, _shadowCom.z, ring.current.scale.x * fit, ring.current.scale.z * fit);
+      }
+    } else if (!showPreview) {
+      if (DEBUG_POSE_FALLBACK && namedPoseFor(s, index) === null) {
+        applyPoseJoints(goalie ? "goalieDebug" : "debug", poseGroups());
+      }
+      stampPoseOverride(index, s, poseGroups());
+    }
     if (body.current) {
       playerShadowCom(body.current, _shadowCom);
       s.comX = _shadowCom.x;
@@ -6149,19 +6425,22 @@ function poseRefChecked(
       restRefArm(rArm, rFore, 0.24);
     }
   }
-  applyPoseJoints(pose, {
-    body,
-    lArm,
-    lFore,
-    rArm,
-    rFore,
-    lLeg,
-    lShin,
-    lBoot,
-    rLeg,
-    rShin,
-    rBoot,
-  });
+  // The visualizer calls this function and keeps the procedural joints. Live play still stamps.
+  if (!functionViewerRef()) {
+    applyPoseJoints(pose, {
+      body,
+      lArm,
+      lFore,
+      rArm,
+      rFore,
+      lLeg,
+      lShin,
+      lBoot,
+      rLeg,
+      rShin,
+      rBoot,
+    });
+  }
   if (shadow) {
     root.updateWorldMatrix(true, true);
     _refHip.set(0, REF_HIP, 0);
@@ -6169,6 +6448,60 @@ function poseRefChecked(
     plantRinkShadowAt(shadow, _refHip.x, _refHip.z, 1);
   }
   return true;
+}
+
+function applyRefPreview(
+  id: "poseRefLeg" | "poseRefChecked",
+  r: Referee,
+  root: THREE.Group,
+  body: THREE.Group,
+  lArm: THREE.Group | null,
+  lFore: THREE.Group | null,
+  rArm: THREE.Group | null,
+  rFore: THREE.Group | null,
+  lLeg: THREE.Group,
+  lShin: THREE.Group | null,
+  lBoot: THREE.Group | null,
+  rLeg: THREE.Group,
+  rShin: THREE.Group | null,
+  rBoot: THREE.Group | null,
+  shadow: THREE.Mesh | null,
+): void {
+  const args = readViewerArgs(id);
+  root.position.set(0, 0, 0);
+  root.rotation.set(0, Math.PI, 0);
+  if (id === "poseRefLeg") {
+    body.position.set(0, 0, 0);
+    body.rotation.set(0, 0, 0);
+    restRefArm(lArm, lFore, -0.24);
+    restRefArm(rArm, rFore, 0.24);
+    const x = viewerNum(args, "x", 0.13);
+    const thigh = viewerNum(args, "thigh", 0.4);
+    const knee = viewerNum(args, "knee", 0.5);
+    const bootX = viewerNum(args, "bootX", -0.2);
+    const roll = viewerNum(args, "roll", 0);
+    poseRefLeg(lLeg, lShin, lBoot, -x, thigh, knee, bootX, -roll);
+    poseRefLeg(rLeg, rShin, rBoot, x, thigh, knee, bootX, roll);
+    if (shadow) plantRinkShadow(shadow, 0, 0, 1);
+    return;
+  }
+  const prev = { x: r.x, z: r.z, yaw: r.yaw, struck: r.struck, tumble: r.tumble, tumbleSpin: r.tumbleSpin };
+  r.x = 0;
+  r.z = 0;
+  r.yaw = 0;
+  r.struck = viewerNum(args, "struck", 1);
+  r.tumble = viewerNum(args, "tumble", 1);
+  r.tumbleSpin = viewerNum(args, "tumbleSpin", 0);
+  try {
+    poseRefChecked(r, root, body, lArm, lFore, rArm, rFore, lLeg, lShin, lBoot, rLeg, rShin, rBoot, shadow);
+  } finally {
+    r.x = prev.x;
+    r.z = prev.z;
+    r.yaw = prev.yaw;
+    r.struck = prev.struck;
+    r.tumble = prev.tumble;
+    r.tumbleSpin = prev.tumbleSpin;
+  }
 }
 
 export function RefereeMesh({ slot = 0 }: { slot?: 0 | 1 | 2 | 3 }) {
@@ -6221,24 +6554,9 @@ export function RefereeMesh({ slot = 0 }: { slot?: 0 | 1 | 2 | 3 }) {
     const ll = lLeg.current;
     const rl = rLeg.current;
     if (!g || !b || !ll || !rl) return;
-    if (
-      poseRefChecked(
-        r,
-        g,
-        b,
-        lArm.current,
-        lFore.current,
-        rArm.current,
-        rFore.current,
-        ll,
-        lShin.current,
-        lBoot.current,
-        rl,
-        rShin.current,
-        rBoot.current,
-        shadow.current,
-      )
-    ) {
+    const refPreview = functionViewerRef();
+    if (refPreview) {
+      applyRefPreview(refPreview, r, g, b, lArm.current, lFore.current, rArm.current, rFore.current, ll, lShin.current, lBoot.current, rl, rShin.current, rBoot.current, shadow.current);
       return;
     }
     g.position.set(r.x, 0, r.z);

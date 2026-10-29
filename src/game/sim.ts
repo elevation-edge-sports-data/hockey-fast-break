@@ -8524,14 +8524,14 @@ function goaliePlayReleaseLive(s: Skater): boolean {
 
 /**
  * Play-puck sequence. Charge is the first pose. The release is the second.
- * Holding the puck with no windup stays on goaliePlay.
+ * Holding the puck with no windup stays on goaliePlayPuck1.
  */
-export function goaliePlayPuckPose(s: Skater): "goaliePlay" | "goaliePlayPuck1" | "goaliePlayPuck2" | null {
+export function goaliePlayPuckPose(s: Skater): "goaliePlayPuck1" | "goaliePlayPuck2" | null {
   if (s.kind !== "goalie") return null;
   if (goaliePlayReleaseLive(s)) return "goaliePlayPuck2";
   if (!goaliePlaysPuck(s)) return null;
   if (goaliePlayChargeId === s.id) return "goaliePlayPuck1";
-  return "goaliePlay";
+  return "goaliePlayPuck1";
 }
 
 /** Puck is in this goalie's defending zone, the goalie is up, and no shot is in flight. */

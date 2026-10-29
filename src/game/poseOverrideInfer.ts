@@ -144,10 +144,9 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   if (faceoffStill(s) && (faceoffDot(s) || world.faceoffPhase !== "live")) {
     return faceoffDot(s) ? "faceoff" : "coast";
   }
-  if (!goalie) {
-    const checked = checkedCyclePose(s.struck, s.tumble);
-    if (checked) return checked;
-  }
+  // A checked goalie uses the same get-up a tumble already uses.
+  const checked = checkedCyclePose(s.struck, s.tumble);
+  if (checked) return goalie ? "goalieGetUp" : checked;
   if (goalie && tumbling(s)) return "goalieGetUp";
   if (!goalie && s.dive > 0.04) return stridePair(s.stride, "dive", "divePoke");
   if (!goalie && rageDraw(s.id)) return "rage1";
@@ -185,6 +184,8 @@ export function inferNamedPose(s: Skater, index: number): string | null {
     return stridePair(s.stride, "speedPuckLeft", "speedPuckRight");
   }
   if (carrying && s.burst <= 0 && s.deke <= 0.02 && Math.abs(s.stickPull) <= 0.02) return "puckPossess1";
+  // Owner who missed every carry still. Earlier poses (shot, poke, deke, backskate, burst) already returned.
+  if (!goalie && owns) return "puckPossess1";
 
   if (goalie && !tumbling(s) && s.celebrate <= 0.05 && s.dive <= 0.04) {
     const manual = goalieHandSavePose(s);
@@ -212,10 +213,13 @@ export function inferNamedPose(s: Skater, index: number): string | null {
     if (zone === "perimeter") return "goaliePerimeter";
     if (zone === "mid") return "goalieMid";
   }
+  // Stance misses stay upright. Earlier goalie poses already returned.
+  if (goalie) return "goalieUpright";
 
   const speed = Math.hypot(s.vx, s.vz);
   // s.stride grows with distance. sin(s.stride) holds each foot for one stride.
-  if (!goalie && !owns && speed >= READY_SKATE) return stridePair(s.stride, "strideLeft", "strideRight");
+  // Coast stays ready. Anything faster, including the old gap under READY_SKATE, is a stride.
+  if (!goalie && !owns && speed > READY_COAST) return stridePair(s.stride, "strideLeft", "strideRight");
   if (!goalie && !owns && speed <= READY_COAST && s.dive <= 0.04 && !tumbling(s) && s.hit <= 0 && s.struck <= 0.2 && s.poke <= 0.04 && s.celebrate <= 0.05) {
     return "ready";
   }

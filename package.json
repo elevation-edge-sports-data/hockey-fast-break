@@ -19,7 +19,9 @@
     "format": "prettier --write .",
     "play:build": "node scripts/pack-play.mjs",
     "pose:save": "node scripts/pose-save-server.mjs",
-    "pose-editor:public": "node scripts/pack-pose-editor.mjs --public"
+    "pose-editor:public": "node scripts/pack-pose-editor.mjs --public",
+    "function-viewer": "node scripts/pack-function-viewer.mjs",
+    "function-viewer:check": "node scripts/function-viewer-check.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",

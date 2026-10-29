@@ -1115,7 +1115,7 @@ test("a goalie winds up on play puck 1 and releases on play puck 2", () => {
   parkOthers();
   step(1);
   assert.equal(world.puck.owner, g.id);
-  assert.equal(inferNamedPose(g, g.id), "goaliePlay");
+  assert.equal(inferNamedPose(g, g.id), "goaliePlayPuck1");
 
   pressPass();
   assert.equal(world.puck.owner, g.id);

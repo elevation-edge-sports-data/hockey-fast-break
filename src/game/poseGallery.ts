@@ -36,6 +36,7 @@ export const PUBLIC_POSES = [
   "knockout",
   "recover",
   "celebrate",
+  "debug",
   "rage1",
   "rage2",
   "fight",
@@ -50,8 +51,8 @@ export const PUBLIC_POSES = [
   "goalieMid",
   "goaliePerimeter",
   "goalieCheer",
+  "goalieDebug",
   "goalieBench",
-  "goaliePlay",
   "goaliePlayPuck1",
   "goaliePlayPuck2",
   "goalieCover",
@@ -313,8 +314,8 @@ function publicGoalie(pose: PublicPoseId): boolean {
     pose === "goalieMid" ||
     pose === "goaliePerimeter" ||
     pose === "goalieCheer" ||
+    pose === "goalieDebug" ||
     pose === "goalieBench" ||
-    pose === "goaliePlay" ||
     pose === "goaliePlayPuck1" ||
     pose === "goaliePlayPuck2" ||
     pose === "goalieCover"
@@ -432,6 +433,7 @@ export function applyPose(pose: PublicPoseId): number {
       ownPuck(index, 0, -1.1);
       break;
     case "celebrate":
+    case "debug":
       s.celebrate = 2;
       world.time = 0.7;
       break;
@@ -473,12 +475,12 @@ export function applyPose(pose: PublicPoseId): number {
       break;
     }
     case "goalieCheer":
+    case "goalieDebug":
       s.celebrate = 2;
       world.time = 0.7;
       break;
     case "goalieBench":
       break;
-    case "goaliePlay":
     case "goaliePlayPuck1":
     case "goaliePlayPuck2":
       ownPuck(s.id, 0.2, -0.95);

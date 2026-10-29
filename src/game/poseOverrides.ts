@@ -122,8 +122,13 @@ function asFile(value: unknown): PoseFile {
   if (file.goalieRage && !file.goalieRage2) file.goalieRage2 = cloneJoints(file.goalieRage);
   if (file.puckPossess && !file.puckPossess1) file.puckPossess1 = cloneJoints(file.puckPossess);
   if (file.puckPossess && !file.puckPossess2) file.puckPossess2 = cloneJoints(file.puckPossess);
+  if (file.celebrate && !file.debug) file.debug = cloneJoints(file.celebrate);
+  if (file.goalieCheer && !file.goalieDebug) file.goalieDebug = cloneJoints(file.goalieCheer);
   return file;
 }
+
+/** Temporary live fallback. Off leaves a missing gallery pose on the last joint writes. */
+export const DEBUG_POSE_FALLBACK = false;
 
 function cloneJoints(joints: PoseJoints): PoseJoints {
   return JSON.parse(JSON.stringify(joints)) as PoseJoints;

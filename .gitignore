@@ -68,6 +68,8 @@ public/pose-gallery-full.html
 # Generated editor bundles. Commit the HTML pages, not these build folders.
 dist-pose-editor/
 dist-pose-editor-public/
+dist-function-viewer/
+public/function-viewer.html
 
 # Local pose overrides. This file may contain private poses (bench, deke, and so on).
 # Only the five public pose keys are safe to commit. A fresh checkout can copy
