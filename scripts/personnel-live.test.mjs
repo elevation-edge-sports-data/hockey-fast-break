@@ -43,7 +43,7 @@ const store = await server.ssrLoadModule("/src/game/store.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 
-const { resetWorld, stepSim, world, applyLiveLineup } = sim;
+const { resetWorld, stepSim, world, applyLiveLineup, beginPauseReplay, stopPauseReplay } = sim;
 const { useGame } = store;
 const { BLUE_X, BLUE_LINE_W, FACEOFF_SPOT_Z, GOAL_LINE_X, RINK_W } = rink;
 const { setInjectedKeys } = input;
@@ -465,4 +465,38 @@ test("a long board circuit draws one CPU inside the lane", () => {
     if (i > 220) inside = Math.min(inside, Math.abs(cutter.z));
   }
   assert.ok(inside < wall - 0.8, `CPU stayed on the boards (z ${inside.toFixed(2)}, wall ${wall.toFixed(2)})`);
+});
+
+test("replay shows the on-ice count from each frame, not a later pause lineup", () => {
+  live();
+  const ui = useGame.getState();
+  ui.setPaused(false);
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  const full = world.skaters.length;
+  for (let i = 0; i < 20; i++) stepSim(DT);
+  ui.setLiveHome({ ...ui.liveHome, o: ui.liveHome.o - 1 });
+  applyLiveLineup("home");
+  const mid = world.skaters.length;
+  assert.ok(mid < full);
+  for (let i = 0; i < 20; i++) stepSim(DT);
+  ui.setPaused(true);
+  const pausedUi = useGame.getState();
+  pausedUi.setLiveHome({ ...pausedUi.liveHome, o: pausedUi.liveHome.o - 1 });
+  applyLiveLineup("home");
+  const paused = world.skaters.length;
+  assert.ok(paused < mid);
+  assert.equal(beginPauseReplay(), true);
+  assert.equal(world.skaters.length, mid);
+  world.replayPlaying = false;
+  world.replayT = 0;
+  stepSim(DT);
+  assert.equal(world.skaters.length, full);
+  world.replayT = 999;
+  stepSim(DT);
+  assert.equal(world.skaters.length, mid);
+  stopPauseReplay();
+  assert.equal(world.skaters.length, paused);
 });

@@ -16,6 +16,15 @@ import {
   replayHasFootage,
   replayFootagePct,
   subscribeReplayPct,
+  seekReplay,
+  replayFrameLocked,
+  subscribeReplayEdit,
+  toggleReplayFrameLock,
+  exportReplayFrame,
+  undoReplayEdit,
+  redoReplayEdit,
+  replayUndoDepth,
+  replayRedoDepth,
   drillMaxScore,
   startCpuDrillWatchFromUrl,
   startCpuScrimmageWatchFromUrl,
@@ -398,22 +407,81 @@ function useReplayPct() {
   return useSyncExternalStore(subscribeReplayPct, replayFootagePct, replayFootagePct);
 }
 
+function useReplayFrameLock() {
+  return useSyncExternalStore(subscribeReplayEdit, replayFrameLocked, replayFrameLocked);
+}
+
+function useReplayUndoDepth() {
+  return useSyncExternalStore(subscribeReplayEdit, replayUndoDepth, replayUndoDepth);
+}
+
+function useReplayRedoDepth() {
+  return useSyncExternalStore(subscribeReplayEdit, replayRedoDepth, replayRedoDepth);
+}
+
+function downloadReplayFrame(): void {
+  const data = exportReplayFrame();
+  if (!data) return;
+  const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `replay-frame-${data.frame}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function ReplayBar() {
   const replay = useGame((s) => s.replay);
   const paused = useGame((s) => s.paused);
   const pct = useReplayPct();
+  const locked = useReplayFrameLock();
+  const track = useRef<HTMLDivElement>(null);
+  const drag = useRef(false);
   if (!replay || !paused) return null;
   const shown = Math.round(Math.max(0, Math.min(1, pct)) * 100);
+  const seekAt = (clientX: number) => {
+    const el = track.current;
+    if (!el || locked) return;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    const padL = Number.parseFloat(style.paddingLeft) || 0;
+    const padR = Number.parseFloat(style.paddingRight) || 0;
+    const borderL = Number.parseFloat(style.borderLeftWidth) || 0;
+    const width = Math.max(1, el.clientWidth - padL - padR);
+    const x = clientX - (rect.left + borderL + padL);
+    seekReplay(x / width);
+  };
   return (
     <div
-      className="madden-replay"
-      role="meter"
+      className={`madden-replay${locked ? " is-locked" : ""}`}
+      role="slider"
       aria-label="Replay position"
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={shown}
+      aria-disabled={locked}
     >
-      <div className="madden-replay-track">
+      <div
+        ref={track}
+        className="madden-replay-track"
+        onPointerDown={(e) => {
+          if (locked || e.button !== 0) return;
+          drag.current = true;
+          (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+          seekAt(e.clientX);
+        }}
+        onPointerMove={(e) => {
+          if (!drag.current || locked) return;
+          seekAt(e.clientX);
+        }}
+        onPointerUp={() => {
+          drag.current = false;
+        }}
+        onPointerCancel={() => {
+          drag.current = false;
+        }}
+      >
         <div className="madden-replay-fill" style={{ width: `${shown}%` }} />
       </div>
       <span className="madden-replay-pct">{shown}%</span>
@@ -1230,6 +1298,9 @@ export function Overlay() {
   const whistle = useGame((s) => s.whistle);
   const delayedOffside = useGame((s) => s.delayedOffside);
   const replay = useGame((s) => s.replay);
+  const frameLocked = useReplayFrameLock();
+  const undoDepth = useReplayUndoDepth();
+  const redoDepth = useReplayRedoDepth();
   const clockMode = useGame((s) => s.clockMode);
   const controlProfile = useGame((s) => s.controlProfile);
   const periodClock = useGame((s) => s.periodClock);
@@ -1261,6 +1332,24 @@ export function Overlay() {
   }, []);
   const setHomeKit = useGame((s) => s.setHomeKit);
   const setAwayKit = useGame((s) => s.setAwayKit);
+  const pickHomeKit = (id: number) => {
+    if (id === awayKit) {
+      const prev = homeKit;
+      setHomeKit(id);
+      setAwayKit(prev);
+      return;
+    }
+    setHomeKit(id);
+  };
+  const pickAwayKit = (id: number) => {
+    if (id === homeKit) {
+      const prev = awayKit;
+      setHomeKit(prev);
+      setAwayKit(id);
+      return;
+    }
+    setAwayKit(id);
+  };
   const setHomeLineup = useGame((s) => s.setHomeLineup);
   const setAwayLineup = useGame((s) => s.setAwayLineup);
 
@@ -1329,8 +1418,8 @@ export function Overlay() {
                     key={u.id}
                     id={u.id}
                     selected={homeKit === u.id}
-                    disabled={awayKit === u.id}
-                    onPick={setHomeKit}
+                    disabled={false}
+                    onPick={pickHomeKit}
                   />
                 ))}
               </div>
@@ -1348,8 +1437,8 @@ export function Overlay() {
                     key={u.id}
                     id={u.id}
                     selected={awayKit === u.id}
-                    disabled={homeKit === u.id}
-                    onPick={setAwayKit}
+                    disabled={false}
+                    onPick={pickAwayKit}
                   />
                 ))}
               </div>
@@ -1490,13 +1579,65 @@ export function Overlay() {
             <p>
               <b>Replay</b>
               <span>
-                Drag to look · wheel zooms · A pause/play · tap Y or click to lock · stick pan · X on a body locks ·
-                hold Y+stick orbit ·
-                X/B zoom · LB/RB slow · LT/RT fast · R3 or Select exits
+                {frameLocked
+                  ? "Frame locked · drag to look · wheel zooms · click a player · arrows or left stick move them, or the X when none is selected · Undo and Redo step one player's run · click the ice to deselect · Y or click locks the camera · hold Y+stick orbit · X/B zoom · R3 or Select exits"
+                  : "Drag to look · wheel zooms · A pause/play · tap Y or click to lock · stick pan · X on a body locks · hold Y+stick orbit · X/B zoom · LB/RB slow · LT/RT fast · R3 or Select exits"}
               </span>
             </p>
             <ReplayBar />
             <div className="btn-row cam-adjust-btns">
+              <button
+                type="button"
+                className={frameLocked ? "btn-primary" : "btn-ghost"}
+                aria-pressed={frameLocked}
+                tabIndex={-1}
+                onKeyDown={(e) => {
+                  if (e.code === "Space") e.preventDefault();
+                }}
+                onClick={() => toggleReplayFrameLock()}
+              >
+                {frameLocked ? "Unlock" : "Lock frame"}
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                disabled={!frameLocked}
+                tabIndex={-1}
+                onKeyDown={(e) => {
+                  if (e.code === "Space") e.preventDefault();
+                }}
+                onClick={() => downloadReplayFrame()}
+              >
+                Save
+              </button>
+              {frameLocked ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    disabled={undoDepth === 0}
+                    tabIndex={-1}
+                    onKeyDown={(e) => {
+                      if (e.code === "Space") e.preventDefault();
+                    }}
+                    onClick={() => undoReplayEdit()}
+                  >
+                    Undo
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    disabled={redoDepth === 0}
+                    tabIndex={-1}
+                    onKeyDown={(e) => {
+                      if (e.code === "Space") e.preventDefault();
+                    }}
+                    onClick={() => redoReplayEdit()}
+                  >
+                    Redo
+                  </button>
+                </>
+              ) : null}
               <button type="button" className="btn-primary" onClick={() => stopPauseReplay()}>
                 Exit
               </button>
@@ -1594,7 +1735,9 @@ export function Overlay() {
       {replay ? (
         <div className="whistle replay-hint">
           {paused
-            ? "Drag · wheel · A pause · Y or click locks · X on a body locks · stick pan · LB/RB slow · LT/RT fast · R3 exits"
+            ? frameLocked
+              ? "Frame locked · click a player · arrows or left stick move them or the X · click the ice to deselect"
+              : "Drag · wheel · A pause · Y or click locks · X on a body locks · stick pan · LB/RB slow · LT/RT fast · R3 exits"
             : "A/B/X/Y skip"}
         </div>
       ) : periodEnd ? (

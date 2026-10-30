@@ -20534,6 +20534,10 @@ type ReplayBody = {
   smashHit: number;
   gloveFlash: number;
   backskate: boolean;
+  /** Who was on the ice. Playback rebuilds the roster from these, not the pause lineup. */
+  side: "home" | "away";
+  kind: SkaterKind;
+  number: number;
   /**
    * Scored-on goalie pose on this frame. 0 none, 1 goalieRage1, 2 goalieRage2,
    * 3 goalieUpright. The live whistle is not replayed, so the phase is stored.
@@ -20602,6 +20606,32 @@ let replayMarkMoved = false;
 let replayPanning = false;
 let replayPct = 1;
 const replayPctListeners = new Set<() => void>();
+/** Formation edit. The ring buffer and replayPlay stay untouched. */
+let replayFrameLock = false;
+let replayEdit: ReplaySnap | null = null;
+let replayEditBase: ReplaySnap | null = null;
+let replayEditId: number | null = null;
+let replayEditIndex = -1;
+const replayEditListeners = new Set<() => void>();
+type ReplaySkaterAdj = {
+  kind: "skater";
+  index: number;
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  puck: boolean;
+  px0: number;
+  pz0: number;
+  px1: number;
+  pz1: number;
+};
+type ReplayMarkAdj = { kind: "mark"; x0: number; z0: number; x1: number; z1: number };
+type ReplayAdj = ReplaySkaterAdj | ReplayMarkAdj;
+let replayUndo: ReplayAdj[] = [];
+let replayRedo: ReplayAdj[] = [];
+/** Open gesture. Consecutive gestures on the same player, or the X, fold into one undo. */
+let replayGesture: ReplayAdj | null = null;
 /** Recorded scored-on goalie phase, keyed by skater id. 1 rage1, 2 rage2, 3 upright. */
 const replayRagePose = new Map<number, number>();
 /** Scoop finishes, then rage 1 and rage 2 each hold for one second. */
@@ -20693,8 +20723,28 @@ function snapBody(s: Skater): ReplayBody {
     smashHit: s.smashHit,
     gloveFlash: s.gloveFlash,
     backskate: s.backskate,
+    side: s.side,
+    kind: s.kind,
+    number: s.number,
     ragePose: scoredOnGoalieRagePhase(s),
   };
+}
+
+function replayRosterKey(bodies: readonly ReplayBody[]): string | null {
+  for (const b of bodies) {
+    if (b.side == null || b.kind == null || b.number == null) return null;
+  }
+  return bodies.map((b) => `${b.side}:${b.kind}:${b.number}`).join("|");
+}
+
+/** Show the skaters this frame recorded. Later pause-screen edits stay out of the snap. */
+function ensureReplayRoster(bodies: readonly ReplayBody[]): void {
+  const want = replayRosterKey(bodies);
+  if (want == null) return;
+  const live = world.skaters.map((s) => `${s.side}:${s.kind}:${s.number}`).join("|");
+  if (want === live) return;
+  world.skaters = bodies.map((b, i) => makeSkater(i, b.side, b.kind, b.number, b.x, b.z));
+  useGame.getState().bumpLineup();
 }
 
 function scoredOnGoalieCanRage(s: Skater): boolean {
@@ -20789,6 +20839,7 @@ function applyReplaySnap(snap: ReplaySnap): void {
   p.owner = snap.puck.owner;
   world.userId = snap.userId;
   replayRagePose.clear();
+  ensureReplayRoster(snap.bodies);
   const n = Math.min(snap.bodies.length, world.skaters.length);
   for (let i = 0; i < n; i++) {
     const s = world.skaters[i]!;
@@ -20880,6 +20931,52 @@ function clearReplayCamControl(): void {
   replayYMoved = false;
   replayMarkMoved = false;
   replayPanning = false;
+  dropReplayEdit();
+}
+
+function publishReplayEdit(): void {
+  for (const fn of replayEditListeners) fn();
+}
+
+function dropReplayEdit(): void {
+  const was = replayFrameLock || replayEdit !== null;
+  replayFrameLock = false;
+  replayEdit = null;
+  replayEditBase = null;
+  replayEditId = null;
+  replayEditIndex = -1;
+  replayUndo = [];
+  replayRedo = [];
+  replayGesture = null;
+  if (was) publishReplayEdit();
+}
+
+function cloneReplaySnap(snap: ReplaySnap): ReplaySnap {
+  return {
+    puck: { ...snap.puck },
+    userId: snap.userId,
+    bodies: snap.bodies.map((b) => ({ ...b })),
+    ref: { ...snap.ref },
+    ref2: { ...snap.ref2 },
+    ref3: snap.ref3 ? { ...snap.ref3 } : undefined,
+    ref4: snap.ref4 ? { ...snap.ref4 } : undefined,
+    rage: snap.rage.map((rec) => ({
+      id: rec.id,
+      kind: rec.kind,
+      blade: { ...rec.blade },
+      shaft: { ...rec.shaft },
+      end: rec.end,
+    })),
+    ceremony: snap.ceremony,
+    targets: snap.targets
+      ? {
+          drillGone: snap.targets.drillGone.slice(),
+          scrimmageHomeGone: snap.targets.scrimmageHomeGone.slice(),
+          scrimmageAwayGone: snap.targets.scrimmageAwayGone.slice(),
+          drillCards: snap.targets.drillCards.map((c) => ({ ...c })),
+        }
+      : undefined,
+  };
 }
 
 function replaySpan(): number {
@@ -20890,8 +20987,117 @@ export function replayFootagePct(): number {
   return replayPct;
 }
 
+/** Jump the pause replay to a fraction of the footage. 0 is the first frame, 1 is the last. */
+export function seekReplay(fraction: number): void {
+  if (!world.replay || world.replayKind !== "pause" || replayFrameLock || !replayPlay.length) return;
+  const u = Math.max(0, Math.min(1, fraction));
+  const maxT = replaySpan();
+  world.replayT = maxT * u;
+  world.replayPlaying = false;
+  const i = Math.min(replayPlay.length - 1, Math.max(0, Math.floor(world.replayT * 60)));
+  applyReplaySnap(replayPlay[i]!);
+  catchReplayMarkLock();
+  applyReplayLock();
+  publishReplayPct();
+}
+
 export function replayLockKind(): "free" | "puck" | "skater" {
   return replayLock.kind;
+}
+
+export function replayFrameLocked(): boolean {
+  return replayFrameLock;
+}
+
+/** Skater index chosen for arrow-key edits, or null when the ice X takes the arrows. */
+export function replayEditSkater(): number | null {
+  return replayEditId;
+}
+
+/** Finished runs, plus a held gesture that starts a new run. */
+export function replayUndoDepth(): number {
+  if (!replayGesture) return replayUndo.length;
+  const prev = replayUndo[replayUndo.length - 1];
+  if (prev && sameReplayTarget(prev, replayGesture)) return replayUndo.length;
+  return replayUndo.length + 1;
+}
+
+export function replayRedoDepth(): number {
+  return replayRedo.length;
+}
+
+export function subscribeReplayEdit(listener: () => void): () => void {
+  replayEditListeners.add(listener);
+  return () => {
+    replayEditListeners.delete(listener);
+  };
+}
+
+export type ReplayFormationSide = {
+  puck: { x: number; z: number; y: number; owner: number | null };
+  players: { index: number; id: number; x: number; z: number }[];
+};
+
+export type ReplayFormationExport = {
+  frame: number;
+  time: number;
+  original: ReplayFormationSide;
+  adjusted: ReplayFormationSide;
+};
+
+function formationSide(snap: ReplaySnap): ReplayFormationSide {
+  return {
+    puck: { x: snap.puck.x, z: snap.puck.z, y: snap.puck.y, owner: snap.puck.owner },
+    players: snap.bodies.map((b, index) => ({
+      index,
+      id: world.skaters[index]?.id ?? index,
+      x: b.x,
+      z: b.z,
+    })),
+  };
+}
+
+/** Locked-frame positions. Null until the frame is locked. */
+export function exportReplayFrame(): ReplayFormationExport | null {
+  if (!replayFrameLock || !replayEdit || !replayEditBase) return null;
+  return {
+    frame: replayEditIndex,
+    time: world.replayT,
+    original: formationSide(replayEditBase),
+    adjusted: formationSide(replayEdit),
+  };
+}
+
+/** Freeze the current pause-replay frame, or release it and show the buffer frame again. */
+export function toggleReplayFrameLock(): boolean {
+  if (!world.replay || world.replayKind !== "pause" || !replayPlay.length) {
+    if (replayFrameLock) unlockReplayFrame();
+    return false;
+  }
+  if (replayFrameLock) {
+    unlockReplayFrame();
+    return false;
+  }
+  const i = Math.min(replayPlay.length - 1, Math.max(0, Math.floor(world.replayT * 60)));
+  const snap = replayPlay[i];
+  if (!snap) return false;
+  replayEditBase = cloneReplaySnap(snap);
+  replayEdit = cloneReplaySnap(snap);
+  replayEditIndex = i;
+  replayEditId = null;
+  replayFrameLock = true;
+  world.replayPlaying = false;
+  publishReplayEdit();
+  return true;
+}
+
+function unlockReplayFrame(): void {
+  dropReplayEdit();
+  if (!world.replay || !replayPlay.length) return;
+  const i = Math.min(replayPlay.length - 1, Math.max(0, Math.floor(world.replayT * 60)));
+  const snap = replayPlay[i];
+  if (snap) applyReplaySnap(snap);
+  applyReplayLock();
 }
 
 export function subscribeReplayPct(listener: () => void): () => void {
@@ -21020,8 +21226,22 @@ function applyReplayLock(): void {
  * and a neighbor outside this circle is not locked.
  */
 const REPLAY_MARK_LOCK = 0.45;
+/** Wider catch while a frame is locked, so a nearby player is easier to land on. */
+const REPLAY_MARK_LOCK_EDIT = 0.85;
 /** Replay camera fov in CameraRig. Click rays use the same angle. */
 const REPLAY_PICK_FOV = (46 * Math.PI) / 180;
+const REPLAY_PICK_PUCK = 0.09;
+const REPLAY_PICK_PUCK_EDIT = 0.22;
+const REPLAY_PICK_HIP = 0.28;
+const REPLAY_PICK_HIP_EDIT = 0.55;
+/** Added to the skater radius for the upright click column while a frame is locked. */
+const REPLAY_PICK_BODY_EXTRA = 0.35;
+/** Arrow-key slide of a selected player or the ice X, metres per second. */
+const REPLAY_EDIT_SPEED = 4;
+
+function replayMarkRadius(): number {
+  return replayFrameLock ? REPLAY_MARK_LOCK_EDIT : REPLAY_MARK_LOCK;
+}
 
 function skaterCom(s: Skater): { x: number; z: number } {
   return {
@@ -21032,7 +21252,7 @@ function skaterCom(s: Skater): { x: number; z: number } {
 
 function replayMarkHit(x: number, z: number): ReplayLock | null {
   let best: ReplayLock | null = null;
-  let bestD = REPLAY_MARK_LOCK;
+  let bestD = replayMarkRadius();
   const puckD = Math.hypot(world.puck.x - x, world.puck.z - z);
   if (puckD <= bestD) {
     best = { kind: "puck" };
@@ -21175,16 +21395,19 @@ function replayPickRay(
 function replayRayHit(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): ReplayLock | null {
   let best: ReplayLock | null = null;
   let bestT = Infinity;
-  const puckT = raySphereT(ox, oy, oz, dx, dy, dz, world.puck.x, world.puck.y, world.puck.z, 0.09);
+  const puckR = replayFrameLock ? REPLAY_PICK_PUCK_EDIT : REPLAY_PICK_PUCK;
+  const hipR = replayFrameLock ? REPLAY_PICK_HIP_EDIT : REPLAY_PICK_HIP;
+  const bodyExtra = replayFrameLock ? REPLAY_PICK_BODY_EXTRA : 0;
+  const puckT = raySphereT(ox, oy, oz, dx, dy, dz, world.puck.x, world.puck.y, world.puck.z, puckR);
   if (puckT !== null && puckT < bestT) {
     best = { kind: "puck" };
     bestT = puckT;
   }
   for (let i = 0; i < world.skaters.length; i++) {
     const s = world.skaters[i]!;
-    const column = rayColumnT(ox, oy, oz, dx, dy, dz, s.x, s.z, s.radius, 0.2, 1.8);
+    const column = rayColumnT(ox, oy, oz, dx, dy, dz, s.x, s.z, s.radius + bodyExtra, 0.2, 1.8);
     const com = skaterCom(s);
-    const hip = rayColumnT(ox, oy, oz, dx, dy, dz, com.x, com.z, 0.28, 0.35, 1.55);
+    const hip = rayColumnT(ox, oy, oz, dx, dy, dz, com.x, com.z, hipR, 0.35, 1.55);
     const t = column === null ? hip : hip === null ? column : Math.min(column, hip);
     if (t !== null && t < bestT) {
       best = { kind: "skater", index: i };
@@ -21200,6 +21423,27 @@ export function pickReplayLock(ndcX: number, ndcY: number, aspect: number): void
   const ray = replayPickRay(ndcX, ndcY, aspect);
   if (!ray) return;
   const hit = replayRayHit(ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz);
+  if (replayFrameLock) {
+    if (hit?.kind === "skater") {
+      replayEditId = hit.index;
+      replayLock = hit;
+      replayMarkMoved = false;
+      applyReplayLock();
+      publishReplayEdit();
+      return;
+    }
+    const had = replayEditId !== null;
+    replayEditId = null;
+    if (had) publishReplayEdit();
+    replayMarkMoved = false;
+    if (hit?.kind === "puck") {
+      replayLock = hit;
+      applyReplayLock();
+      return;
+    }
+    replayLock = { kind: "free" };
+    return;
+  }
   if (!hit) return;
   replayLock = hit;
   replayMarkMoved = false;
@@ -21246,7 +21490,7 @@ export function beginPauseReplay(): boolean {
 }
 
 export function rewindPauseReplay(): void {
-  if (world.replayKind !== "pause") return;
+  if (world.replayKind !== "pause" || replayFrameLock) return;
   world.replayT = Math.max(0, world.replayT - 2);
   world.replayHardCut = true;
   const i = Math.min(replayPlay.length - 1, Math.floor(world.replayT * 60));
@@ -21261,6 +21505,11 @@ export function stopPauseReplay(): void {
 }
 
 const REPLAY_STICK_GATE = 0.12;
+
+/** Left stick past the same rest gate as replay pan. A pad that sits just off center is not a move. */
+function replayStickLive(act: Actions): boolean {
+  return !act.yDown && Math.hypot(act.stickX, act.stickY) > REPLAY_STICK_GATE;
+}
 const REPLAY_PHI_MIN = 0.12;
 const REPLAY_PHI_MAX = 1.45;
 const REPLAY_RADIUS_MIN = 4.2;
@@ -21286,8 +21535,14 @@ export function zoomReplayPointer(deltaY: number): void {
 
 function tickPauseReplayCam(dt: number, act: Actions): void {
   const cam = world.replayCam;
-  const mag = Math.hypot(act.moveX, act.moveY);
-  if (act.yDown) {
+  // Arrows and the left stick edit the locked frame. Both also sit on moveX and moveY.
+  // Y held keeps the stick on the orbit. Arrows still edit.
+  const stickEdit = replayStickLive(act);
+  const editing = replayFrameLock && (act.arrowX !== 0 || act.arrowY !== 0 || stickEdit);
+  const mag = editing ? 0 : Math.hypot(act.moveX, act.moveY);
+  if (editing) {
+    if (act.yDown) replayYMoved = true;
+  } else if (act.yDown) {
     if (mag > REPLAY_STICK_GATE) replayYMoved = true;
     if (replayYMoved) {
       cam.theta += act.moveX * 1.85 * dt;
@@ -21309,10 +21564,193 @@ function tickPauseReplayCam(dt: number, act: Actions): void {
       }
     }
   }
-  replayPanning = !act.yDown && mag > REPLAY_STICK_GATE;
+  replayPanning = !editing && !act.yDown && mag > REPLAY_STICK_GATE;
   replayYHeld = act.yDown;
   if (act.zoomIn || act.xDown) cam.radius = Math.max(REPLAY_RADIUS_MIN, cam.radius - 18 * dt);
   if (act.zoomOut || act.bDown) cam.radius = Math.min(REPLAY_RADIUS_MAX, cam.radius + 18 * dt);
+}
+
+/**
+ * Locked-frame step on the ice, in the camera basis writeCamBasis already stored.
+ * Up with camFx 1 and camFz 0 is world +X. Right with camRx 0 and camRz 1 is world +Z.
+ * Arrows are a full step. The left stick uses that same full step at full deflection.
+ */
+function replayArrowDelta(dt: number, act: Actions): { dx: number; dz: number } | null {
+  const arrows = act.arrowX !== 0 || act.arrowY !== 0;
+  const live = replayStickLive(act);
+  const sx = live ? act.stickX : 0;
+  const sy = live ? act.stickY : 0;
+  const x = act.arrowX + sx;
+  const y = act.arrowY + sy;
+  if (x === 0 && y === 0) return null;
+  const dx = world.camRx * x + world.camFx * y;
+  const dz = world.camRz * x + world.camFz * y;
+  if (!Number.isFinite(dx) || !Number.isFinite(dz)) return null;
+  const planar = Math.hypot(dx, dz);
+  if (planar < 1e-8) return null;
+  const weight = arrows ? 1 : Math.min(1, Math.hypot(sx, sy));
+  const scale = (REPLAY_EDIT_SPEED * weight * dt) / planar;
+  return { dx: dx * scale, dz: dz * scale };
+}
+
+function replayAdjMoved(g: ReplayAdj): boolean {
+  if (g.x0 !== g.x1 || g.z0 !== g.z1) return true;
+  return g.kind === "skater" && g.puck && (g.px0 !== g.px1 || g.pz0 !== g.pz1);
+}
+
+function sameReplayTarget(a: ReplayAdj, b: ReplayAdj): boolean {
+  if (a.kind === "mark" && b.kind === "mark") return true;
+  return a.kind === "skater" && b.kind === "skater" && a.index === b.index;
+}
+
+function closeReplayGesture(): void {
+  const g = replayGesture;
+  if (!g) return;
+  replayGesture = null;
+  if (!replayAdjMoved(g)) {
+    publishReplayEdit();
+    return;
+  }
+  const prev = replayUndo[replayUndo.length - 1];
+  if (prev && sameReplayTarget(prev, g)) {
+    prev.x1 = g.x1;
+    prev.z1 = g.z1;
+    if (prev.kind === "skater" && g.kind === "skater") {
+      prev.px1 = g.px1;
+      prev.pz1 = g.pz1;
+      if (g.puck) prev.puck = true;
+    }
+  } else {
+    replayUndo.push(g);
+  }
+  publishReplayEdit();
+}
+
+function openReplayGesture(next: ReplayAdj): void {
+  const g = replayGesture;
+  if (g?.kind === "mark" && next.kind === "mark") return;
+  if (g?.kind === "skater" && next.kind === "skater" && g.index === next.index) return;
+  closeReplayGesture();
+  replayRedo.length = 0;
+  replayGesture = next;
+  publishReplayEdit();
+}
+
+function syncReplayGesture(): void {
+  const g = replayGesture;
+  const edit = replayEdit;
+  if (!g || !edit) return;
+  if (g.kind === "mark") {
+    g.x1 = world.replayCam.lx;
+    g.z1 = world.replayCam.lz;
+    return;
+  }
+  const body = edit.bodies[g.index];
+  if (!body) return;
+  g.x1 = body.x;
+  g.z1 = body.z;
+  if (g.puck) {
+    g.px1 = edit.puck.x;
+    g.pz1 = edit.puck.z;
+  }
+}
+
+function applyReplayAdj(g: ReplayAdj, dir: 0 | 1): void {
+  const edit = replayEdit;
+  if (!edit) return;
+  if (g.kind === "mark") {
+    world.replayCam.lx = dir ? g.x1 : g.x0;
+    world.replayCam.lz = dir ? g.z1 : g.z0;
+    replayLock = { kind: "free" };
+    return;
+  }
+  const body = edit.bodies[g.index];
+  if (!body) return;
+  body.x = dir ? g.x1 : g.x0;
+  body.z = dir ? g.z1 : g.z0;
+  if (g.puck) {
+    edit.puck.x = dir ? g.px1 : g.px0;
+    edit.puck.z = dir ? g.pz1 : g.pz0;
+  }
+}
+
+export function undoReplayEdit(): void {
+  if (!replayFrameLock || !replayEdit) return;
+  closeReplayGesture();
+  const g = replayUndo.pop();
+  if (!g) return;
+  applyReplayAdj(g, 0);
+  replayRedo.push(g);
+  applyReplaySnap(replayEdit);
+  applyReplayLock();
+  publishReplayEdit();
+}
+
+export function redoReplayEdit(): void {
+  if (!replayFrameLock || !replayEdit) return;
+  closeReplayGesture();
+  const g = replayRedo.pop();
+  if (!g) return;
+  applyReplayAdj(g, 1);
+  replayUndo.push(g);
+  applyReplaySnap(replayEdit);
+  applyReplayLock();
+  publishReplayEdit();
+}
+
+function nudgeReplayEdit(dt: number, act: Actions): void {
+  const edit = replayEdit;
+  if (!edit) return;
+  const step = replayArrowDelta(dt, act);
+  if (!step) {
+    closeReplayGesture();
+    return;
+  }
+  // A stick pan that is still "moved" would catch on this step, because arrows
+  // are not a pan. That catch snaps the X onto a nearby body and eats the nudge.
+  replayMarkMoved = false;
+  if (replayEditId === null) {
+    openReplayGesture({
+      kind: "mark",
+      x0: world.replayCam.lx,
+      z0: world.replayCam.lz,
+      x1: world.replayCam.lx,
+      z1: world.replayCam.lz,
+    });
+    replayLock = { kind: "free" };
+    world.replayCam.lx += step.dx;
+    world.replayCam.lz += step.dz;
+    syncReplayGesture();
+    return;
+  }
+  const body = edit.bodies[replayEditId];
+  if (!body) {
+    replayEditId = null;
+    publishReplayEdit();
+    return;
+  }
+  const ownerId = world.skaters[replayEditId]?.id;
+  const puck = ownerId !== undefined && edit.puck.owner === ownerId;
+  openReplayGesture({
+    kind: "skater",
+    index: replayEditId,
+    x0: body.x,
+    z0: body.z,
+    x1: body.x,
+    z1: body.z,
+    puck,
+    px0: edit.puck.x,
+    pz0: edit.puck.z,
+    px1: edit.puck.x,
+    pz1: edit.puck.z,
+  });
+  body.x += step.dx;
+  body.z += step.dz;
+  if (puck) {
+    edit.puck.x += step.dx;
+    edit.puck.z += step.dz;
+  }
+  syncReplayGesture();
 }
 
 function replayScrubNow(act: Actions): ReplayScrub | null {
@@ -21344,13 +21782,20 @@ function stepReplay(dt: number, act: Actions): void {
       endReplay();
       return;
     }
-    if (act.aEdge) world.replayPlaying = !world.replayPlaying;
+    if (!replayFrameLock && act.aEdge) world.replayPlaying = !world.replayPlaying;
     tickPauseReplayCam(dt, act);
-    const rate = pauseReplayRate(act);
-    const maxT = replaySpan();
-    world.replayT = Math.max(0, Math.min(maxT, world.replayT + dt * rate));
-    const i = Math.min(replayPlay.length - 1, Math.floor(world.replayT * 60));
-    applyReplaySnap(replayPlay[i]!);
+    if (!replayFrameLock) {
+      const rate = pauseReplayRate(act);
+      const maxT = replaySpan();
+      world.replayT = Math.max(0, Math.min(maxT, world.replayT + dt * rate));
+    }
+    if (replayFrameLock && replayEdit) {
+      nudgeReplayEdit(dt, act);
+      applyReplaySnap(replayEdit);
+    } else {
+      const i = Math.min(replayPlay.length - 1, Math.floor(world.replayT * 60));
+      applyReplaySnap(replayPlay[i]!);
+    }
     catchReplayMarkLock();
     applyReplayLock();
     publishReplayPct();
@@ -24035,6 +24480,22 @@ function stepPlay(dt: number, act: Actions): void {
           world.puck.x = px;
           world.puck.z = pz;
         };
+      } else {
+        // No opposing forward, so the gap has nobody to push against. The snap
+        // still steps the lone center back to the same side of the dot.
+        const home = world.homeDot >= 0 ? world.skaters[world.homeDot] : undefined;
+        const away = world.awayDot >= 0 ? world.skaters.find((s) => s.id === world.awayDot) : undefined;
+        const lone = home && !away ? home : away && !home ? away : undefined;
+        if (lone && lone.kind !== "goalie") {
+          const hx = lone.x;
+          const hz = lone.z;
+          const back = Math.max(0, FACEOFF_BODY_GAP * 0.5 - FACEOFF_DOT_X);
+          lone.x += defendDir(lone.side) * back;
+          restoreFaceoffLock = () => {
+            lone.x = hx;
+            lone.z = hz;
+          };
+        }
       }
     }
     recordReplay();
@@ -24583,6 +25044,8 @@ export function installControlsProbe(): void {
       pz: world.puck.z,
       lock: replayLock.kind,
       lockIndex: replayLock.kind === "skater" ? replayLock.index : -1,
+      frameLocked: replayFrameLock,
+      editId: replayEditId ?? -1,
       sx: replayLock.kind === "skater" ? (world.skaters[replayLock.index]?.x ?? 0) : 0,
       sz: replayLock.kind === "skater" ? (world.skaters[replayLock.index]?.z ?? 0) : 0,
       nSkaters: world.skaters.length,

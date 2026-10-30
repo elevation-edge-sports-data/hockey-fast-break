@@ -44,7 +44,7 @@ const rink = await server.ssrLoadModule("/src/game/rink.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 
-const { resetWorld, stepSim, world, defendDir, faceYaw } = sim;
+const { resetWorld, stepSim, world, defendDir, faceYaw, beginPauseReplay, stopPauseReplay } = sim;
 const { inferNamedPose } = poses;
 const { useGame } = store;
 const { FACEOFF_EZ_X, FACEOFF_NZ_X, FACEOFF_R, FACEOFF_SPOT_Z, GOAL_LINE_X } = rink;
@@ -386,6 +386,25 @@ test("one side with no forwards does not lend a defender to the dot", () => {
 function stepToDrop(max = 90) {
   for (let i = 0; i < max && world.faceoff && world.faceoffPhase !== "live"; i++) stepSim(1 / 60);
 }
+
+test("replay keeps a lone forward behind an off-center dot", () => {
+  drop({ home: { g: 1, d: 2, o: 1 }, away: { g: 1, d: 2, o: 0 }, face: { x: FACEOFF_EZ_X, z: FACEOFF_SPOT_Z } });
+  for (let i = 0; i < 40; i++) stepSim(1 / 60);
+  const live = world.skaters.find((s) => s.id === world.homeDot);
+  const behind = (s) => (s.x - world.faceX) * defendDir("home");
+  assert.ok(Math.abs(behind(live) - 0.393) < 1e-6);
+  useGame.getState().setPaused(true);
+  assert.equal(beginPauseReplay(), true);
+  world.replayPlaying = false;
+  world.replayT = 0;
+  stepSim(1 / 60);
+  const shown = world.skaters.find((s) => s.side === "home" && s.kind === "winger");
+  assert.ok(Math.abs(behind(shown) - 0.775) < 1e-6, `replay behind ${behind(shown)}`);
+  assert.ok(Math.abs(shown.z - world.faceZ) < 1e-6);
+  stopPauseReplay();
+  const again = world.skaters.find((s) => s.id === world.homeDot);
+  assert.ok(Math.abs(behind(again) - 0.393) < 1e-6);
+});
 
 test("the only player on the dot takes the puck", () => {
   drop({ home: { g: 1, d: 2, o: 1 }, away: { g: 1, d: 2, o: 0 } });

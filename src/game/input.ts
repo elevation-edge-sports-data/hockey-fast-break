@@ -39,6 +39,12 @@ export type Actions = {
   aimY: number;
   zoomIn: boolean;
   zoomOut: boolean;
+  /** Arrow keys only. WASD and the stick stay on moveX and moveY. */
+  arrowX: number;
+  arrowY: number;
+  /** Left stick after the same deadzone and Y flip as moveX and moveY. */
+  stickX: number;
+  stickY: number;
   padKind: "Keyboard" | "Gamepad";
   padName: string | null;
 };
@@ -395,6 +401,12 @@ export function readActions(): Actions {
   if (k.has("KeyS") || k.has("ArrowDown")) my -= 1;
   if (k.has("KeyD") || k.has("ArrowRight")) mx += 1;
   if (k.has("KeyA") || k.has("ArrowLeft")) mx -= 1;
+  let arrowX = 0;
+  let arrowY = 0;
+  if (k.has("ArrowUp")) arrowY += 1;
+  if (k.has("ArrowDown")) arrowY -= 1;
+  if (k.has("ArrowRight")) arrowX += 1;
+  if (k.has("ArrowLeft")) arrowX -= 1;
   mx += touchX;
   my += touchY;
 
@@ -486,6 +498,10 @@ export function readActions(): Actions {
     aimY: ay,
     zoomIn,
     zoomOut,
+    arrowX,
+    arrowY,
+    stickX: pad.mx,
+    stickY: pad.my,
     padKind: pad.connected ? "Gamepad" : "Keyboard",
     padName: pad.name,
   };
