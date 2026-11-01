@@ -28,8 +28,9 @@ Object.defineProperty(globalThis.navigator, "getGamepads", {
   value: () => pads,
 });
 
-function stickPad(x, y) {
-  const button = { pressed: false, touched: false, value: 0 };
+function stickPad(x, y, a = false) {
+  const buttons = Array.from({ length: 17 }, () => ({ pressed: false, touched: false, value: 0 }));
+  if (a) buttons[0] = { pressed: true, touched: true, value: 1 };
   return [
     {
       id: "test-standard",
@@ -38,7 +39,7 @@ function stickPad(x, y) {
       mapping: "standard",
       timestamp: 0,
       axes: [x, y, 0, 0],
-      buttons: Array.from({ length: 17 }, () => button),
+      buttons,
     },
   ];
 }
@@ -57,7 +58,9 @@ after(() => server.close());
 const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
-const { orbitReplayPointer, zoomReplayPointer, resetWorld, stepSim, world, beginPauseReplay, stopPauseReplay, pickReplayLock, replayLockKind, toggleReplayFrameLock, replayFrameLocked, replayEditSkater, exportReplayFrame, rewindPauseReplay, undoReplayEdit, redoReplayEdit, replayUndoDepth, replayRedoDepth, seekReplay, replayFootagePct } = sim;
+const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
+const { orbitReplayPointer, zoomReplayPointer, resetWorld, stepSim, world, beginPauseReplay, stopPauseReplay, pickReplayLock, replayLockKind, toggleReplayFrameLock, replayFrameLocked, replayEditSkater, exportReplayFrame, rewindPauseReplay, undoReplayEdit, redoReplayEdit, replayUndoDepth, replayRedoDepth, seekReplay, replayFootagePct, goalieZKind } = sim;
+const { inferNamedPose } = poses;
 const { useGame } = store;
 const { setInjectedKeys } = input;
 
@@ -510,10 +513,16 @@ test("a locked replay frame freezes scrub and edits a copy", () => {
     assert.equal(still.adjusted.players[0].z, moved.adjusted.players[0].z);
 
     const panLx = world.replayCam.lx;
-    setInjectedKeys(["KeyW"]);
+    const panLz = world.replayCam.lz;
+    const panPuck = exportReplayFrame().adjusted.puck.x;
+    const panPlayer = exportReplayFrame().adjusted.players[0].x;
+    setInjectedKeys(["KeyW", "KeyA", "KeyS", "KeyD"]);
     stepSim(dt);
     setInjectedKeys([]);
-    assert.ok(Math.abs(world.replayCam.lx - panLx) > 0.05);
+    assert.equal(world.replayCam.lx, panLx);
+    assert.equal(world.replayCam.lz, panLz);
+    assert.equal(exportReplayFrame().adjusted.puck.x, panPuck);
+    assert.equal(exportReplayFrame().adjusted.players[0].x, panPlayer);
 
     assert.equal(toggleReplayFrameLock(), false);
     assert.equal(replayFrameLocked(), false);
@@ -728,6 +737,336 @@ test("the left stick moves a locked player or the ice X like the arrow keys", ()
     assert.equal(world.skaters[0].z, heldZ);
     assert.equal(world.replayCam.phi, phi);
     assert.ok(world.replayCam.theta > theta);
+  } finally {
+    pads = [];
+    setInjectedKeys([]);
+    if (replayFrameLocked()) toggleReplayFrameLock();
+    stopPauseReplay();
+  }
+});
+
+function faceDot(yaw, x, z) {
+  const fx = -Math.sin(yaw);
+  const fz = -Math.cos(yaw);
+  return fx * x + fz * z;
+}
+
+test("holding A aims the selected player with the left stick and leaves arrows as a slide", () => {
+  bootReplay();
+  const dt = 1 / 60;
+  try {
+    assert.equal(toggleReplayFrameLock(), true);
+    world.camFx = 1;
+    world.camFz = 0;
+    world.camRx = 0;
+    world.camRz = 1;
+    parkOffRay(world.skaters[0]);
+    const skater = world.skaters[0];
+    skater.x = world.replayCam.lx;
+    skater.z = world.replayCam.lz;
+    skater.comX = skater.x;
+    skater.comZ = skater.z;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayEditSkater(), 0);
+    const before = exportReplayFrame();
+    const yaw0 = before.original.players[0].yaw;
+    const x0 = before.adjusted.players[0].x;
+    const z0 = before.adjusted.players[0].z;
+
+    pads = stickPad(0, -1, true);
+    stepSim(dt);
+    pads = [];
+    const aimed = exportReplayFrame();
+    assert.ok(Math.abs(aimed.adjusted.players[0].x - x0) < 1e-9);
+    assert.ok(Math.abs(aimed.adjusted.players[0].z - z0) < 1e-9);
+    assert.ok(faceDot(skater.yaw, 1, 0) > 0.99, `stick up yaw ${skater.yaw}`);
+    assert.equal(aimed.original.players[0].yaw, yaw0);
+    assert.equal(aimed.adjusted.players[0].yaw, skater.yaw);
+    assert.equal(aimed.original.players[0].x, before.original.players[0].x);
+
+    pads = stickPad(1, 0, true);
+    stepSim(dt);
+    pads = [];
+    assert.ok(Math.abs(exportReplayFrame().adjusted.players[0].x - x0) < 1e-9);
+    assert.ok(faceDot(skater.yaw, 0, 1) > 0.99, `stick right yaw ${skater.yaw}`);
+    assert.equal(exportReplayFrame().original.players[0].yaw, yaw0);
+
+    const yawHeld = skater.yaw;
+    pads = stickPad(0, 0, true);
+    setInjectedKeys(["ArrowUp"]);
+    stepSim(dt);
+    setInjectedKeys([]);
+    pads = [];
+    assert.ok(Math.abs(skater.x - (x0 + 4 * dt)) < 1e-9);
+    assert.equal(skater.yaw, yawHeld);
+
+    const x1 = skater.x;
+    pads = stickPad(0, -1);
+    stepSim(dt);
+    pads = [];
+    assert.ok(skater.x > x1);
+    assert.equal(skater.yaw, yawHeld);
+
+    for (const s of world.skaters) {
+      s.x = 100;
+      s.z = 100;
+      s.comX = 100;
+      s.comZ = 100;
+    }
+    world.puck.x = 80;
+    world.puck.z = 80;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayEditSkater(), null);
+    const lx = world.replayCam.lx;
+    const lz = world.replayCam.lz;
+    pads = stickPad(0, -1, true);
+    stepSim(dt);
+    pads = [];
+    assert.ok(Math.abs(world.replayCam.lx - (lx + 4 * dt)) < 1e-9);
+    assert.ok(Math.abs(world.replayCam.lz - lz) < 1e-9);
+
+    assert.equal(toggleReplayFrameLock(), false);
+    assert.ok(Math.abs(world.skaters[0].yaw - yaw0) < 1e-9);
+  } finally {
+    pads = [];
+    setInjectedKeys([]);
+    if (replayFrameLocked()) toggleReplayFrameLock();
+    stopPauseReplay();
+  }
+});
+
+test("undo and redo restore a locked player's yaw and slide", () => {
+  bootReplay();
+  const dt = 1 / 60;
+  try {
+    assert.equal(toggleReplayFrameLock(), true);
+    world.camFx = 1;
+    world.camFz = 0;
+    world.camRx = 0;
+    world.camRz = 1;
+    parkOffRay(world.skaters[0]);
+    const skater = world.skaters[0];
+    skater.x = world.replayCam.lx;
+    skater.z = world.replayCam.lz;
+    skater.comX = skater.x;
+    skater.comZ = skater.z;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayEditSkater(), 0);
+    const start = exportReplayFrame();
+    const yaw0 = start.adjusted.players[0].yaw;
+    const x0 = start.adjusted.players[0].x;
+    const z0 = start.adjusted.players[0].z;
+    const turnRight = faceDot(yaw0, 1, 0) > 0.99;
+    const release = () => {
+      pads = [];
+      setInjectedKeys([]);
+      stepSim(dt);
+    };
+
+    pads = turnRight ? stickPad(1, 0, true) : stickPad(0, -1, true);
+    stepSim(dt);
+    release();
+    const turned = exportReplayFrame();
+    const yaw1 = turned.adjusted.players[0].yaw;
+    assert.ok(faceDot(skater.yaw, turnRight ? 0 : 1, turnRight ? 1 : 0) > 0.99);
+    assert.equal(turned.adjusted.players[0].x, x0);
+    assert.equal(turned.adjusted.players[0].z, z0);
+    assert.equal(turned.original.players[0].yaw, start.original.players[0].yaw);
+    assert.equal(replayUndoDepth(), 1);
+
+    undoReplayEdit();
+    assert.equal(exportReplayFrame().adjusted.players[0].yaw, yaw0);
+    assert.equal(skater.yaw, yaw0);
+    assert.equal(exportReplayFrame().adjusted.players[0].x, x0);
+    assert.equal(replayRedoDepth(), 1);
+    redoReplayEdit();
+    assert.equal(exportReplayFrame().adjusted.players[0].yaw, yaw1);
+    assert.equal(skater.yaw, yaw1);
+    assert.equal(replayUndoDepth(), 1);
+    assert.equal(replayRedoDepth(), 0);
+
+    setInjectedKeys(["ArrowUp"]);
+    stepSim(dt);
+    release();
+    const slidX = x0 + 4 * dt;
+    assert.ok(Math.abs(exportReplayFrame().adjusted.players[0].x - slidX) < 1e-9);
+    assert.equal(exportReplayFrame().adjusted.players[0].yaw, yaw1);
+    assert.equal(replayUndoDepth(), 1);
+    undoReplayEdit();
+    assert.equal(exportReplayFrame().adjusted.players[0].x, x0);
+    assert.equal(exportReplayFrame().adjusted.players[0].yaw, yaw0);
+    assert.equal(skater.yaw, yaw0);
+    redoReplayEdit();
+    assert.ok(Math.abs(exportReplayFrame().adjusted.players[0].x - slidX) < 1e-9);
+    assert.equal(exportReplayFrame().adjusted.players[0].yaw, yaw1);
+    assert.equal(skater.yaw, yaw1);
+
+    const other = world.skaters[1];
+    const otherX = exportReplayFrame().adjusted.players[1].x;
+    const otherZ = exportReplayFrame().adjusted.players[1].z;
+    for (const s of world.skaters) {
+      s.x = 50;
+      s.z = 50;
+      s.comX = 50;
+      s.comZ = 50;
+    }
+    world.puck.x = 70;
+    world.puck.z = 70;
+    other.x = world.replayCam.lx;
+    other.z = world.replayCam.lz;
+    other.comX = other.x;
+    other.comZ = other.z;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayEditSkater(), 1);
+    pads = stickPad(1, 0);
+    stepSim(dt);
+    release();
+    assert.ok(Math.abs(exportReplayFrame().adjusted.players[1].z - (otherZ + 4 * dt)) < 1e-9);
+    assert.equal(exportReplayFrame().adjusted.players[0].yaw, yaw1);
+    assert.equal(replayUndoDepth(), 2);
+    undoReplayEdit();
+    assert.equal(exportReplayFrame().adjusted.players[1].x, otherX);
+    assert.equal(exportReplayFrame().adjusted.players[1].z, otherZ);
+    assert.equal(exportReplayFrame().adjusted.players[0].yaw, yaw1);
+    assert.ok(Math.abs(exportReplayFrame().adjusted.players[0].x - slidX) < 1e-9);
+    undoReplayEdit();
+    assert.equal(exportReplayFrame().adjusted.players[0].yaw, yaw0);
+    assert.equal(exportReplayFrame().adjusted.players[0].x, x0);
+    redoReplayEdit();
+    assert.equal(exportReplayFrame().adjusted.players[0].yaw, yaw1);
+    assert.ok(Math.abs(exportReplayFrame().adjusted.players[0].x - slidX) < 1e-9);
+    redoReplayEdit();
+    assert.ok(Math.abs(exportReplayFrame().adjusted.players[1].z - (otherZ + 4 * dt)) < 1e-9);
+    assert.equal(exportReplayFrame().original.players[0].yaw, start.original.players[0].yaw);
+  } finally {
+    pads = [];
+    setInjectedKeys([]);
+    if (replayFrameLocked()) toggleReplayFrameLock();
+    stopPauseReplay();
+  }
+});
+
+test("a locked frame keeps the goalie stance, moves the puck, eases keyboard yaw, and locks the driven X", () => {
+  bootReplay();
+  const dt = 1 / 60;
+  try {
+    assert.equal(toggleReplayFrameLock(), true);
+    world.camFx = 1;
+    world.camFz = 0;
+    world.camRx = 0;
+    world.camRz = 1;
+    const goalie = world.skaters.find((s) => s.kind === "goalie");
+    assert.ok(goalie);
+    const goalieIndex = world.skaters.indexOf(goalie);
+    const stance = goalieZKind(goalie);
+    const pose = inferNamedPose(goalie, goalieIndex);
+    const puckX = world.puck.x;
+    const puckZ = world.puck.z;
+    world.puck.x = puckX + 40;
+    world.puck.z = puckZ + 20;
+    assert.equal(goalieZKind(goalie), stance);
+    assert.equal(inferNamedPose(goalie, goalieIndex), pose);
+    world.puck.x = puckX;
+    world.puck.z = puckZ;
+
+    for (const s of world.skaters) {
+      s.x = 40;
+      s.z = 40;
+      s.comX = 40;
+      s.comZ = 40;
+    }
+    world.puck.x = world.replayCam.lx;
+    world.puck.z = world.replayCam.lz;
+    world.puck.y = world.replayCam.ly;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayEditSkater(), null);
+    const before = exportReplayFrame();
+    const wasdLx = world.replayCam.lx;
+    const wasdLz = world.replayCam.lz;
+    setInjectedKeys(["KeyW", "KeyA", "KeyS", "KeyD"]);
+    stepSim(dt);
+    setInjectedKeys([]);
+    assert.equal(exportReplayFrame().adjusted.puck.x, before.adjusted.puck.x);
+    assert.equal(exportReplayFrame().adjusted.puck.z, before.adjusted.puck.z);
+    assert.equal(world.replayCam.lx, wasdLx);
+    assert.equal(world.replayCam.lz, wasdLz);
+    setInjectedKeys(["ArrowUp"]);
+    stepSim(dt);
+    setInjectedKeys([]);
+    const moved = exportReplayFrame();
+    assert.ok(Math.abs(moved.adjusted.puck.x - (before.adjusted.puck.x + 4 * dt)) < 1e-9);
+    assert.equal(moved.adjusted.puck.z, before.adjusted.puck.z);
+    assert.equal(moved.original.puck.x, before.original.puck.x);
+    assert.equal(moved.adjusted.players[0].x, before.adjusted.players[0].x);
+    assert.equal(goalieZKind(goalie), stance);
+    undoReplayEdit();
+    assert.equal(exportReplayFrame().adjusted.puck.x, before.adjusted.puck.x);
+
+    parkOffRay(world.skaters[0]);
+    const skater = world.skaters[0];
+    skater.x = world.replayCam.lx;
+    skater.z = world.replayCam.lz;
+    skater.comX = skater.x;
+    skater.comZ = skater.z;
+    world.puck.x = 30;
+    world.puck.z = 30;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayEditSkater(), 0);
+    setInjectedKeys([]);
+    stepSim(dt);
+    const yawBefore = exportReplayFrame().adjusted.players[0].yaw;
+    const wasdX = exportReplayFrame().adjusted.players[0].x;
+    const wasdZ = exportReplayFrame().adjusted.players[0].z;
+    const wasdMark = world.replayCam.lx;
+    setInjectedKeys(["KeyW"]);
+    stepSim(dt);
+    setInjectedKeys(["KeyA"]);
+    stepSim(dt);
+    setInjectedKeys([]);
+    assert.equal(exportReplayFrame().adjusted.players[0].x, wasdX);
+    assert.equal(exportReplayFrame().adjusted.players[0].z, wasdZ);
+    assert.equal(exportReplayFrame().adjusted.players[0].yaw, yawBefore);
+    assert.equal(world.replayCam.lx, wasdMark);
+    pads = stickPad(1, 0, true);
+    stepSim(dt);
+    pads = [];
+    stepSim(dt);
+    const yawRight = world.skaters[0].yaw;
+    assert.ok(faceDot(yawRight, 0, 1) > 0.99);
+    const xHold = exportReplayFrame().adjusted.players[0].x;
+    setInjectedKeys(["KeyA", "ArrowUp"]);
+    stepSim(dt);
+    const yawStep = world.skaters[0].yaw;
+    const stepDelta = Math.atan2(Math.sin(yawStep - yawRight), Math.cos(yawStep - yawRight));
+    assert.ok(Math.abs(stepDelta) > 0.01 && Math.abs(stepDelta) < 0.2, `yaw step ${stepDelta}`);
+    assert.equal(exportReplayFrame().adjusted.players[0].x, xHold);
+    for (let i = 0; i < 40; i++) stepSim(dt);
+    setInjectedKeys([]);
+    stepSim(dt);
+    assert.ok(faceDot(world.skaters[0].yaw, 1, 0) > 0.9, `eased yaw ${world.skaters[0].yaw}`);
+    undoReplayEdit();
+    assert.ok(Math.abs(world.skaters[0].yaw - yawBefore) < 1e-6);
+
+    for (const s of world.skaters) {
+      s.x = 70;
+      s.z = 70;
+      s.comX = 70;
+      s.comZ = 70;
+    }
+    world.puck.x = 65;
+    world.puck.z = 65;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayEditSkater(), null);
+    const spot = exportReplayFrame();
+    world.replayCam.lx = spot.adjusted.puck.x - 0.4;
+    world.replayCam.lz = spot.adjusted.puck.z;
+    stepSim(dt);
+    assert.notEqual(replayLockKind(), "puck");
+    setInjectedKeys(["ArrowUp"]);
+    stepSim(dt);
+    setInjectedKeys([]);
+    stepSim(dt);
+    assert.equal(replayLockKind(), "puck");
   } finally {
     pads = [];
     setInjectedKeys([]);

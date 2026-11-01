@@ -1580,7 +1580,7 @@ export function Overlay() {
               <b>Replay</b>
               <span>
                 {frameLocked
-                  ? "Frame locked · drag to look · wheel zooms · click a player · arrows or left stick move them, or the X when none is selected · Undo and Redo step one player's run · click the ice to deselect · Y or click locks the camera · hold Y+stick orbit · X/B zoom · R3 or Select exits"
+                  ? "Frame locked · drag to look · wheel zooms · click a player or the puck · arrows or left stick move them · hold A and the left stick turns a player · hold keyboard A and arrows turn gradually · the X moves when none is selected and locks on like replay · Undo and Redo · click the ice to deselect · Y or click locks the camera · hold Y+stick orbit · X/B zoom · R3 or Select exits"
                   : "Drag to look · wheel zooms · A pause/play · tap Y or click to lock · stick pan · X on a body locks · hold Y+stick orbit · X/B zoom · LB/RB slow · LT/RT fast · R3 or Select exits"}
               </span>
             </p>
@@ -1736,7 +1736,7 @@ export function Overlay() {
         <div className="whistle replay-hint">
           {paused
             ? frameLocked
-              ? "Frame locked · click a player · arrows or left stick move them or the X · click the ice to deselect"
+              ? "Frame locked · click a player or the puck · arrows or stick move · keyboard A and arrows turn · the X locks on · click the ice to deselect"
               : "Drag · wheel · A pause · Y or click locks · X on a body locks · stick pan · LB/RB slow · LT/RT fast · R3 exits"
             : "A/B/X/Y skip"}
         </div>

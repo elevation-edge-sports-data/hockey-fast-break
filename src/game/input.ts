@@ -45,6 +45,8 @@ export type Actions = {
   /** Left stick after the same deadzone and Y flip as moveX and moveY. */
   stickX: number;
   stickY: number;
+  /** Keyboard A. Locked-frame arrows turn the selected player while this is held. */
+  keyA: boolean;
   padKind: "Keyboard" | "Gamepad";
   padName: string | null;
 };
@@ -502,6 +504,7 @@ export function readActions(): Actions {
     arrowY,
     stickX: pad.mx,
     stickY: pad.my,
+    keyA: k.has("KeyA"),
     padKind: pad.connected ? "Gamepad" : "Keyboard",
     padName: pad.name,
   };

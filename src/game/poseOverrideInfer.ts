@@ -15,8 +15,10 @@ import {
   goalieZKind,
   autoDekePoseName,
   rageDraw,
+  replayFrameLocked,
   shotFollowTime,
   ironDefensePose,
+  setGoaliePoseLockHook,
   shotTopCornerHand,
   shoulderCheckPose,
   scoredOnGoalieRagePose,
@@ -115,8 +117,40 @@ function faceoffStill(s: Skater): boolean {
   );
 }
 
+/** Named goalie pose taken at lock. Puck edits must not retarget it. */
+let goaliePoseHold: Map<number, string | null> | null = null;
+let capturingGoaliePose = false;
+
+function captureGoaliePoseHold(): void {
+  if (!replayFrameLocked()) {
+    goaliePoseHold = null;
+    return;
+  }
+  const next = new Map<number, string | null>();
+  capturingGoaliePose = true;
+  try {
+    for (let i = 0; i < world.skaters.length; i++) {
+      const s = world.skaters[i]!;
+      if (s.kind !== "goalie") continue;
+      next.set(s.id, inferNamedPoseLive(s, i));
+    }
+  } finally {
+    capturingGoaliePose = false;
+  }
+  goaliePoseHold = next;
+}
+
+setGoaliePoseLockHook(captureGoaliePoseHold);
+
 /** Live play only. Galleries pass the pose name in and do not use this. */
 export function inferNamedPose(s: Skater, index: number): string | null {
+  if (!capturingGoaliePose && replayFrameLocked() && s.kind === "goalie" && goaliePoseHold?.has(s.id)) {
+    return goaliePoseHold.get(s.id) ?? null;
+  }
+  return inferNamedPoseLive(s, index);
+}
+
+function inferNamedPoseLive(s: Skater, index: number): string | null {
   const goalie = s.kind === "goalie";
   if (brawlLive(s.id)) return "fight";
   if (goalie && !tumbling(s) && s.dive <= 0.04 && !checkedCyclePose(s.struck, s.tumble)) {
