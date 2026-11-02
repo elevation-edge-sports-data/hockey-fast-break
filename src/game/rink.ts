@@ -469,6 +469,7 @@ export function reflectBoard(
   const vn = vx * nx + vz * nz;
   if (vn <= 0) return { vx, vz };
   // Outward normal. +z wall (nz > 0) with inbound +vz comes back as -vz.
-  const k = 2 * vn;
-  return { vx: (vx - k * nx) * damp, vz: (vz - k * nz) * damp };
+  // damp is restitution on that normal only. Speed along the boards stays.
+  const rest = 1 + damp;
+  return { vx: vx - rest * vn * nx, vz: vz - rest * vn * nz };
 }

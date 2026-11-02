@@ -45,7 +45,7 @@ const rink = await server.ssrLoadModule("/src/game/rink.ts");
 const { resetWorld, stepSim, world, stickBlade } = sim;
 const { useGame } = store;
 const { setInjectedKeys, setInjectedAim } = input;
-const { GOAL_LINE_X, GOAL_W, GOAL_H, RINK_W, RINK_L, CORNER_R } = rink;
+const { GOAL_LINE_X, GOAL_W, GOAL_H, RINK_W, RINK_L, CORNER_R, reflectBoard, BOARD_BOUNCE_DAMP } = rink;
 
 const DT = 1 / 60;
 const PUCK_Y = 0.042;
@@ -201,9 +201,12 @@ function flatBankStart() {
   assert.ok(Math.abs(hx) < RINK_L / 2 - CORNER_R - 1, "bank spot is on the flat boards");
   const outX = GOAL_LINE_X - hx;
   const outZ = -wallZ;
-  const outL = Math.hypot(outX, outZ) || 1;
-  const ix = outX / outL;
-  const iz = -outZ / outL;
+  // Normal restitution only. A steeper inbound angle still leaves toward the net.
+  const ix0 = outX;
+  const iz0 = -outZ / BOARD_BOUNCE_DAMP;
+  const inL = Math.hypot(ix0, iz0) || 1;
+  const ix = ix0 / inL;
+  const iz = iz0 / inL;
   const back = 8;
   return {
     x: hx - ix * back,
@@ -217,9 +220,11 @@ function flatBankStart() {
 
 function aimIntoNet(bx, bz) {
   const wallZ = RINK_W / 2 - 0.09;
-  const hx = ((wallZ - bz) * GOAL_LINE_X + bx * wallZ) / (2 * wallZ - bz);
+  const rise = wallZ - bz;
+  const hx =
+    (BOARD_BOUNCE_DAMP * rise * GOAL_LINE_X + bx * wallZ) / (wallZ + BOARD_BOUNCE_DAMP * rise);
   const ax = hx - bx;
-  const az = wallZ - bz;
+  const az = rise;
   const n = Math.hypot(ax, az) || 1;
   return { mx: az / n, my: ax / n, hx, wallZ };
 }
@@ -279,6 +284,63 @@ function putBlade(x, z) {
   }
 }
 
+test("board damp keeps along-board speed and does not repeat while pressed", () => {
+  // +z wall, outbound +vz. Normal comes back inward. Tangent is untouched.
+  const head = reflectBoard(0, 10, 0, 1);
+  assert.ok(Math.abs(head.vx) < 1e-9);
+  assert.ok(Math.abs(head.vz - -10 * BOARD_BOUNCE_DAMP) < 1e-9);
+  const graze = reflectBoard(18, 1.2, 0, 1);
+  assert.ok(Math.abs(graze.vx - 18) < 1e-9, `tangent ${graze.vx}`);
+  assert.ok(Math.abs(graze.vz - (1.2 - (1 + BOARD_BOUNCE_DAMP) * 1.2)) < 1e-9);
+  const away = reflectBoard(18, -2, 0, 1);
+  assert.equal(away.vx, 18);
+  assert.equal(away.vz, -2);
+  const mirror = reflectBoard(4, 7, 0, 1, 1);
+  assert.ok(Math.abs(mirror.vx - 4) < 1e-9 && Math.abs(mirror.vz + 7) < 1e-9);
+
+  boot();
+  const halfW = RINK_W / 2;
+  launch(-8, PUCK_Y, halfW - 0.05, 16, 0, 0.4);
+  step(1);
+  assert.ok(world.puck.vx > 15.5, `first contact scaled the whole vector, vx ${world.puck.vx.toFixed(3)}`);
+  step(89);
+  const dragged = 16 * Math.exp(-0.2 * 90 * DT);
+  assert.ok(
+    world.puck.vx > dragged * 0.92,
+    `slide vx ${world.puck.vx.toFixed(3)} fell below ice drag ${dragged.toFixed(3)}`,
+  );
+  assert.ok(Math.abs(world.puck.z) > halfW - 0.4, `left the wall at z ${world.puck.z.toFixed(3)}`);
+
+  // A later hit on the far boards is a new contact and damps that normal once.
+  boot();
+  launch(0, PUCK_Y, -halfW + 0.04, 2, 0, -8);
+  const before = Math.hypot(world.puck.vx, world.puck.vz);
+  step(1);
+  const draggedIn = 8 * Math.exp(-0.2 * DT);
+  assert.ok(
+    world.puck.vz > draggedIn * BOARD_BOUNCE_DAMP - 0.15 &&
+      world.puck.vz < draggedIn * BOARD_BOUNCE_DAMP + 0.15,
+    `new wall bounced vz ${world.puck.vz.toFixed(3)}`,
+  );
+  assert.ok(Math.abs(world.puck.vx - 2 * Math.exp(-0.2 * DT)) < 0.05, "far-wall tangent kept");
+  assert.ok(Math.hypot(world.puck.vx, world.puck.vz) < before, "normal restitution removed energy");
+
+  // Around the corner the wall normal turns every step. That is still one press.
+  boot();
+  const innerL = RINK_L / 2 - CORNER_R;
+  const innerW = RINK_W / 2 - CORNER_R;
+  const theta = 0.55;
+  const nx = Math.sin(theta);
+  const nz = Math.cos(theta);
+  const rad = CORNER_R - 0.05;
+  const sp = 14;
+  launch(innerL + nx * rad, PUCK_Y, innerW + nz * rad, nz * sp + nx * 0.35, 0, -nx * sp + nz * 0.35);
+  step(50);
+  const left = Math.hypot(world.puck.vx, world.puck.vz);
+  const cornerDrag = sp * Math.exp(-0.2 * 50 * DT);
+  assert.ok(left > cornerDrag * 0.9, `corner slide ${left.toFixed(3)} vs ice drag ${cornerDrag.toFixed(3)}`);
+});
+
 test("a pass off the boards at that angle comes off the scrimmage face", () => {
   boot();
   const bank = flatBankStart();
@@ -314,4 +376,66 @@ test("a pass off the boards at that angle comes off the scrimmage face", () => {
   assert.ok(faceZ !== null, `pass bank missed the face, puck ${world.puck.x.toFixed(2)}, ${world.puck.z.toFixed(2)}`);
   assert.ok(world.puck.x < GOAL_LINE_X - 0.01, `pass went through at ${world.puck.x.toFixed(2)}`);
   assert.ok(Math.abs(faceZ) < GOAL_W / 2 + 0.15, `pass met the face at z ${faceZ}`);
+});
+
+function releaseRim(holdS) {
+  boot();
+  const halfW = RINK_W / 2;
+  putBlade(-18, halfW - 0.45);
+  const s = user();
+  s.stun = 0;
+  world.puck.owner = s.id;
+  const blade = stickBlade(s);
+  world.puck.x = blade.x;
+  world.puck.z = blade.z;
+  world.puck.y = PUCK_Y;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  const realNow = performance.now.bind(performance);
+  let ms = 5_000_000;
+  performance.now = () => ms;
+  try {
+    setInjectedAim(0.05, 1);
+    setInjectedKeys(["KeyE"]);
+    step(1);
+    ms += holdS * 1000;
+    step(1);
+    setInjectedKeys([]);
+    step(1);
+  } finally {
+    performance.now = realNow;
+    setInjectedKeys([]);
+    setInjectedAim(0, 0);
+  }
+  s.stun = 9;
+  s.x = -24;
+  s.z = 0;
+  return Math.hypot(world.puck.vx, world.puck.vz);
+}
+
+test("a charged board rim is faster and runs farther than a tap", () => {
+  const tapLeave = releaseRim(0.05);
+  assert.ok(world.puck.owner === null, "tap rim did not leave the stick");
+  const tapX = world.puck.x;
+  const tapZ = world.puck.z;
+  step(45);
+  const tapRun = Math.hypot(world.puck.x - tapX, world.puck.z - tapZ);
+  const tapWall = Math.abs(world.puck.z);
+
+  const fullLeave = releaseRim(1.5);
+  assert.ok(world.puck.owner === null, "charged rim did not leave the stick");
+  const fullX = world.puck.x;
+  const fullZ = world.puck.z;
+  step(45);
+  const fullRun = Math.hypot(world.puck.x - fullX, world.puck.z - fullZ);
+
+  const tapMps = 55 / 2.23694;
+  const fullMps = 95 / 2.23694;
+  assert.ok(Math.abs(tapLeave - tapMps) < 1.5, `tap left at ${tapLeave.toFixed(2)} m/s`);
+  assert.ok(fullLeave > tapLeave * 1.45, `full ${fullLeave.toFixed(2)} vs tap ${tapLeave.toFixed(2)}`);
+  assert.ok(Math.abs(fullLeave - fullMps) < 1.5, `full left at ${fullLeave.toFixed(2)} m/s`);
+  assert.ok(fullRun > tapRun * 1.35, `full ran ${fullRun.toFixed(1)} m, tap ${tapRun.toFixed(1)} m`);
+  assert.ok(tapWall > RINK_W / 2 - 2, `tap left the wall at z ${world.puck.z.toFixed(2)}`);
+  assert.ok(Math.abs(world.puck.z) > RINK_W / 2 - 2, `charge left the wall at z ${world.puck.z.toFixed(2)}`);
 });
