@@ -1271,10 +1271,26 @@ h2 {
   cursor: default;
 }
 
+.madden-replay-lane {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+}
+
 .madden-replay-fill {
   height: 100%;
   background: #5a1021;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.madden-replay-mark {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: #f4f4f4;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .madden-replay-pct {
@@ -1669,6 +1685,152 @@ h2 {
   .hud.is-title .start-card .btn-primary {
     min-height: 40px;
   }
+}
+
+.formation-lib {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "top top"
+    "side stage";
+  height: 100dvh;
+}
+
+.formation-top {
+  grid-area: top;
+  z-index: 3;
+  padding: 10px 12px;
+  background: color-mix(in oklab, var(--color-surface) 94%, transparent);
+  border-bottom: 1px solid var(--color-line);
+  pointer-events: auto;
+}
+
+.formation-top .formation-kits {
+  grid-template-columns: auto minmax(0, 1fr);
+  margin: 0;
+}
+
+.formation-top .formation-kits > .uni-side:last-child {
+  justify-self: end;
+}
+
+.formation-stage {
+  grid-area: stage;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.formation-lib .rink-canvas {
+  left: 0;
+  top: 0;
+}
+
+.formation-side {
+  grid-area: side;
+  position: relative;
+  z-index: 2;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  background: color-mix(in oklab, var(--color-surface) 94%, transparent);
+  border-right: 1px solid var(--color-line);
+  pointer-events: auto;
+}
+
+.formation-side h1 {
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.formation-note {
+  margin: 8px 0 12px;
+  color: var(--color-muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.formation-kits {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.formation-save {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+
+.formation-save input {
+  flex: 1 0 100%;
+  min-width: 0;
+  min-height: 44px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-fg);
+  padding: 0 8px;
+  font: inherit;
+}
+
+.formation-save .btn-ghost {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0 12px;
+}
+
+.formation-side .btn-primary {
+  width: 100%;
+}
+
+.formation-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.formation-list li {
+  display: grid;
+  gap: 4px;
+}
+
+.formation-list button {
+  text-align: left;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-2);
+  color: var(--color-fg);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.formation-list button.is-on {
+  border-color: var(--color-accent);
+}
+
+.formation-list b {
+  display: block;
+  font-family: var(--font-display);
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.formation-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted);
 }
 
 @media (prefers-reduced-motion: reduce) {

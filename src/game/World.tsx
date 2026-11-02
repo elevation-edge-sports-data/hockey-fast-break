@@ -6,7 +6,7 @@ import { Arena } from "./Arena";
 import { Rink } from "./Rink.tsx";
 import { PlayerMesh, PUCK_MARK_INNER, PuckMesh, RefereeMesh, USER_MARK_INNER } from "./PlayerMesh";
 import { attachInput } from "./input";
-import { cpuDrillWatchLook, cpuScrimmageWatchOn, installControlsProbe, mirrorFreeCamEnds, orbitFromOffset, periodEndLook, replayLockKind, shootoutFocusLook, stepPlayFrame, whistleUserLook, world } from "./sim";
+import { cpuDrillWatchLook, cpuScrimmageWatchOn, installControlsProbe, instantReplayPose, mirrorFreeCamEnds, orbitFromOffset, periodEndLook, replayLockKind, shootoutFocusLook, stepPlayFrame, whistleUserLook, world } from "./sim";
 import { useGame, type CamMode } from "./store";
 import { BOARD_H, BLUE_X, GOAL_LINE_X, resolveRink, RINK_L, RINK_W } from "./rink.ts";
 
@@ -730,6 +730,25 @@ function CameraRig() {
     if (world.replay) {
       const puck = world.puck;
       cam.up.set(0, 1, 0);
+      const instant = world.replayKind === "goal" ? instantReplayPose() : null;
+      if (instant) {
+        cam.up.set(instant.upX, instant.upY, instant.upZ);
+        _look.set(instant.lookX, instant.lookY, instant.lookZ);
+        _desired.set(instant.camX, instant.camY, instant.camZ);
+        _pos.copy(_desired);
+        _lookSmooth.copy(_look);
+        cam.position.copy(_pos);
+        if (instant.mode === "classic") aimClassic(cam, _lookSmooth);
+        else cam.lookAt(_lookSmooth);
+        if (Math.abs(cam.fov - instant.fov) > 0.2) {
+          cam.fov = instant.fov;
+          cam.updateProjectionMatrix();
+        }
+        world.replayHardCut = false;
+        writeCamBasis(cam);
+        projectUser(cam);
+        return;
+      }
       if (world.replayKind === "pause") {
         const rc = world.replayCam;
         const sp = Math.sin(rc.phi);

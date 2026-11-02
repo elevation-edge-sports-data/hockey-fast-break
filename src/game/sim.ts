@@ -1216,6 +1216,7 @@ function resetSkaters(): void {
   world.replayKind = null;
   world.replayHardCut = false;
   world.replayPlaying = true;
+  dropInstantReplay();
   clearReplayCamControl();
   world.goalPuckT = 0;
   world.goalBank = null;
@@ -18087,6 +18088,7 @@ function startStoppage(kind: "goal" | "cover" | "offside" | "crowd", net?: 1 | -
       assignGoalCheer(scorer.side, anchor?.id ?? scorer.id);
     }
     beginJumboReplay();
+    armInstantReplay(homeScored);
     const otMode = ui.clockMode === "roller" || ui.clockMode === "game";
     const otFormat = ui.clockMode === "roller" ? ui.rollerOtFormat : ui.otFormat;
     const pastRegulation =
@@ -21318,6 +21320,12 @@ type ReplayBody = {
   smashHit: number;
   gloveFlash: number;
   backskate: boolean;
+  hit: number;
+  burst: number;
+  trackZ: number;
+  trackVz: number;
+  /** Named pose inferred while this frame was live. Null is no override. */
+  pose?: string | null;
   /** Who was on the ice. Playback rebuilds the roster from these, not the pause lineup. */
   side: "home" | "away";
   kind: SkaterKind;
@@ -21364,6 +21372,14 @@ type ReplaySnap = {
   ceremony?: boolean;
   /** Drill and scrimmage boards at this frame, including a card knocked loose. */
   targets?: ReplayTargets;
+  /** Shot clock for this frame, so a later goal does not repaint the windup. */
+  shot?: {
+    lastShoot: number;
+    lastShooter: number | null;
+    lastShotKind: ShotKind | null;
+    lastShotSlap: boolean;
+    lastShotBackhand: boolean;
+  };
 };
 
 type ReplayTargets = {
@@ -21390,6 +21406,11 @@ let replayMarkMoved = false;
 let replayPanning = false;
 let replayPct = 1;
 const replayPctListeners = new Set<() => void>();
+/** Export marks only. They do not trim playback or the scrubber. */
+type ReplayRangeMark = { frame: number; born: number };
+let replayRangeMarks: ReplayRangeMark[] = [];
+let replayRangeBorn = 0;
+let replayRangePcts: readonly number[] = [];
 /** Formation edit. The ring buffer and replayPlay stay untouched. */
 let replayFrameLock = false;
 let replayEdit: ReplaySnap | null = null;
@@ -21458,6 +21479,7 @@ function clearReplayBuf(): void {
   replayN = 0;
   replayW = 0;
   replayPlay = [];
+  clearReplayRangeMarks();
   pauseHold = null;
   jumboPlay = [];
   jumboT = 0;
@@ -21502,7 +21524,22 @@ function applyOneRef(r: Referee, snap: ReplayRef): void {
   r.tumbleSpin = snap.tumbleSpin ?? 0;
 }
 
-function snapBody(s: Skater): ReplayBody {
+let replayPoseSample: ((s: Skater, index: number) => string | null) | null = null;
+
+/** Installed by the pose inferrer. Recording stores that frame's pose name. */
+export function setReplayPoseSample(fn: ((s: Skater, index: number) => string | null) | null): void {
+  replayPoseSample = fn;
+}
+
+/** Pose recorded on this Instant Replay frame. Undefined when the clip is not playing. */
+export function instantReplayPoseName(id: number): string | null | undefined {
+  if (world.replayKind !== "goal" || !replayPoseById || !replayPoseById.has(id)) return undefined;
+  return replayPoseById.get(id) ?? null;
+}
+
+let replayPoseById: Map<number, string | null> | null = null;
+
+function snapBody(s: Skater, index = 0): ReplayBody {
   return {
     x: s.x,
     z: s.z,
@@ -21531,6 +21568,11 @@ function snapBody(s: Skater): ReplayBody {
     smashHit: s.smashHit,
     gloveFlash: s.gloveFlash,
     backskate: s.backskate,
+    hit: s.hit,
+    burst: s.burst,
+    trackZ: s.trackZ,
+    trackVz: s.trackVz,
+    pose: replayPoseSample ? replayPoseSample(s, index) : undefined,
     side: s.side,
     kind: s.kind,
     number: s.number,
@@ -21623,17 +21665,25 @@ function recordReplay(force = false): void {
       owner: world.puck.owner,
     },
     userId: world.userId,
-    bodies: world.skaters.map(snapBody),
+    bodies: world.skaters.map((s, i) => snapBody(s, i)),
     ref: snapRef(),
     ref2: snapRef2(),
     ref3: snapOneRef(world.ref3),
     ref4: snapOneRef(world.ref4),
     rage: snapRage(),
+    shot: {
+      lastShoot: world.lastShoot,
+      lastShooter: world.lastShooter,
+      lastShotKind: world.lastShotKind,
+      lastShotSlap: world.lastShotSlap,
+      lastShotBackhand: world.lastShotBackhand,
+    },
     ceremony,
     targets: snapTargets(),
   };
   replayW = (replayW + 1) % REPLAY_CAP;
   if (replayN < REPLAY_CAP) replayN++;
+  pushInstantTail(replayBuf[(replayW + REPLAY_CAP - 1) % REPLAY_CAP]!);
 }
 
 function applyReplaySnap(snap: ReplaySnap): void {
@@ -21680,6 +21730,29 @@ function applyReplaySnap(snap: ReplaySnap): void {
     s.smashHit = b.smashHit ?? 0;
     s.gloveFlash = b.gloveFlash;
     s.backskate = b.backskate ?? false;
+    if (world.replayKind === "goal") {
+      if (b.hit !== undefined) s.hit = b.hit;
+      if (b.burst !== undefined) s.burst = b.burst;
+      if (b.trackZ !== undefined) s.trackZ = b.trackZ;
+      if (b.trackVz !== undefined) s.trackVz = b.trackVz;
+    }
+  }
+  if (world.replayKind === "goal") {
+    if (snap.shot) {
+      world.lastShoot = snap.shot.lastShoot;
+      world.lastShooter = snap.shot.lastShooter;
+      world.lastShotKind = snap.shot.lastShotKind;
+      world.lastShotSlap = snap.shot.lastShotSlap;
+      world.lastShotBackhand = snap.shot.lastShotBackhand;
+    }
+    const poses = new Map<number, string | null>();
+    const posed = Math.min(snap.bodies.length, world.skaters.length);
+    for (let i = 0; i < posed; i++) {
+      const b = snap.bodies[i]!;
+      if (b.pose === undefined) continue;
+      poses.set(world.skaters[i]!.id, b.pose);
+    }
+    replayPoseById = poses.size ? poses : null;
   }
   applyRage(snap.rage);
   applyReplayTargets(snap);
@@ -21880,6 +21953,66 @@ export function exportReplayFrame(): ReplayFormationExport | null {
   };
 }
 
+function clearReplayRangeMarks(): void {
+  if (!replayRangeMarks.length) return;
+  replayRangeMarks = [];
+  replayRangePcts = [];
+  publishReplayEdit();
+}
+
+function syncReplayRangePcts(): void {
+  const denom = replayPlay.length - 1;
+  replayRangePcts = denom > 0 ? replayRangeMarks.map((m) => m.frame / denom) : replayRangeMarks.map(() => 0);
+}
+
+/** Mark positions along the scrubber, in the order they were dropped. */
+export function replayRangeMarkPcts(): readonly number[] {
+  return replayRangePcts;
+}
+
+/**
+ * Drop a mark on the frame the scrubber is showing.
+ * The first two presses add marks. A later press replaces the nearer mark,
+ * or the one placed earlier when both are the same distance away.
+ */
+export function markReplayRange(): void {
+  if (!world.replay || world.replayKind !== "pause" || !replayPlay.length) return;
+  const frame = Math.min(replayPlay.length - 1, Math.max(0, Math.floor(world.replayT * 60)));
+  const born = ++replayRangeBorn;
+  if (replayRangeMarks.length < 2) {
+    replayRangeMarks.push({ frame, born });
+  } else {
+    const a = replayRangeMarks[0]!;
+    const b = replayRangeMarks[1]!;
+    const da = Math.abs(a.frame - frame);
+    const db = Math.abs(b.frame - frame);
+    const idx = da < db ? 0 : db < da ? 1 : a.born <= b.born ? 0 : 1;
+    replayRangeMarks[idx] = { frame, born };
+  }
+  syncReplayRangePcts();
+  publishReplayEdit();
+}
+
+/** Recorded frames from the earlier mark through the later mark, inclusive. */
+export function exportReplayRange(): ReplayFormationExport[] | null {
+  if (replayRangeMarks.length < 2 || !replayPlay.length) return null;
+  const last = replayPlay.length - 1;
+  const lo = Math.max(0, Math.min(last, Math.min(replayRangeMarks[0]!.frame, replayRangeMarks[1]!.frame)));
+  const hi = Math.max(0, Math.min(last, Math.max(replayRangeMarks[0]!.frame, replayRangeMarks[1]!.frame)));
+  const out: ReplayFormationExport[] = [];
+  for (let i = lo; i <= hi; i++) {
+    const snap = replayPlay[i];
+    if (!snap) continue;
+    out.push({
+      frame: i,
+      time: i / 60,
+      original: formationSide(snap),
+      adjusted: formationSide(snap),
+    });
+  }
+  return out;
+}
+
 function replayPinnedGoalie(s: Skater): GoaliePosePin | null {
   if (!replayFrameLock || !goaliePosePin || s.kind !== "goalie") return null;
   return goaliePosePin.get(s.id) ?? null;
@@ -21954,6 +22087,7 @@ function publishReplayPct(): void {
 
 function endReplay(): void {
   const kind = world.replayKind;
+  clearReplayRangeMarks();
   replayRagePose.clear();
   world.replay = false;
   world.replayT = 0;
@@ -22009,6 +22143,293 @@ export function jumboReplayView(): {
       z: b.z,
       home: world.skaters[idx]?.side === "home",
     })),
+  };
+}
+
+/** Longest pre-release window. Broadcast uses it; classic and chase start later. */
+const INSTANT_PRE_FRAMES = 90;
+const INSTANT_POST_FRAMES = 30;
+const INSTANT_DELAY_S = 2;
+
+export type InstantCam = "broadcast" | "chase" | "classic";
+
+const INSTANT_PRE: Record<InstantCam, number> = { broadcast: 90, classic: 60, chase: 60 };
+
+function shuffleInstantModes(): InstantCam[] {
+  const modes: InstantCam[] = ["broadcast", "classic", "chase"];
+  for (let i = modes.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const swap = modes[i]!;
+    modes[i] = modes[j]!;
+    modes[j] = swap;
+  }
+  return modes;
+}
+
+let instantClip: ReplaySnap[] = [];
+/** Index of the possession release inside instantClip. Tail frames are appended after it. */
+let instantReleaseAt = 0;
+/** Goal frame. Chase stops here. Broadcast and classic play the tail that follows. */
+let instantGoalAt = 0;
+let instantTail = 0;
+let instantWait = false;
+let instantOn = false;
+let instantUserGoal = false;
+let instantModes: InstantCam[] = [];
+let instantModeI = 0;
+let instantT = 0;
+let instantChaseX = 1;
+let instantChaseZ = 0;
+
+function dropInstantReplay(): void {
+  instantClip = [];
+  instantReleaseAt = 0;
+  instantGoalAt = 0;
+  instantTail = 0;
+  instantWait = false;
+  instantOn = false;
+  instantUserGoal = false;
+  instantModes = [];
+  instantModeI = 0;
+  instantT = 0;
+  replayPoseById = null;
+}
+
+function instantModesOk(): boolean {
+  const ui = useGame.getState();
+  if (!ui.instantReplay || world.shootout) return false;
+  return ui.clockMode === "game" || ui.clockMode === "roller" || ui.clockMode === "scrimmage";
+}
+
+function instantModeStart(mode: InstantCam): number {
+  return Math.max(0, instantReleaseAt - INSTANT_PRE[mode]);
+}
+
+function instantModeEnd(mode: InstantCam): number {
+  if (mode === "chase") return instantGoalAt;
+  return Math.max(instantGoalAt, instantClip.length - 1);
+}
+
+function armInstantReplay(userScored: boolean): void {
+  dropInstantReplay();
+  if (!instantModesOk()) return;
+  const raw = dumpReplayBuf();
+  if (raw.length < 2) return;
+  // A pass into the net is not a shot. The last possession ends at the later release.
+  const released = Math.max(world.lastShoot, world.lastPass);
+  const since = Math.max(0, world.time - released);
+  const back = Math.round(since * 60);
+  const from = Math.max(0, raw.length - 1 - back - INSTANT_PRE_FRAMES);
+  instantClip = raw.slice(from).map(cloneReplaySnap);
+  instantGoalAt = Math.max(0, instantClip.length - 1);
+  instantReleaseAt = Math.max(0, instantGoalAt - back);
+  instantTail = INSTANT_POST_FRAMES;
+  instantWait = true;
+  instantUserGoal = userScored;
+  instantModes = shuffleInstantModes();
+}
+
+function instantShownSnap(): ReplaySnap | null {
+  const mode = instantModes[instantModeI];
+  if (!mode || instantClip.length < 2) return null;
+  const start = instantModeStart(mode);
+  const end = instantModeEnd(mode);
+  const i = Math.min(end, start + Math.max(0, Math.floor(instantT * 60)));
+  return instantClip[i] ?? null;
+}
+
+function instantModeDur(): number {
+  const mode = instantModes[instantModeI];
+  if (!mode || instantClip.length < 2) return 0;
+  return Math.max(0, instantModeEnd(mode) - instantModeStart(mode)) / 60;
+}
+
+function pushInstantTail(snap: ReplaySnap): void {
+  if (!instantWait || instantTail <= 0) return;
+  instantClip.push(cloneReplaySnap(snap));
+  instantTail -= 1;
+}
+
+function seedInstantChase(snap: ReplaySnap): void {
+  const spd = Math.hypot(snap.puck.vx, snap.puck.vz);
+  if (spd > 0.55) {
+    instantChaseX = snap.puck.vx / spd;
+    instantChaseZ = snap.puck.vz / spd;
+    return;
+  }
+  instantChaseX = world.homeAttack > 0 ? 1 : -1;
+  instantChaseZ = 0;
+}
+
+function beginInstantReplay(): void {
+  if (!instantWait || instantClip.length < 2) {
+    if (instantWait && instantClip.length < 2) dropInstantReplay();
+    return;
+  }
+  instantWait = false;
+  instantTail = 0;
+  instantOn = true;
+  instantModeI = 0;
+  instantT = 0;
+  world.replay = true;
+  world.replayKind = "goal";
+  world.replayPlaying = true;
+  world.replayT = 0;
+  world.replayHardCut = true;
+  const first = instantShownSnap();
+  if (first) {
+    seedInstantChase(first);
+    applyReplaySnap(first);
+  }
+}
+
+function advanceInstantReplay(): void {
+  instantModeI += 1;
+  instantT = 0;
+  world.replayT = 0;
+  world.replayHardCut = true;
+  if (instantModeI >= instantModes.length || instantClip.length < 2) {
+    finishInstantReplay();
+    return;
+  }
+  const next = instantShownSnap();
+  if (next) {
+    seedInstantChase(next);
+    applyReplaySnap(next);
+  }
+}
+
+function finishInstantReplay(): void {
+  dropInstantReplay();
+  world.replay = false;
+  world.replayKind = null;
+  world.replayT = 0;
+  world.replayPlaying = false;
+  world.replayHardCut = true;
+  if (world.shootout) return;
+  if (endScrimmageMatch()) return;
+  if (overtimeWinner) {
+    endOvertimeMatch();
+    world.faceoffA = true;
+    return;
+  }
+  resetWorld({ keepScore: true });
+  world.faceoffA = true;
+}
+
+function stepInstantReplay(dt: number, act: Actions): boolean {
+  if (!instantOn) return false;
+  if (act.xEdge) {
+    finishInstantReplay();
+    return true;
+  }
+  if (act.aEdge) {
+    advanceInstantReplay();
+    return true;
+  }
+  const dur = instantModeDur();
+  instantT += dt;
+  world.replayT = instantT;
+  if (instantT >= dur) {
+    advanceInstantReplay();
+    return true;
+  }
+  const snap = instantShownSnap();
+  if (snap) applyReplaySnap(snap);
+  return true;
+}
+
+export function instantReplayModes(): readonly InstantCam[] {
+  return instantModes;
+}
+
+export function instantReplayFrames(): number {
+  return instantClip.length;
+}
+
+export function instantReplayCam(): InstantCam | null {
+  if (!instantOn) return null;
+  return instantModes[instantModeI] ?? null;
+}
+
+function instantScreenUp(): 1 | -1 {
+  const homeUp: 1 | -1 = world.homeAttack > 0 ? 1 : -1;
+  if (cpuScrimmageWatchOn()) return homeUp === 1 ? -1 : 1;
+  return homeUp;
+}
+
+/** Puck-centered camera for the mode now playing. Null outside instant replay. */
+export function instantReplayPose(): {
+  mode: InstantCam;
+  lookX: number;
+  lookY: number;
+  lookZ: number;
+  camX: number;
+  camY: number;
+  camZ: number;
+  upX: number;
+  upY: number;
+  upZ: number;
+  fov: number;
+} | null {
+  const mode = instantReplayCam();
+  if (!mode) return null;
+  const px = world.puck.x;
+  const py = Math.max(0.35, world.puck.y);
+  const pz = world.puck.z;
+  if (mode === "classic") {
+    const atk = instantScreenUp();
+    const back = 13.2;
+    const camX = atk > 0 ? px - back : px + back;
+    return {
+      mode,
+      lookX: px,
+      lookY: py,
+      lookZ: pz,
+      camX,
+      camY: 9.4,
+      camZ: pz,
+      upX: atk,
+      upY: 0,
+      upZ: 0,
+      fov: 50,
+    };
+  }
+  if (mode === "broadcast") {
+    return {
+      mode,
+      lookX: px,
+      lookY: py,
+      lookZ: pz,
+      camX: px * 0.16,
+      camY: 12.2,
+      camZ: Math.min(10.2, RINK_W / 2 - 1.6),
+      upX: 0,
+      upY: 1,
+      upZ: 0,
+      fov: 44,
+    };
+  }
+  const spd = Math.hypot(world.puck.vx, world.puck.vz);
+  if (spd > 0.55) {
+    instantChaseX = world.puck.vx / spd;
+    instantChaseZ = world.puck.vz / spd;
+  }
+  const hm = Math.hypot(instantChaseX, instantChaseZ) || 1;
+  const fx = instantChaseX / hm;
+  const fz = instantChaseZ / hm;
+  return {
+    mode,
+    lookX: px,
+    lookY: py,
+    lookZ: pz,
+    camX: px - fx * 7.1,
+    camY: py + 2.7,
+    camZ: pz - fz * 7.1,
+    upX: 0,
+    upY: 1,
+    upZ: 0,
+    fov: 44,
   };
 }
 
@@ -22309,7 +22730,7 @@ export function beginPauseReplay(): boolean {
       owner: world.puck.owner,
     },
     userId: world.userId,
-    bodies: world.skaters.map(snapBody),
+    bodies: world.skaters.map((s, i) => snapBody(s, i)),
     ref: snapRef(),
     ref2: snapRef2(),
     ref3: snapOneRef(world.ref3),
@@ -22318,6 +22739,7 @@ export function beginPauseReplay(): boolean {
     targets: snapTargets(),
   };
   replayPlay = raw;
+  clearReplayRangeMarks();
   world.replay = true;
   world.replayKind = "pause";
   world.replayHardCut = true;
@@ -25044,6 +25466,16 @@ function stepPlay(dt: number, act: Actions): void {
     // A short B tap still skips. Holding B is the burst. Dive uses the live
     // button. X starts that smash when the user is within 2 m of a post or bar.
     if (world.whistle === "goal" && !world.periodOver) {
+      if (instantWait) {
+        if (act.xEdge) {
+          finishInstantReplay();
+          return;
+        }
+        if (act.aEdge) {
+          beginInstantReplay();
+          return;
+        }
+      }
       if (act.bDown) goalBHold += dt;
       else if (goalBHold > 0 && goalBHold < GOAL_B_TAP && world.stoppageT > 0.12) {
         goalBHold = 0;
@@ -25059,7 +25491,7 @@ function stepPlay(dt: number, act: Actions): void {
           return;
         }
       } else goalBHold = 0;
-      if (act.aEdge && !world.shootout) changePlayer();
+      if (act.aEdge && !world.shootout && !(instantUserGoal && instantWait)) changePlayer();
     } else goalBHold = 0;
     if (world.whistle === "goal" && !world.shootout) {
       stepGoalCelebrate(dt);
@@ -25286,8 +25718,11 @@ function stepPlay(dt: number, act: Actions): void {
     stepRef(dt);
     updateCoverPose(dt);
     if (world.whistle === "goal" || offsideTailLive()) recordReplay();
+    if (instantWait && world.whistle === "goal" && world.stoppageT >= INSTANT_DELAY_S) beginInstantReplay();
     if (world.shootout) parkShootoutBench();
-    if (world.whistle === "crowd") {
+    if (instantWait && world.whistle === "goal") {
+      /* Hold the celebration until the replay starts or X skips it. */
+    } else if (world.whistle === "crowd") {
       // Goal, offside, and cover keep their own stoppage limits.
       if (world.stoppageT >= 2) {
         if (world.periodOver) return;
@@ -25925,6 +26360,7 @@ export function resetPlayFrame(): void {
 export function stepSim(dt: number): void {
   const act = readActions();
   trackSkillStick(act);
+  if (stepInstantReplay(dt, act)) return;
   if (stepPause(dt, act)) return;
   const ui = useGame.getState();
   if (!ui.playing) return;

@@ -209,6 +209,8 @@ type GameUi = {
   checkRefs: boolean;
   checkGoalies: boolean;
   lineBrawl: boolean;
+  /** Goal clips in Game, Roller, and Scrimmage. On unless the player turned it off. */
+  instantReplay: boolean;
   /**
    * Old Ignore Auto-Find. True skips teammate search.
    * The pause button shows the opposite and is labeled Pass Lock.
@@ -285,6 +287,7 @@ type GameUi = {
   setCheckRefs: (v: boolean) => void;
   setCheckGoalies: (v: boolean) => void;
   setLineBrawl: (v: boolean) => void;
+  setInstantReplay: (v: boolean) => void;
   setIgnoreAutoFind: (v: boolean) => void;
   setPassLock: (v: boolean) => void;
   setOffsides: (v: boolean) => void;
@@ -487,7 +490,7 @@ export function gameClockScale(minutes: number): number {
 
 /**
  * Sim steps per real second, relative to 60 Hz.
- * `speed` is the slider label (0.75–1.25, default 1). Applied speed is that
+ * `speed` is the slider label (0.75–1.25, default 0.85). Applied speed is that
  * label times 0.8, clamped to 0.6–1.0, so 1.00x is the old display-30 rate.
  * World multiplies the frame delta by this. The period clock divides it back out.
  */
@@ -745,10 +748,11 @@ export const useGame = create<GameUi>((set, get) => ({
   checkRefs: loadFlag("hfb-check-refs", true),
   checkGoalies: loadFlag("hfb-check-goalies", true),
   lineBrawl: loadFlag("hfb-line-brawl", false),
+  instantReplay: loadFlag("hfb-instant-replay", true),
   ignoreAutoFind: loadFlag("hfb-ignore-auto-find", false),
   passLock: loadFlag("hfb-pass-lock", true),
-  offsides: INITIAL_MODE === "game",
-  gameSpeed: 1.0,
+  offsides: false,
+  gameSpeed: 0.85,
   cpuOffense: 1,
   cpuDefense: 1,
   cpuGoalie: 0.8,
@@ -890,7 +894,7 @@ export const useGame = create<GameUi>((set, get) => ({
               ? ROLLER_CLOCK_DISPLAY_MINUTES * 60
               : GAME_CLOCK_DISPLAY_MINUTES * 60,
       drillScore: 0,
-      offsides: m === "game",
+      offsides: false,
       ...(powerPlay === undefined ? {} : { powerPlay }),
     });
   },
@@ -959,6 +963,10 @@ export const useGame = create<GameUi>((set, get) => ({
   setLineBrawl: (v) => {
     saveFlag("hfb-line-brawl", v);
     set({ lineBrawl: v });
+  },
+  setInstantReplay: (v) => {
+    saveFlag("hfb-instant-replay", v);
+    set({ instantReplay: v });
   },
   setIgnoreAutoFind: (v) => {
     saveFlag("hfb-ignore-auto-find", v);

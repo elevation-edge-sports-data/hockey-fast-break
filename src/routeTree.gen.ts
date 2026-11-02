@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as FormationsRouteImport } from './routes/formations'
 import { Route as PoseEditorRouteImport } from './routes/pose-editor'
 import { Route as PoseGalleryRouteImport } from './routes/pose-gallery'
 import { Route as PoseGalleryFullRouteImport } from './routes/pose-gallery-full'
@@ -17,6 +18,11 @@ import { Route as PoseGalleryFullRouteImport } from './routes/pose-gallery-full'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FormationsRoute = FormationsRouteImport.update({
+  id: '/formations',
+  path: '/formations',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PoseEditorRoute = PoseEditorRouteImport.update({
@@ -37,12 +43,14 @@ const PoseGalleryFullRoute = PoseGalleryFullRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/formations': typeof FormationsRoute
   '/pose-editor': typeof PoseEditorRoute
   '/pose-gallery': typeof PoseGalleryRoute
   '/pose-gallery-full': typeof PoseGalleryFullRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/formations': typeof FormationsRoute
   '/pose-editor': typeof PoseEditorRoute
   '/pose-gallery': typeof PoseGalleryRoute
   '/pose-gallery-full': typeof PoseGalleryFullRoute
@@ -50,20 +58,38 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/formations': typeof FormationsRoute
   '/pose-editor': typeof PoseEditorRoute
   '/pose-gallery': typeof PoseGalleryRoute
   '/pose-gallery-full': typeof PoseGalleryFullRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/pose-editor' | '/pose-gallery' | '/pose-gallery-full'
+  fullPaths:
+    | '/'
+    | '/formations'
+    | '/pose-editor'
+    | '/pose-gallery'
+    | '/pose-gallery-full'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/pose-editor' | '/pose-gallery' | '/pose-gallery-full'
-  id: '__root__' | '/' | '/pose-editor' | '/pose-gallery' | '/pose-gallery-full'
+  to:
+    | '/'
+    | '/formations'
+    | '/pose-editor'
+    | '/pose-gallery'
+    | '/pose-gallery-full'
+  id:
+    | '__root__'
+    | '/'
+    | '/formations'
+    | '/pose-editor'
+    | '/pose-gallery'
+    | '/pose-gallery-full'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  FormationsRoute: typeof FormationsRoute
   PoseEditorRoute: typeof PoseEditorRoute
   PoseGalleryRoute: typeof PoseGalleryRoute
   PoseGalleryFullRoute: typeof PoseGalleryFullRoute
@@ -76,6 +102,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/formations': {
+      id: '/formations'
+      path: '/formations'
+      fullPath: '/formations'
+      preLoaderRoute: typeof FormationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pose-editor': {
@@ -104,6 +137,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  FormationsRoute: FormationsRoute,
   PoseEditorRoute: PoseEditorRoute,
   PoseGalleryRoute: PoseGalleryRoute,
   PoseGalleryFullRoute: PoseGalleryFullRoute,

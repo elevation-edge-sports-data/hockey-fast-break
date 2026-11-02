@@ -72,6 +72,7 @@ function sheet(mode) {
   ui.setChaos(false);
   ui.setOffsides(false);
   ui.setCheckRefs(true);
+  ui.setInstantReplay(false);
   ui.setControlProfile("stick");
   ui.setPlaying(true);
   ui.setPaused(false);

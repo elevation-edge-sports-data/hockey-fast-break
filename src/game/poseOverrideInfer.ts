@@ -16,9 +16,11 @@ import {
   autoDekePoseName,
   rageDraw,
   replayFrameLocked,
+  instantReplayPoseName,
   shotFollowTime,
   ironDefensePose,
   setGoaliePoseLockHook,
+  setReplayPoseSample,
   shotTopCornerHand,
   shoulderCheckPose,
   scoredOnGoalieRagePose,
@@ -144,6 +146,10 @@ setGoaliePoseLockHook(captureGoaliePoseHold);
 
 /** Live play only. Galleries pass the pose name in and do not use this. */
 export function inferNamedPose(s: Skater, index: number): string | null {
+  if (!capturingGoaliePose && world.replayKind === "goal") {
+    const recorded = instantReplayPoseName(s.id);
+    if (recorded !== undefined) return recorded;
+  }
   if (!capturingGoaliePose && replayFrameLocked() && s.kind === "goalie" && goaliePoseHold?.has(s.id)) {
     return goaliePoseHold.get(s.id) ?? null;
   }
@@ -261,3 +267,4 @@ function inferNamedPoseLive(s: Skater, index: number): string | null {
 }
 
 setPoseInfer(inferNamedPose);
+setReplayPoseSample((s, index) => inferNamedPoseLive(s, index));

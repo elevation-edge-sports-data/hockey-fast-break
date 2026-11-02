@@ -1,5 +1,5 @@
 /**
- * Default slider is 1.00x and runs the sim at 0.8. A freestyle orbit keeps its
+ * Default slider is 0.85x and runs the sim at 0.68. A freestyle orbit keeps its
  * zoom and elevation when the period puts that same view on the other end of the rink.
  */
 import assert from "node:assert/strict";
@@ -53,10 +53,10 @@ function ndc(cam, x) {
   return [v.x, v.y];
 }
 
-test("default game speed is 1x", () => {
-  assert.equal(useGame.getState().gameSpeed, 1);
-  assert.equal(useGame.getState().gameSpeed.toFixed(2) + "x", "1.00x");
-  assert.equal(gameSpeedRate(useGame.getState().gameSpeed), 0.8);
+test("default game speed is 0.85x", () => {
+  assert.equal(useGame.getState().gameSpeed, 0.85);
+  assert.equal(useGame.getState().gameSpeed.toFixed(2) + "x", "0.85x");
+  assert.ok(Math.abs(gameSpeedRate(useGame.getState().gameSpeed) - 0.68) < 1e-9);
 });
 
 test("a title freestyle orbit round-trips onto the puck", () => {

@@ -21,6 +21,9 @@ import {
   subscribeReplayEdit,
   toggleReplayFrameLock,
   exportReplayFrame,
+  markReplayRange,
+  exportReplayRange,
+  replayRangeMarkPcts,
   undoReplayEdit,
   redoReplayEdit,
   replayUndoDepth,
@@ -431,11 +434,29 @@ function downloadReplayFrame(): void {
   URL.revokeObjectURL(url);
 }
 
+function downloadReplayRange(): void {
+  const data = exportReplayRange();
+  if (!data?.length) return;
+  const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const last = data[data.length - 1]!;
+  link.href = url;
+  link.download = `replay-${data[0]!.frame}-${last.frame}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function useReplayRangeMarks() {
+  return useSyncExternalStore(subscribeReplayEdit, replayRangeMarkPcts, replayRangeMarkPcts);
+}
+
 function ReplayBar() {
   const replay = useGame((s) => s.replay);
   const paused = useGame((s) => s.paused);
   const pct = useReplayPct();
   const locked = useReplayFrameLock();
+  const marks = useReplayRangeMarks();
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef(false);
   if (!replay || !paused) return null;
@@ -482,7 +503,12 @@ function ReplayBar() {
           drag.current = false;
         }}
       >
-        <div className="madden-replay-fill" style={{ width: `${shown}%` }} />
+        <div className="madden-replay-lane">
+          <div className="madden-replay-fill" style={{ width: `${shown}%` }} />
+          {marks.map((markPct, i) => (
+            <i key={i} className="madden-replay-mark" style={{ left: `${markPct * 100}%` }} aria-hidden="true" />
+          ))}
+        </div>
       </div>
       <span className="madden-replay-pct">{shown}%</span>
     </div>
@@ -806,6 +832,8 @@ function MainMenus() {
   const setCheckGoalies = useGame((s) => s.setCheckGoalies);
   const lineBrawl = useGame((s) => s.lineBrawl);
   const setLineBrawl = useGame((s) => s.setLineBrawl);
+  const instantReplay = useGame((s) => s.instantReplay);
+  const setInstantReplay = useGame((s) => s.setInstantReplay);
   const ignoreAutoFind = useGame((s) => s.ignoreAutoFind);
   const setIgnoreAutoFind = useGame((s) => s.setIgnoreAutoFind);
   const passLock = useGame((s) => s.passLock);
@@ -941,6 +969,15 @@ function MainMenus() {
                 onClick={() => setLineBrawl(!lineBrawl)}
               >
                 Line Brawl
+              </button>
+              <button
+                type="button"
+                className={instantReplay ? "is-on" : ""}
+                title="After a goal, replay the shot three times. A skips ahead. X skips to the faceoff."
+                aria-pressed={instantReplay}
+                onClick={() => setInstantReplay(!instantReplay)}
+              >
+                Instant Replay
               </button>
               <button
                 type="button"
@@ -1299,6 +1336,7 @@ export function Overlay() {
   const delayedOffside = useGame((s) => s.delayedOffside);
   const replay = useGame((s) => s.replay);
   const frameLocked = useReplayFrameLock();
+  const rangeMarks = useReplayRangeMarks();
   const undoDepth = useReplayUndoDepth();
   const redoDepth = useReplayRedoDepth();
   const clockMode = useGame((s) => s.clockMode);
@@ -1596,7 +1634,30 @@ export function Overlay() {
                 }}
                 onClick={() => toggleReplayFrameLock()}
               >
-                {frameLocked ? "Unlock" : "Lock frame"}
+                {frameLocked ? "Revert" : "Edit formation"}
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                tabIndex={-1}
+                onKeyDown={(e) => {
+                  if (e.code === "Space") e.preventDefault();
+                }}
+                onClick={() => markReplayRange()}
+              >
+                Mark
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                disabled={rangeMarks.length < 2}
+                tabIndex={-1}
+                onKeyDown={(e) => {
+                  if (e.code === "Space") e.preventDefault();
+                }}
+                onClick={() => downloadReplayRange()}
+              >
+                Download replay
               </button>
               <button
                 type="button"
@@ -1608,7 +1669,7 @@ export function Overlay() {
                 }}
                 onClick={() => downloadReplayFrame()}
               >
-                Save
+                Save formation
               </button>
               {frameLocked ? (
                 <>

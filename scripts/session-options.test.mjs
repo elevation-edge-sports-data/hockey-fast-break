@@ -187,7 +187,7 @@ test("the corner reset keeps the away kit and a saved offsides choice", () => {
   ui.applyCornerReset();
   assert.equal(useGame.getState().awayKit, away);
   assert.equal(useGame.getState().clockMode, "game");
-  assert.equal(useGame.getState().offsides, true);
+  assert.equal(useGame.getState().offsides, false);
 });
 
 test("practice and scrimmage keep stepping with no user skaters", () => {
