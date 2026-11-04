@@ -171,6 +171,52 @@ test("import stores each frame and the rink shows the adjusted side", () => {
   world.replayKind = null;
 });
 
+test("a recorded side, kind, and jersey are shown, and a bad one is rejected", () => {
+  const tagged = structuredClone(frame);
+  tagged.adjusted.players[0] = { ...tagged.adjusted.players[0], x: 0, z: 0, side: "away", kind: "defense", number: 7 };
+  tagged.adjusted.players[1] = { ...tagged.adjusted.players[1], x: 1, z: 1, side: "home", kind: "goalie", number: 41 };
+  const parsed = parseFormationJson(JSON.stringify(tagged));
+  assert.equal(parsed[0].adjusted.players[0].side, "away");
+  assert.equal(parsed[0].adjusted.players[0].kind, "defense");
+  assert.equal(parsed[0].adjusted.players[0].number, 7);
+  assert.equal(parsed[0].adjusted.players[0].id, 4);
+  assert.equal(parsed[0].adjusted.players[0].yaw, 0.4);
+  const stood = formationSkaters(parsed[0].adjusted.players);
+  assert.equal(stood[0].side, "away");
+  assert.equal(stood[0].kind, "defense");
+  assert.equal(stood[0].number, 7);
+  assert.equal(stood[1].side, "home");
+  assert.equal(stood[1].kind, "goalie");
+  assert.equal(stood[1].number, 41);
+  assert.equal(stood[1].radius, 0.58);
+
+  const release = mountFormation(parsed[0].adjusted);
+  const sample = sampleReplay(parsed, 0);
+  assert.equal(sample.players[0].side, "away");
+  assert.equal(sample.players[0].kind, "defense");
+  assert.equal(sample.players[0].number, 7);
+  sample.players[0].x = 3;
+  sample.players[0].number = 22;
+  sample.players[0].kind = "winger";
+  applyReplayPose(sample.players, sample.puck);
+  assert.equal(world.skaters[0].x, 3);
+  assert.equal(world.skaters[0].number, 22);
+  assert.equal(world.skaters[0].kind, "winger");
+  assert.equal(world.skaters[0].side, "away");
+  assert.equal(world.skaters[1].number, 41);
+  release();
+
+  const badKind = structuredClone(frame);
+  badKind.adjusted.players[0].kind = "center";
+  assert.equal(framesFromUnknown(badKind), "That file is not a replay frame.");
+  const badSide = structuredClone(frame);
+  badSide.adjusted.players[0].side = "visitor";
+  assert.equal(framesFromUnknown(badSide), "That file is not a replay frame.");
+  const badNumber = structuredClone(frame);
+  badNumber.adjusted.players[0].number = "seven";
+  assert.equal(framesFromUnknown(badNumber), "That file is not a replay frame.");
+});
+
 test("a control id is kept when it is numeric and ignored when it is not", () => {
   const withIds = parseFormationJson(JSON.stringify({ ...frame, userId: 1, controlledId: 4 }));
   assert.equal(withIds[0].userId, 1);

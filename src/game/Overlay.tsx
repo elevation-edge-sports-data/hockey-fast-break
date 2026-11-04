@@ -1616,11 +1616,6 @@ export function Overlay() {
           <div className="cam-adjust">
             <p>
               <b>Replay</b>
-              <span>
-                {frameLocked
-                  ? "Frame locked · drag to look · wheel zooms · click a player or the puck · arrows or left stick move them · hold A and the left stick turns a player · hold keyboard A and arrows turn gradually · the X moves when none is selected and locks on like replay · Undo and Redo · click the ice to deselect · Y or click locks the camera · hold Y+stick orbit · X/B zoom · R3 or Select exits"
-                  : "Drag to look · wheel zooms · A pause/play · tap Y or click to lock · stick pan · X on a body locks · hold Y+stick orbit · X/B zoom · LB/RB slow · LT/RT fast · R3 or Select exits"}
-              </span>
             </p>
             <ReplayBar />
             <div className="btn-row cam-adjust-btns">
@@ -1669,7 +1664,7 @@ export function Overlay() {
                 }}
                 onClick={() => downloadReplayFrame()}
               >
-                Save formation
+                Download formation
               </button>
               {frameLocked ? (
                 <>
@@ -1794,13 +1789,9 @@ export function Overlay() {
       </footer>
 
       {replay ? (
-        <div className="whistle replay-hint">
-          {paused
-            ? frameLocked
-              ? "Frame locked · click a player or the puck · arrows or stick move · keyboard A and arrows turn · the X locks on · click the ice to deselect"
-              : "Drag · wheel · A pause · Y or click locks · X on a body locks · stick pan · LB/RB slow · LT/RT fast · R3 exits"
-            : "A/B/X/Y skip"}
-        </div>
+        paused ? null : (
+          <div className="whistle replay-hint">A/B/X/Y skip</div>
+        )
       ) : periodEnd ? (
         <div className="whistle" style={periodEndBanner}>
           <span>{periodEnd.title}</span>

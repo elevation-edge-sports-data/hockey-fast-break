@@ -8,6 +8,12 @@ export type FormationPlayer = {
   x: number;
   z: number;
   yaw: number;
+  /** Recorded team. Absent on older downloads, which still split the list in half. */
+  side?: "home" | "away";
+  /** Recorded position. Absent on older downloads, which still guess a goalie from the goal line. */
+  kind?: SkaterKind;
+  /** Recorded jersey. Absent on older downloads, which still derive one from the id. */
+  number?: number;
 };
 
 export type FormationSide = {
@@ -88,6 +94,19 @@ function optionalNum(v: unknown): number | undefined {
   return n === null ? undefined : n;
 }
 
+/** Missing is allowed. A present value of the wrong shape rejects the player. */
+function optionalSide(v: unknown): "home" | "away" | undefined | null {
+  if (v == null) return undefined;
+  if (v === "home" || v === "away") return v;
+  return null;
+}
+
+function optionalKind(v: unknown): SkaterKind | undefined | null {
+  if (v == null) return undefined;
+  if (v === "winger" || v === "defense" || v === "goalie") return v;
+  return null;
+}
+
 function asPlayer(v: unknown): FormationPlayer | null {
   if (!v || typeof v !== "object") return null;
   const p = v as Record<string, unknown>;
@@ -97,8 +116,21 @@ function asPlayer(v: unknown): FormationPlayer | null {
   const z = num(p.z);
   // Older locked-frame exports omit yaw. A present non-number is still invalid.
   const yaw = p.yaw == null ? 0 : num(p.yaw);
+  const side = optionalSide(p.side);
+  const kind = optionalKind(p.kind);
+  const jersey = p.number == null ? undefined : num(p.number);
   if (index === null || id === null || x === null || z === null || yaw === null) return null;
-  return { index, id, x, z, yaw };
+  if (side === null || kind === null || jersey === null) return null;
+  return {
+    index,
+    id,
+    x,
+    z,
+    yaw,
+    ...(side !== undefined ? { side } : {}),
+    ...(kind !== undefined ? { kind } : {}),
+    ...(jersey !== undefined ? { number: jersey } : {}),
+  };
 }
 
 function asSide(v: unknown): FormationSide | null {
@@ -281,7 +313,7 @@ function stillSkater(p: FormationPlayer, side: "home" | "away", kind: SkaterKind
     id: p.id,
     side,
     kind,
-    number: Math.max(1, Math.round(Math.abs(p.id)) % 99 || p.index + 1),
+    number: p.number !== undefined ? p.number : Math.max(1, Math.round(Math.abs(p.id)) % 99 || p.index + 1),
     x: p.x,
     z: p.z,
     vx: 0,
@@ -319,13 +351,21 @@ function stillSkater(p: FormationPlayer, side: "home" | "away", kind: SkaterKind
   };
 }
 
-/** Bodies are stored home-first, the same order the replay buffer records. */
+/**
+ * Bodies are stored home-first, the same order the replay buffer records.
+ * A recorded side, kind, or number wins. Older files still split the list
+ * in half and treat a player within 4 m of a goal line as the goalie.
+ */
 export function formationSkaters(players: FormationPlayer[]): Skater[] {
   const ordered = players.slice().sort((a, b) => a.index - b.index);
   const goalies = goalieIndexes(ordered);
   const homeCut = Math.ceil(ordered.length / 2);
   return ordered.map((p, i) =>
-    stillSkater(p, i < homeCut ? "home" : "away", goalies.has(p.index) ? "goalie" : "winger"),
+    stillSkater(
+      p,
+      p.side ?? (i < homeCut ? "home" : "away"),
+      p.kind ?? (goalies.has(p.index) ? "goalie" : "winger"),
+    ),
   );
 }
 
@@ -556,12 +596,18 @@ export function sampleReplay(frames: readonly FormationFrame[], cursor: number):
   const b = frames[i1]!;
   const players = a.adjusted.players.map((p) => {
     const q = b.adjusted.players.find((row) => row.index === p.index) ?? p;
+    const side = p.side ?? q.side;
+    const kind = p.kind ?? q.kind;
+    const number = p.number ?? q.number;
     return {
       index: p.index,
       id: p.id,
       x: lerpNum(p.x, q.x, t),
       z: lerpNum(p.z, q.z, t),
       yaw: lerpAngle(p.yaw, q.yaw, t),
+      ...(side ? { side } : {}),
+      ...(kind ? { kind } : {}),
+      ...(number !== undefined ? { number } : {}),
     };
   });
   const ap = a.adjusted.puck;
@@ -607,7 +653,7 @@ export function controlledSkaterIndex(
   return -1;
 }
 
-/** Move the mounted roster. Kinds stay as they were when the clip mounted. */
+/** Move the mounted roster. A recorded side, kind, or number replaces the mounted one. */
 export function applyReplayPose(players: readonly FormationPlayer[], puck: FormationSide["puck"]): void {
   for (const player of players) {
     const skater = world.skaters.find((s) => s.id === player.id);
@@ -615,6 +661,12 @@ export function applyReplayPose(players: readonly FormationPlayer[], puck: Forma
     skater.x = player.x;
     skater.z = player.z;
     skater.yaw = player.yaw;
+    if (player.side) skater.side = player.side;
+    if (player.kind) {
+      skater.kind = player.kind;
+      skater.radius = player.kind === "goalie" ? 0.58 : 0.42;
+    }
+    if (player.number !== undefined) skater.number = player.number;
   }
   world.puck.x = puck.x;
   world.puck.z = puck.z;

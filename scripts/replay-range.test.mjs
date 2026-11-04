@@ -144,8 +144,30 @@ test("marks export the inclusive span and leave the scrubber free", () => {
       assert.equal(frame.userId, world.userId);
       assert.ok(frame.original.players.some((p) => p.id === frame.userId));
       assert.deepEqual(Object.keys(frame.original.puck).sort(), ["owner", "x", "y", "z"]);
-      assert.deepEqual(Object.keys(frame.original.players[0]).sort(), ["id", "index", "x", "yaw", "z"]);
+      for (const side of [frame.original, frame.adjusted]) {
+        assert.deepEqual(Object.keys(side.players[0]).sort(), ["id", "index", "kind", "number", "side", "x", "yaw", "z"]);
+        for (const player of side.players) {
+          const live = world.skaters[player.index];
+          assert.equal(player.side, live.side);
+          assert.equal(player.kind, live.kind);
+          assert.equal(player.number, live.number);
+        }
+      }
     }
+    const stamped = range[0].original.players[0];
+    const live0 = world.skaters[stamped.index];
+    const keep = { number: live0.number, kind: live0.kind, side: live0.side };
+    live0.number = 99;
+    live0.kind = live0.kind === "winger" ? "defense" : "winger";
+    live0.side = live0.side === "home" ? "away" : "home";
+    const reread = exportReplayRange();
+    assert.equal(reread[0].original.players[0].number, stamped.number);
+    assert.equal(reread[0].original.players[0].kind, stamped.kind);
+    assert.equal(reread[0].original.players[0].side, stamped.side);
+    assert.equal(reread[0].adjusted.players[0].number, range[0].adjusted.players[0].number);
+    live0.number = keep.number;
+    live0.kind = keep.kind;
+    live0.side = keep.side;
 
     stopPauseReplay();
     const flipped = bootReplay();
@@ -188,6 +210,12 @@ test("marks export the inclusive span and leave the scrubber free", () => {
     assert.equal(shot.frame, Math.floor(shotT * 60));
     assert.equal(shot.userId, full[shot.frame].userId);
     assert.deepEqual(Object.keys(shot).sort(), Object.keys(full[0]).sort());
+    assert.deepEqual(Object.keys(shot.adjusted.players[0]).sort(), ["id", "index", "kind", "number", "side", "x", "yaw", "z"]);
+    const shotLive = world.skaters[shot.adjusted.players[0].index];
+    assert.equal(shot.adjusted.players[0].side, shotLive.side);
+    assert.equal(shot.adjusted.players[0].kind, shotLive.kind);
+    assert.equal(shot.adjusted.players[0].number, shotLive.number);
+    assert.equal(shot.original.players[0].number, shot.adjusted.players[0].number);
     seekReplay(0);
     assert.equal(world.replayT, shotT);
     assert.deepEqual(exportReplayRange(), full);

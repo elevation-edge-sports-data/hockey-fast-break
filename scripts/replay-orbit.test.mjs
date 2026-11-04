@@ -59,7 +59,7 @@ const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
-const { orbitReplayPointer, zoomReplayPointer, resetWorld, stepSim, world, beginPauseReplay, stopPauseReplay, pickReplayLock, replayLockKind, toggleReplayFrameLock, replayFrameLocked, replayEditSkater, exportReplayFrame, rewindPauseReplay, undoReplayEdit, redoReplayEdit, replayUndoDepth, replayRedoDepth, seekReplay, replayFootagePct, goalieZKind } = sim;
+const { orbitReplayPointer, zoomReplayPointer, resetWorld, stepSim, world, beginPauseReplay, stopPauseReplay, pauseGame, pickReplayLock, replayLockKind, toggleReplayFrameLock, replayFrameLocked, replayEditSkater, exportReplayFrame, rewindPauseReplay, undoReplayEdit, redoReplayEdit, replayUndoDepth, replayRedoDepth, seekReplay, replayFootagePct, goalieZKind } = sim;
 const { inferNamedPose } = poses;
 const { useGame } = store;
 const { setInjectedKeys } = input;
@@ -281,15 +281,49 @@ function bootReplay() {
   world.replayPlaying = false;
 }
 
-test("opening replay stays free while the X sits on the puck", () => {
+test("opening replay stays free while the X follows the puck", () => {
   bootReplay();
   try {
-    for (let i = 0; i < 8; i++) stepSim(1 / 60);
+    world.replayPlaying = false;
+    seekReplay(0);
+    const early = { x: world.puck.x, z: world.puck.z };
     assert.equal(replayLockKind(), "free");
-    assert.ok(Math.hypot(world.replayCam.lx - world.puck.x, world.replayCam.lz - world.puck.z) < 0.05);
+    assert.ok(Math.hypot(world.replayCam.lx - early.x, world.replayCam.lz - early.z) < 0.05);
+    seekReplay(1);
+    const late = { x: world.puck.x, z: world.puck.z };
+    assert.equal(replayLockKind(), "free");
+    assert.ok(Math.hypot(world.replayCam.lx - late.x, world.replayCam.lz - late.z) < 0.05);
+    const moved = Math.hypot(late.x - early.x, late.z - early.z);
+    if (moved > 0.2) assert.ok(Math.hypot(world.replayCam.lx - early.x, world.replayCam.lz - early.z) > 0.15);
   } finally {
     stopPauseReplay();
     setInjectedKeys([]);
+  }
+});
+
+test("pause replay opens from the last gameplay camera angle", () => {
+  bootReplay();
+  stopPauseReplay();
+  try {
+    const ly = Math.max(0.4, world.puck.y);
+    const dx = 12;
+    const dy = 9;
+    const dz = -3;
+    world.camX = world.puck.x + dx;
+    world.camY = ly + dy;
+    world.camZ = world.puck.z + dz;
+    useGame.getState().setPaused(false);
+    pauseGame();
+    if (!beginPauseReplay()) throw new Error("replay did not start");
+    const rc = world.replayCam;
+    const ox = rc.radius * Math.sin(rc.phi) * Math.cos(rc.theta);
+    const oy = rc.radius * Math.cos(rc.phi);
+    const oz = rc.radius * Math.sin(rc.phi) * Math.sin(rc.theta);
+    assert.ok(Math.abs(ox - dx) < 1e-6, `offset x ${ox}`);
+    assert.ok(Math.abs(oy - dy) < 1e-6, `offset y ${oy}`);
+    assert.ok(Math.abs(oz - dz) < 1e-6, `offset z ${oz}`);
+  } finally {
+    stopPauseReplay();
   }
 });
 
@@ -326,11 +360,88 @@ test("a click on a skater or the puck locks that target", () => {
 
     skater.x = 25;
     skater.z = 25;
+    skater.comX = 25;
+    skater.comZ = 25;
     world.puck.x = 28;
     world.puck.z = 28;
     pickReplayLock(0, 0, 16 / 9);
-    assert.equal(replayLockKind(), "skater");
+    assert.equal(replayLockKind(), "free");
+    assert.equal(skater.x, 25);
+    assert.equal(skater.z, 25);
+    assert.equal(world.puck.x, 28);
+    assert.equal(world.puck.z, 28);
+    assert.ok(Math.hypot(world.replayCam.lx - lookX, world.replayCam.lz - lookZ) > 0.4);
   } finally {
+    stopPauseReplay();
+  }
+});
+
+function iceUnder(ndcX, ndcY) {
+  place();
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), view);
+  const ray = raycaster.ray;
+  const t = -ray.origin.y / ray.direction.y;
+  return {
+    x: ray.origin.x + ray.direction.x * t,
+    z: ray.origin.z + ray.direction.z * t,
+  };
+}
+
+test("an ice click places the X and leaves the player and the puck", () => {
+  bootReplay();
+  try {
+    for (const s of world.skaters) {
+      s.x = 40;
+      s.z = 40;
+      s.comX = 40;
+      s.comZ = 40;
+    }
+    world.puck.x = 36;
+    world.puck.z = 36;
+    world.puck.y = 0.04;
+    const spot = iceUnder(0.42, -0.28);
+    const beforeX = world.skaters[0].x;
+    const beforeZ = world.skaters[0].z;
+    const beforePuck = world.puck.x;
+    pickReplayLock(0.42, -0.28, 16 / 9);
+    assert.equal(replayLockKind(), "free");
+    assert.ok(Math.abs(world.replayCam.lx - spot.x) < 1e-3);
+    assert.ok(Math.abs(world.replayCam.lz - spot.z) < 1e-3);
+    assert.equal(world.skaters[0].x, beforeX);
+    assert.equal(world.skaters[0].z, beforeZ);
+    assert.equal(world.puck.x, beforePuck);
+
+    assert.equal(toggleReplayFrameLock(), true);
+    const skater = world.skaters[0];
+    skater.x = world.replayCam.lx;
+    skater.z = world.replayCam.lz;
+    skater.comX = skater.x;
+    skater.comZ = skater.z;
+    pickReplayLock(0, 0, 16 / 9);
+    assert.equal(replayEditSkater(), 0);
+    const beforeEdit = exportReplayFrame();
+    skater.x = 40;
+    skater.z = 40;
+    skater.comX = 40;
+    skater.comZ = 40;
+    const heldPuck = world.puck.x;
+    const edited = iceUnder(-0.35, 0.22);
+    pickReplayLock(-0.35, 0.22, 16 / 9);
+    assert.equal(replayEditSkater(), null);
+    assert.equal(replayLockKind(), "free");
+    assert.ok(Math.abs(world.replayCam.lx - edited.x) < 1e-3);
+    assert.ok(Math.abs(world.replayCam.lz - edited.z) < 1e-3);
+    assert.equal(skater.x, 40);
+    assert.equal(skater.z, 40);
+    assert.equal(world.puck.x, heldPuck);
+    const saved = exportReplayFrame();
+    assert.equal(saved.adjusted.players[0].x, beforeEdit.adjusted.players[0].x);
+    assert.equal(saved.adjusted.players[0].z, beforeEdit.adjusted.players[0].z);
+    assert.equal(saved.adjusted.puck.x, beforeEdit.adjusted.puck.x);
+    assert.equal(saved.adjusted.puck.z, beforeEdit.adjusted.puck.z);
+  } finally {
+    if (replayFrameLocked()) toggleReplayFrameLock();
     stopPauseReplay();
   }
 });
@@ -511,6 +622,7 @@ test("a locked replay frame freezes scrub and edits a copy", () => {
     const still = exportReplayFrame();
     assert.equal(still.adjusted.players[0].x, moved.adjusted.players[0].x);
     assert.equal(still.adjusted.players[0].z, moved.adjusted.players[0].z);
+    stepSim(dt);
 
     const panLx = world.replayCam.lx;
     const panLz = world.replayCam.lz;
@@ -551,6 +663,10 @@ test("a locked frame picks a player the normal replay radius misses", () => {
     skater.comZ = skater.z;
     pickReplayLock(0, 0, 16 / 9);
     assert.equal(replayLockKind(), "free");
+    skater.x = cam.lx + Math.sin(cam.theta) * dist;
+    skater.z = cam.lz - Math.cos(cam.theta) * dist;
+    skater.comX = skater.x;
+    skater.comZ = skater.z;
 
     assert.equal(toggleReplayFrameLock(), true);
     pickReplayLock(0, 0, 16 / 9);
@@ -1334,6 +1450,100 @@ test("consecutive moves on one player are a single undo", () => {
     pads = [];
     setInjectedKeys([]);
     if (replayFrameLocked()) toggleReplayFrameLock();
+    stopPauseReplay();
+  }
+});
+
+test("a stationary ice X stays put when a skater or the puck crosses it", () => {
+  const dt = 1 / 60;
+  const ui = useGame.getState();
+  ui.setClockMode("practice");
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  world.puck.owner = null;
+  setInjectedKeys([]);
+  pads = [];
+  const pin = (px) => {
+    world.puck.x = px;
+    world.puck.z = 0;
+    world.puck.y = 0.04;
+    world.puck.vx = 0;
+    world.puck.vz = 0;
+    world.puck.vy = 0;
+    world.puck.owner = null;
+    world.skaters.forEach((s, i) => {
+      s.x = -22;
+      s.z = (i - 5) * 3;
+      s.vx = 0;
+      s.vz = 0;
+      s.comX = s.x;
+      s.comZ = s.z;
+    });
+  };
+  for (let i = 0; i < 16; i++) {
+    pin(0);
+    stepSim(dt);
+  }
+  for (let i = 0; i < 16; i++) {
+    pin(6);
+    stepSim(dt);
+  }
+  ui.setPaused(true);
+  try {
+    if (!beginPauseReplay()) throw new Error("replay did not start");
+    world.replayPlaying = false;
+    seekReplay(0);
+    const earlyPuck = Math.hypot(world.puck.x, world.puck.z);
+    seekReplay(1);
+    const late = { x: world.puck.x, z: world.puck.z };
+    assert.ok(Math.hypot(late.x, late.z) - earlyPuck > 2, `puck moved ${earlyPuck} to ${late.x}`);
+    seekReplay(0);
+    for (const s of world.skaters) {
+      s.comX = -22;
+      s.comZ = 0;
+    }
+    assert.equal(replayLockKind(), "free");
+    assert.ok(Math.hypot(world.replayCam.lx - world.puck.x, world.replayCam.lz - world.puck.z) < 0.05);
+    assert.ok(Math.hypot(world.puck.x - late.x, world.puck.z - late.z) > 2);
+    let guard = 0;
+    while (Math.hypot(world.replayCam.lx - late.x, world.replayCam.lz - late.z) > 0.15 && guard++ < 90) {
+      const dx = late.x - world.replayCam.lx;
+      const dz = late.z - world.replayCam.lz;
+      const keys = [];
+      if (Math.abs(dx) >= Math.abs(dz)) keys.push(dx > 0 ? "ArrowUp" : "ArrowDown");
+      else keys.push(dz > 0 ? "ArrowRight" : "ArrowLeft");
+      setInjectedKeys(keys);
+      stepSim(dt);
+    }
+    setInjectedKeys([]);
+    stepSim(dt);
+    const lx = world.replayCam.lx;
+    const lz = world.replayCam.lz;
+    assert.equal(replayLockKind(), "free");
+    assert.ok(Math.hypot(lx - late.x, lz - late.z) < 0.45, `released at ${lx}, later puck ${late.x}`);
+    const skater = world.skaters[0];
+    skater.comX = lx;
+    skater.comZ = lz;
+    stepSim(dt);
+    assert.equal(replayLockKind(), "free");
+    assert.equal(world.replayCam.lx, lx);
+    assert.equal(world.replayCam.lz, lz);
+    skater.comX = -22;
+    skater.comZ = 0;
+    seekReplay(1);
+    assert.ok(Math.hypot(world.puck.x - lx, world.puck.z - lz) < 0.45, "later puck should cross the X");
+    assert.equal(replayLockKind(), "free");
+    assert.equal(world.replayCam.lx, lx);
+    assert.equal(world.replayCam.lz, lz);
+  } finally {
+    setInjectedKeys([]);
     stopPauseReplay();
   }
 });

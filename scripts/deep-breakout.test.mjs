@@ -45,7 +45,7 @@ const input = await server.ssrLoadModule("/src/game/input.ts");
 
 const { resetWorld, stepSim, world } = sim;
 const { useGame } = store;
-const { GOAL_LINE_X } = rink;
+const { GOAL_LINE_X, resolveCage } = rink;
 const { setInjectedKeys } = input;
 
 const DT = 1 / 60;
@@ -158,7 +158,7 @@ function hold(carrier, own, mirror) {
 }
 
 function assertAwayWingsChase(attack, carrier, awayF, label) {
-  const left = -attack >= 0 ? 1 : -1;
+  const left = attack >= 0 ? 1 : -1;
   const lw = awayF[0];
   const rw = awayF[2];
   assert.ok(lw.z * left > 0.7, `${label} LW left the left side (${lw.z.toFixed(2)})`);
@@ -194,9 +194,9 @@ test("a home left defenseman behind his goal line sets the deep breakout", () =>
     const label = `attack ${attack}`;
     const partner = homeD.find((d) => d !== carrier);
     near(partner, worldSpot(own, 1, CAP.partner), `${label} RD`, 1.6);
-    near(homeF[0], worldSpot(own, 1, CAP.rw), `${label} RW`, 1.6);
+    near(homeF[0], worldSpot(own, 1, CAP.lw), `${label} LW`, 1.6);
     near(homeF[1], worldSpot(own, 1, CAP.c), `${label} C`, 1.6);
-    near(homeF[2], worldSpot(own, 1, CAP.lw), `${label} LW`, 1.6);
+    near(homeF[2], worldSpot(own, 1, CAP.rw), `${label} RW`, 1.6);
     near(awayD[0], worldSpot(own, 1, CAP.awayLd), `${label} away LD`, 1.7);
     near(awayD[1], worldSpot(own, 1, CAP.awayRd), `${label} away RD`, 1.7);
     near(awayF[1], worldSpot(own, 1, CAP.awayC), `${label} away C`, 1.8);
@@ -222,8 +222,8 @@ test("a home right defenseman behind his goal line mirrors the deep breakout", (
     const label = `attack ${attack}`;
     const partner = homeD[1];
     near(partner, worldSpot(own, -1, CAP.partner), `${label} LD`, 1.6);
-    near(homeF[0], worldSpot(own, -1, CAP.rw), `${label} wing`, 1.6);
-    near(homeF[2], worldSpot(own, -1, CAP.lw), `${label} wing`, 1.6);
+    near(homeF[0], worldSpot(own, -1, CAP.lw), `${label} wing`, 1.6);
+    near(homeF[2], worldSpot(own, -1, CAP.rw), `${label} wing`, 1.6);
     near(awayD[0], worldSpot(own, -1, CAP.awayLd), `${label} away D`, 1.7);
     near(awayF[1], worldSpot(own, -1, CAP.awayC), `${label} away C`, 1.8);
     assertAwayWingsChase(attack, carrier, awayF, label);
@@ -309,4 +309,66 @@ test("a home defenseman in front of his goal line does not use the deep breakout
   const boards = worldSpot(own, 1, CAP.lw);
   const d = Math.hypot(homeF[2].x - boards.x, homeF[2].z - boards.z);
   assert.ok(d > 4, `a carry in front of the goal line took the deep wing (${d.toFixed(2)})`);
+});
+
+/** Left while facing the attack. +X attack faces up the screen, and that left wall is -Z. */
+function wingLeft(attack) {
+  return attack >= 0 ? -1 : 1;
+}
+
+test("wings keep their own side and the higher net angle with either end at the top", () => {
+  const depth = 3.5607698106507044;
+  const lat = 2.906334498247122;
+  for (const homeAttack of [1, -1]) {
+    for (const side of ["away", "home"]) {
+      fresh(homeAttack);
+      const attack = side === "home" ? homeAttack : -homeAttack;
+      const left = wingLeft(attack);
+      const forwards = byKind(side, "winger");
+      const carrier = forwards[1];
+      const lw = forwards[0];
+      const rw = forwards[2];
+      const mouth = attack * GOAL_LINE_X;
+      const keep = new Set([carrier.id, lw.id, rw.id]);
+      world.userId = side === "home" ? carrier.id : byKind("home", "goalie")[0].id;
+      place(lw, mouth - attack * 12, -left * 6);
+      place(rw, mouth + attack * 0.15, left * 1.45);
+      let stuck = 0;
+      for (let i = 0; i < 240; i++) {
+        place(carrier, mouth + attack * 0.7, -left * 5.2);
+        const puck = world.puck;
+        puck.owner = carrier.id;
+        puck.x = carrier.x;
+        puck.z = carrier.z;
+        puck.y = 0.05;
+        puck.vx = 0;
+        puck.vz = 0;
+        puck.vy = 0;
+        world.lastPass = world.time;
+        world.lastShoot = world.time;
+        world.whistle = null;
+        world.stoppage = false;
+        world.faceoff = false;
+        for (const s of world.skaters) {
+          if (s.kind === "goalie" || keep.has(s.id)) continue;
+          place(s, attack * 2, (s.id % 5) - 2);
+        }
+        stepSim(DT);
+        for (const s of [lw, rw]) {
+          if (resolveCage(s.x, s.z, s.radius, true).hit) stuck += 1;
+        }
+      }
+      const label = `${side} attack ${attack}`;
+      assert.equal(stuck, 0, `${label} wing drove into the cage`);
+      assert.ok(lw.z * left > 1.2, `${label} LW left his side (${lw.z.toFixed(2)})`);
+      assert.ok(rw.z * -left > 1.2, `${label} RW left his side (${rw.z.toFixed(2)})`);
+      for (const s of [lw, rw]) {
+        const fromLine = (mouth - s.x) * attack;
+        assert.ok(fromLine > 3.1 && fromLine < 4.3, `${label} ${s.id} depth ${fromLine.toFixed(2)}`);
+        assert.ok(Math.abs(Math.abs(s.z) - lat) < 0.85, `${label} ${s.id} lat ${s.z.toFixed(2)}`);
+      }
+      const wantX = attack * (GOAL_LINE_X - depth);
+      assert.ok(Math.abs(lw.x - wantX) < 0.8, `${label} LW x ${lw.x.toFixed(2)}`);
+    }
+  }
 });

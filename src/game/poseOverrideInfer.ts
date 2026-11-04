@@ -36,7 +36,7 @@ const READY_SKATE = 2.6;
 const CREASE_OUT = CREASE_R + 0.12;
 /** Skater dive reach in cpuDefend. The loose puck has to be this close. */
 const LOOSE_SAVE_REACH = 4.4;
-/** Same toward-net component tryGoalieCatch uses. */
+/** Toward-net speed for a loose puck at the net. */
 const LOOSE_AT_NET = 1.2;
 
 function brawlLive(id: number): boolean {
