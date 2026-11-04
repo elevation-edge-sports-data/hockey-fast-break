@@ -123,6 +123,34 @@ function stepN(n, before) {
   }
 }
 
+test("wings keep their faceoff side on a rush toward -x", () => {
+  fresh();
+  world.homeAttack = -1;
+  resetWorld({ keepScore: true });
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  const user = world.skaters[world.userId];
+  const mates = wings("home").filter((s) => s.id !== user.id);
+  assert.equal(mates.length, 2);
+  parkBench(new Set([user.id, ...mates.map((s) => s.id)]));
+  const left = mates[0];
+  const right = mates[1];
+  left.x = 2;
+  left.z = 6;
+  right.x = 2;
+  right.z = -6;
+  left.vx = right.vx = 0;
+  left.vz = right.vz = 0;
+  left.stun = right.stun = 0;
+  stepN(90, () => pinCarrier(user, 1, 0, -6));
+  assert.ok(left.z > 2, `LW crossed to ${left.z.toFixed(2)}`);
+  assert.ok(right.z < -2, `RW crossed to ${right.z.toFixed(2)}`);
+  assert.ok(left.x < -1, `LW did not join up ice (${left.x.toFixed(2)})`);
+  assert.ok(right.x < -1, `RW did not join up ice (${right.x.toFixed(2)})`);
+});
+
 test("home forwards join before the attacking blue and cross on entry", () => {
   fresh();
   const user = world.skaters[world.userId];

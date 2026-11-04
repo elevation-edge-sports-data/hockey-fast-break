@@ -140,7 +140,9 @@ test("marks export the inclusive span and leave the scrubber free", () => {
       assert.equal(frame.time, frame.frame / 60);
       assert.deepEqual(frame.original, frame.adjusted);
       assert.ok(frame.original.players.length > 0);
-      assert.deepEqual(Object.keys(frame).sort(), ["adjusted", "frame", "original", "time"]);
+      assert.deepEqual(Object.keys(frame).sort(), ["adjusted", "frame", "original", "time", "userId"]);
+      assert.equal(frame.userId, world.userId);
+      assert.ok(frame.original.players.some((p) => p.id === frame.userId));
       assert.deepEqual(Object.keys(frame.original.puck).sort(), ["owner", "x", "y", "z"]);
       assert.deepEqual(Object.keys(frame.original.players[0]).sort(), ["id", "index", "x", "yaw", "z"]);
     }
@@ -184,6 +186,7 @@ test("marks export the inclusive span and leave the scrubber free", () => {
     assert.equal(toggleReplayFrameLock(), true);
     const shot = exportReplayFrame();
     assert.equal(shot.frame, Math.floor(shotT * 60));
+    assert.equal(shot.userId, full[shot.frame].userId);
     assert.deepEqual(Object.keys(shot).sort(), Object.keys(full[0]).sort());
     seekReplay(0);
     assert.equal(world.replayT, shotT);

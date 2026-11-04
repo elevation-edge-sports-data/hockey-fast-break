@@ -1,3 +1,4 @@
+import { lerpAngle } from "./iceMark";
 import { GOAL_LINE_X, RINK_L } from "./rink";
 import { world, type Skater, type SkaterKind } from "./sim";
 
@@ -14,13 +15,19 @@ export type FormationSide = {
   players: FormationPlayer[];
 };
 
-/** Same shape the locked-frame Save button writes. */
+/** Same shape the locked-frame Save button writes. userId and controlledId are optional download fields. */
 export type FormationFrame = {
   frame: number;
   time: number;
+  /** Skater index under user control when the frame was recorded. */
+  userId?: number;
+  /** Skater id, when a download names the controlled player that way. */
+  controlledId?: number;
   original: FormationSide;
   adjusted: FormationSide;
 };
+
+export type FormationView = "original" | "adjusted";
 
 export type FormationEntry = {
   id: string;
@@ -74,6 +81,13 @@ function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+/** A missing or non-numeric control id is ignored. It does not reject the frame. */
+function optionalNum(v: unknown): number | undefined {
+  if (v == null) return undefined;
+  const n = num(v);
+  return n === null ? undefined : n;
+}
+
 function asPlayer(v: unknown): FormationPlayer | null {
   if (!v || typeof v !== "object") return null;
   const p = v as Record<string, unknown>;
@@ -116,7 +130,16 @@ function asFrame(v: unknown): FormationFrame | null {
   const original = asSide(f.original);
   const adjusted = asSide(f.adjusted);
   if (frame === null || time === null || !original || !adjusted) return null;
-  return { frame, time, original, adjusted };
+  const userId = optionalNum(f.userId);
+  const controlledId = optionalNum(f.controlledId);
+  return {
+    frame,
+    time,
+    ...(userId !== undefined ? { userId } : {}),
+    ...(controlledId !== undefined ? { controlledId } : {}),
+    original,
+    adjusted,
+  };
 }
 
 /** One saved frame, or every frame in a range download. */
@@ -195,6 +218,27 @@ const bundledModules = import.meta.glob("../../formations/*.json", { eager: true
 function moduleJson(mod: unknown): unknown {
   if (mod && typeof mod === "object" && "default" in mod) return (mod as { default: unknown }).default;
   return mod;
+}
+
+/**
+ * Left list is unsaved imports. Right list is formations/ files, plus a file
+ * saved earlier in this session. A shared name does not hide the import.
+ * Retired names drop only the repo copy that was renamed away.
+ */
+export function partitionFormationLibrary(
+  local: readonly FormationEntry[],
+  bundled: readonly FormationEntry[],
+  saved: readonly FormationEntry[] = [],
+  retired: readonly string[] = [],
+): { imported: FormationEntry[]; repo: FormationEntry[] } {
+  const repoSaved = saved.filter((entry) => !retired.includes(entry.name));
+  const taken = new Set(repoSaved.map((entry) => entry.name));
+  const repo = [
+    ...repoSaved,
+    ...bundled.filter((entry) => !retired.includes(entry.name) && !taken.has(entry.name)),
+  ];
+  const imported = local.filter((entry) => !entry.id.startsWith("bundled:"));
+  return { imported, repo };
 }
 
 /** JSON files checked in under formations/. */
@@ -321,4 +365,262 @@ export function mountFormation(side: FormationSide): () => void {
     world.replayPlaying = replayPlaying;
     world.replayT = replayT;
   };
+}
+
+/** The side on screen. Adjusted is the default. A missing side falls back to the other. */
+export function formationSideOf(frame: FormationFrame, view: FormationView): FormationSide {
+  if (view === "original") return frame.original ?? frame.adjusted;
+  return frame.adjusted ?? frame.original;
+}
+
+/** Copy the live rink onto the side being viewed so Save keeps that edit. */
+export function writeAdjustedPositions(frame: FormationFrame, view: FormationView = "adjusted"): void {
+  const side = formationSideOf(frame, view);
+  side.puck.x = world.puck.x;
+  side.puck.z = world.puck.z;
+  side.puck.y = world.puck.y;
+  side.puck.owner = world.puck.owner;
+  for (const player of side.players) {
+    const skater = world.skaters.find((s) => s.id === player.id);
+    if (!skater) continue;
+    player.x = skater.x;
+    player.z = skater.z;
+    player.yaw = skater.yaw;
+  }
+}
+
+/** Keyboard A eases a facing at the locked-frame rate, 2.4 rad/s. */
+export const FORM_YAW_RATE = 2.4;
+
+export function formYawSnap(dx: number, dz: number): number {
+  return Math.atan2(-dx, -dz || 0);
+}
+
+export function formYawToward(yaw: number, dx: number, dz: number, dt: number): number {
+  const desired = Math.atan2(-dx, -dz);
+  let d = desired - yaw;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  const max = FORM_YAW_RATE * dt;
+  if (d > max) d = max;
+  if (d < -max) d = -max;
+  return yaw + d;
+}
+
+export type FormEdit =
+  | { kind: "puck"; x0: number; z0: number; x1: number; z1: number; owner0: number | null; owner1: number | null }
+  | {
+      kind: "skater";
+      id: number;
+      x0: number;
+      z0: number;
+      x1: number;
+      z1: number;
+      yaw0: number;
+      yaw1: number;
+      puck: boolean;
+      px0: number;
+      pz0: number;
+      px1: number;
+      pz1: number;
+    };
+
+export type FormHist = {
+  undo: FormEdit[];
+  redo: FormEdit[];
+  gesture: FormEdit | null;
+};
+
+export function freshFormHist(): FormHist {
+  return { undo: [], redo: [], gesture: null };
+}
+
+export function sameFormTarget(a: FormEdit, b: FormEdit): boolean {
+  if (a.kind === "puck" && b.kind === "puck") return true;
+  return a.kind === "skater" && b.kind === "skater" && a.id === b.id;
+}
+
+export function formEditMoved(g: FormEdit): boolean {
+  if (g.x0 !== g.x1 || g.z0 !== g.z1) return true;
+  if (g.kind === "puck" && g.owner0 !== g.owner1) return true;
+  if (g.kind === "skater" && g.yaw0 !== g.yaw1) return true;
+  return g.kind === "skater" && g.puck && (g.px0 !== g.px1 || g.pz0 !== g.pz1);
+}
+
+/** An open drag counts, unless it continues the undo step already on the stack. */
+export function formUndoDepth(h: FormHist): number {
+  const g = h.gesture;
+  if (!g) return h.undo.length;
+  const prev = h.undo[h.undo.length - 1];
+  if (prev && sameFormTarget(prev, g)) return h.undo.length;
+  return h.undo.length + 1;
+}
+
+export function closeFormGesture(h: FormHist): void {
+  const g = h.gesture;
+  if (!g) return;
+  h.gesture = null;
+  if (!formEditMoved(g)) return;
+  const prev = h.undo[h.undo.length - 1];
+  if (prev && sameFormTarget(prev, g)) {
+    prev.x1 = g.x1;
+    prev.z1 = g.z1;
+    if (prev.kind === "skater" && g.kind === "skater") {
+      prev.yaw1 = g.yaw1;
+      prev.px1 = g.px1;
+      prev.pz1 = g.pz1;
+      if (g.puck) prev.puck = true;
+    } else if (prev.kind === "puck" && g.kind === "puck") {
+      prev.owner1 = g.owner1;
+    }
+    return;
+  }
+  h.undo.push(g);
+}
+
+export function openFormGesture(h: FormHist, next: FormEdit): void {
+  const g = h.gesture;
+  if (g && sameFormTarget(g, next)) return;
+  closeFormGesture(h);
+  h.redo.length = 0;
+  h.gesture = next;
+}
+
+export function syncFormGesture(
+  h: FormHist,
+  end: { x: number; z: number; yaw?: number; px?: number; pz?: number; owner?: number | null },
+): void {
+  const g = h.gesture;
+  if (!g) return;
+  g.x1 = end.x;
+  g.z1 = end.z;
+  if (g.kind === "puck") {
+    if (end.owner !== undefined) g.owner1 = end.owner;
+    return;
+  }
+  if (end.yaw !== undefined) g.yaw1 = end.yaw;
+  if (end.px !== undefined) g.px1 = end.px;
+  if (end.pz !== undefined) g.pz1 = end.pz;
+}
+
+/** Local offset in the yaw+π frame shared with the skater mesh. */
+export function formLocalOffset(yaw: number, dx: number, dz: number): { lx: number; lz: number } {
+  const ry = yaw + Math.PI;
+  const c = Math.cos(ry);
+  const sn = Math.sin(ry);
+  return { lx: dx * c - dz * sn, lz: dx * sn + dz * c };
+}
+
+export function formWorldOffset(yaw: number, x: number, z: number, lx: number, lz: number): { x: number; z: number } {
+  const ry = yaw + Math.PI;
+  const c = Math.cos(ry);
+  const sn = Math.sin(ry);
+  return { x: x + lx * c + lz * sn, z: z - lx * sn + lz * c };
+}
+
+export function undoFormEdit(h: FormHist): FormEdit | null {
+  closeFormGesture(h);
+  const g = h.undo.pop();
+  if (!g) return null;
+  h.redo.push(g);
+  return g;
+}
+
+export function redoFormEdit(h: FormHist): FormEdit | null {
+  closeFormGesture(h);
+  const g = h.redo.pop();
+  if (!g) return null;
+  h.undo.push(g);
+  return g;
+}
+
+function lerpNum(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+export type ReplaySample = {
+  players: FormationPlayer[];
+  puck: FormationSide["puck"];
+  userId?: number;
+  controlledId?: number;
+};
+
+/** Linear positions between two adjusted frames. `cursor` is a frame index, and it may sit between frames. */
+export function sampleReplay(frames: readonly FormationFrame[], cursor: number): ReplaySample {
+  const last = Math.max(0, frames.length - 1);
+  const u = Math.max(0, Math.min(last, cursor));
+  const i0 = Math.floor(u);
+  const i1 = Math.min(last, i0 + 1);
+  const t = i1 === i0 ? 0 : u - i0;
+  const a = frames[i0]!;
+  const b = frames[i1]!;
+  const players = a.adjusted.players.map((p) => {
+    const q = b.adjusted.players.find((row) => row.index === p.index) ?? p;
+    return {
+      index: p.index,
+      id: p.id,
+      x: lerpNum(p.x, q.x, t),
+      z: lerpNum(p.z, q.z, t),
+      yaw: lerpAngle(p.yaw, q.yaw, t),
+    };
+  });
+  const ap = a.adjusted.puck;
+  const bp = b.adjusted.puck;
+  return {
+    players,
+    puck: {
+      x: lerpNum(ap.x, bp.x, t),
+      z: lerpNum(ap.z, bp.z, t),
+      y: lerpNum(ap.y, bp.y, t),
+      owner: ap.owner,
+    },
+    ...(a.userId !== undefined ? { userId: a.userId } : {}),
+    ...(a.controlledId !== undefined ? { controlledId: a.controlledId } : {}),
+  };
+}
+
+/**
+ * Slot in the sorted roster. controlledId prefers a player id, then an index.
+ * userId prefers the recorded skater index, then an id. -1 when neither matches.
+ */
+export function controlledSkaterIndex(
+  frame: { userId?: number; controlledId?: number },
+  players: readonly FormationPlayer[],
+): number {
+  const ordered = players.slice().sort((a, b) => a.index - b.index);
+  const slot = (n: number | undefined, mode: "id" | "index"): number => {
+    if (n === undefined) return -1;
+    return ordered.findIndex((p) => (mode === "id" ? p.id === n : p.index === n));
+  };
+  if (frame.controlledId !== undefined) {
+    const byId = slot(frame.controlledId, "id");
+    if (byId >= 0) return byId;
+    const byIndex = slot(frame.controlledId, "index");
+    if (byIndex >= 0) return byIndex;
+  }
+  if (frame.userId !== undefined) {
+    const byIndex = slot(frame.userId, "index");
+    if (byIndex >= 0) return byIndex;
+    const byId = slot(frame.userId, "id");
+    if (byId >= 0) return byId;
+  }
+  return -1;
+}
+
+/** Move the mounted roster. Kinds stay as they were when the clip mounted. */
+export function applyReplayPose(players: readonly FormationPlayer[], puck: FormationSide["puck"]): void {
+  for (const player of players) {
+    const skater = world.skaters.find((s) => s.id === player.id);
+    if (!skater) continue;
+    skater.x = player.x;
+    skater.z = player.z;
+    skater.yaw = player.yaw;
+  }
+  world.puck.x = puck.x;
+  world.puck.z = puck.z;
+  world.puck.y = puck.y;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.puck.owner = puck.owner;
 }

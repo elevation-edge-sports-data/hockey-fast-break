@@ -346,3 +346,33 @@ test("the user defenseman is not steered onto a point", () => {
   assert.ok(Math.abs(cpuD.z) > 8, `cpu D did not take a blue-line corner (z ${cpuD.z.toFixed(2)})`);
   assert.ok(Math.hypot(cpuD.x - userD.x, cpuD.z - userD.z) >= 8);
 });
+
+test("home defense takes the faceoff side of the attacking blue", () => {
+  fresh();
+  world.homeAttack = -1;
+  resetWorld({ keepScore: true });
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  const carrier = world.skaters[world.userId];
+  const backs = defs("home");
+  const attack = attackOf("home");
+  const left = attack >= 0 ? -1 : 1;
+  isolate([carrier, ...backs]);
+  backs.forEach((s, i) => {
+    s.stun = 0;
+    s.x = attack * (BLUE_X - 4);
+    s.z = i === 0 ? -8 : 8;
+    s.vx = 0;
+    s.vz = 0;
+  });
+  const foes = placeSlot("home", attack);
+  stepN(240, () => {
+    pinCarrier(carrier, attack * (GOAL_LINE_X - 12), 1);
+    holdExtras(foes);
+  });
+  assertBlueCorners(attack, carrier, backs, "home attack -x");
+  assert.ok(backs[0].z * left > 4, `LD on the wrong side (${backs[0].z.toFixed(2)})`);
+  assert.ok(backs[1].z * left < -4, `RD on the wrong side (${backs[1].z.toFixed(2)})`);
+});

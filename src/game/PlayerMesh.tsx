@@ -23,6 +23,7 @@ const visorGeo = new THREE.BoxGeometry(0.2, 0.07, 0.08);
 const torsoGeo = new THREE.BoxGeometry(0.414, 0.576, 0.24);
 /** One flat shoulder cap. Depth matches the torso. The old chest slab and tilted side caps are this box. */
 const yokeTopGeo = new THREE.BoxGeometry(0.61, 0.13, 0.24);
+const unitBoxGeo = new THREE.BoxGeometry(1, 1, 1);
 /** Same width and depth as torsoGeo. Height is 20% under the previous hip block. */
 const PANTS_W = 0.414;
 const PANTS_D = 0.24;
@@ -5737,7 +5738,7 @@ export function PlayerMesh({
           <mesh geometry={helmetGeo} material={mats.helmet} position={[0, HELMET_POS_Y, 0]} castShadow />
           {goalie ? <GoalieMask material={mats.cage} /> : null}
         </group>
-        <mesh geometry={yokeTopGeo} material={mats.yoke} position={[0, 1.45, 0]} scale={goalie ? [1.12, 1.04, 1] : 1} castShadow />
+        <ShoulderYoke kit={kit} mats={mats} goalie={goalie} seated={false} />
         <group ref={lArm} position={[-0.237, 1.46, 0.06]}>
           {kit.id === 0 ? (
             <>
@@ -5912,6 +5913,41 @@ export function PlayerMesh({
           </group>
         </>
       )}
+    </group>
+  );
+}
+
+/** Kit 2 keeps the gold yoke over the torso and paints the wider shoulder ends with the sleeve stripe. */
+function ShoulderYoke({
+  kit,
+  mats,
+  goalie,
+  seated,
+}: {
+  kit: UniformKit;
+  mats: KitMats;
+  goalie: boolean;
+  seated: boolean;
+}) {
+  const y = seated ? 0.8 : 1.45;
+  const scaleX = goalie ? (seated ? 0.53 / 0.61 : 1.12) : 1;
+  const scaleY = goalie && !seated ? 1.04 : 1;
+  if (kit.id !== 1) {
+    return (
+      <mesh geometry={yokeTopGeo} material={mats.yoke} position={[0, y, 0]} scale={[scaleX, scaleY, 1]} castShadow />
+    );
+  }
+  const yokeW = 0.61;
+  const yokeH = 0.13;
+  const yokeD = 0.24;
+  const goldW = 0.414 / scaleX;
+  const capW = (yokeW - goldW) / 2;
+  const capX = goldW / 2 + capW / 2;
+  return (
+    <group position={[0, y, 0]} scale={[scaleX, scaleY, 1]}>
+      <mesh geometry={unitBoxGeo} material={mats.yoke} scale={[goldW, yokeH, yokeD]} castShadow />
+      <mesh geometry={unitBoxGeo} material={mats.pants} position={[-capX, 0, 0]} scale={[capW, yokeH, yokeD]} castShadow />
+      <mesh geometry={unitBoxGeo} material={mats.pants} position={[capX, 0, 0]} scale={[capW, yokeH, yokeD]} castShadow />
     </group>
   );
 }
@@ -6169,7 +6205,7 @@ export function SeatedPlayer({
           <mesh geometry={helmetGeo} material={mats.helmet} position={[0, HELMET_POS_Y, 0]} castShadow />
           {goalie ? <GoalieMask material={mats.cage} /> : null}
         </group>
-        <mesh geometry={yokeTopGeo} material={mats.yoke} position={[0, 0.8, 0]} scale={goalie ? [0.53 / 0.61, 1, 1] : 1} castShadow />
+        <ShoulderYoke kit={kit} mats={mats} goalie={goalie} seated />
         <group ref={lArm} position={[-0.257, 0.76, 0.02]} rotation={[0.25, -0.2, -0.6]}>
           {kit.id === 0 ? (
             <>

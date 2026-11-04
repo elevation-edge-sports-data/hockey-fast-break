@@ -1078,7 +1078,7 @@ function reachRegOt() {
 
 test("regular-season overtime is one 5:00 3-on-3 period at the regulation clock rate", () => {
   const starters = reachRegOt();
-  assert.deepEqual(sorted(starters.home), [7, 8, 29, 88, 92]);
+  assert.deepEqual(sorted(starters.home), [7, 8, 29, 62, 88]);
   for (const side of ["home", "away"]) {
     assert.equal(countKind(side, "goalie"), 1, side);
     assert.equal(countKind(side, "winger"), 3, side);
@@ -1136,7 +1136,7 @@ test("a tied regular-season overtime goes to a three-round shootout", () => {
   const homeOrder = world.shootout.order.home;
   const awayOrder = world.shootout.order.away;
   assert.deepEqual(sorted(homeOrder.slice(0, 5)), sorted(starters.home));
-  assert.deepEqual(sorted(homeOrder.slice(5)), [10, 11, 42, 62, 84]);
+  assert.deepEqual(sorted(homeOrder.slice(5)), [4, 5, 9, 10, 12]);
   assert.deepEqual(sorted(awayOrder.slice(0, 5)), sorted(starters.away));
   assert.equal(awayOrder.length, starters.away.length + 5);
   assert.ok(awayOrder.slice(5).every((n) => !starters.away.includes(n)));

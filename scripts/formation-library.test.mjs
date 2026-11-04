@@ -2,8 +2,9 @@
  * Formation library reads replay-frame JSON and shows it without entering replay.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
@@ -42,7 +43,23 @@ const {
   mountFormation,
   classicFormationEye,
   formationOrbitFromEye,
+  sampleReplay,
+  controlledSkaterIndex,
+  writeAdjustedPositions,
+  formationSideOf,
+  partitionFormationLibrary,
+  applyReplayPose,
+  freshFormHist,
+  openFormGesture,
+  closeFormGesture,
+  undoFormEdit,
+  redoFormEdit,
+  formYawSnap,
+  formYawToward,
+  formLocalOffset,
+  formWorldOffset,
 } = lib;
+const mark = await server.ssrLoadModule("/src/game/iceMark.ts");
 const { world } = sim;
 
 const frame = {
@@ -152,4 +169,202 @@ test("import stores each frame and the rink shows the adjusted side", () => {
   assert.equal(world.replayT, 4);
   world.replay = false;
   world.replayKind = null;
+});
+
+test("a control id is kept when it is numeric and ignored when it is not", () => {
+  const withIds = parseFormationJson(JSON.stringify({ ...frame, userId: 1, controlledId: 4 }));
+  assert.equal(withIds[0].userId, 1);
+  assert.equal(withIds[0].controlledId, 4);
+  const bad = parseFormationJson(JSON.stringify({ ...frame, userId: "nope", controlledId: null }));
+  assert.equal(bad.length, 1);
+  assert.equal(bad[0].userId, undefined);
+  assert.equal(bad[0].controlledId, undefined);
+  assert.equal("userId" in bad[0], false);
+});
+
+test("the controlled slot prefers controlledId, then the recorded index", () => {
+  const players = frame.adjusted.players;
+  assert.equal(controlledSkaterIndex({ controlledId: 4, userId: 1 }, players), 0);
+  assert.equal(controlledSkaterIndex({ userId: 1 }, players), 1);
+  assert.equal(controlledSkaterIndex({ userId: 9 }, players), 1);
+  assert.equal(controlledSkaterIndex({}, players), -1);
+  assert.equal(controlledSkaterIndex({ userId: 50 }, players), -1);
+});
+
+test("a fractional cursor lerps positions and takes the short yaw", () => {
+  const start = structuredClone(frame);
+  start.adjusted.players[0].yaw = 0;
+  const next = structuredClone(start);
+  next.frame = 13;
+  next.adjusted.players[0].x = 2;
+  next.adjusted.players[0].z = 1;
+  next.adjusted.players[0].yaw = Math.PI * 1.5;
+  next.adjusted.puck = { x: 5, z: 0, y: 0.4, owner: 0 };
+  const mid = sampleReplay([start, next], 0.5);
+  assert.equal(mid.players[0].x, 0);
+  assert.equal(mid.players[0].z, 3);
+  assert.ok(Math.abs(mid.players[0].yaw - -Math.PI / 4) < 1e-9);
+  assert.equal(mid.puck.x, 4);
+  assert.ok(Math.abs(mid.puck.y - 0.3) < 1e-9);
+  assert.equal(mark.stepReplayFrame(0.2, 1, 4), 1);
+  assert.equal(mark.stepReplayFrame(0.2, -1, 4), 0);
+  assert.equal(mark.stepReplayFrame(3, -1, 4), 2);
+  assert.equal(mark.stepReplayFrame(3, 1, 3), 3);
+});
+
+test("the ice X uses the pause-replay zoom speed and the shadow center", () => {
+  const simSrc = readFileSync(join(repo, "src/game/sim.ts"), "utf8");
+  assert.match(simSrc, /cam\.radius \* 0\.9 \* dt/);
+  assert.equal(mark.MARK_SPEED_PER_RADIUS, 0.9);
+  assert.equal(mark.markMetersPerSecond(14), 12.6);
+  assert.equal(mark.ACCEPT_PLAYER > 0.7, true);
+  assert.equal(mark.ACCEPT_PUCK > 0.35, true);
+  const step = mark.iceBasisStep(1, 10, 0, 1, { rx: 0, rz: 1, fx: 1, fz: 0 });
+  assert.equal(step.dx, 9);
+  assert.equal(step.dz, 0);
+  const right = mark.iceBasisStep(1, 10, 0.5, 0, { rx: 0, rz: 1, fx: 1, fz: 0 });
+  assert.equal(right.dx, 0);
+  assert.equal(right.dz, 4.5);
+  assert.equal(mark.iceBasisStep(0, 10, 1, 0, { rx: 0, rz: 1, fx: 1, fz: 0 }), null);
+
+  const root = mark.rootForShadow(5, 1, 0.35, -0.2, 0, 0);
+  assert.ok(Math.abs(root.x - 4.65) < 1e-9);
+  assert.ok(Math.abs(root.z - 1.2) < 1e-9);
+  const hit = mark.nearestMark(0.2, 0.1, [{ x: 0, z: 0 }, { x: 3, z: 0 }], { x: 2, z: 2 });
+  assert.deepEqual(hit, { kind: "skater", index: 0 });
+  assert.equal(mark.nearestMark(3, 3, [{ x: 0, z: 0 }], { x: 0, z: 0 }), null);
+
+  const view = readFileSync(join(repo, "src/game/FormationLibraryView.tsx"), "utf8");
+  const replay = readFileSync(join(repo, "src/game/ReplayViewerView.tsx"), "utf8");
+  assert.match(view, /iceBasisStep/);
+  assert.match(view, /hit\.kind === "ice"/);
+  assert.match(view, /nearestMark/);
+  assert.match(replay, /iceBasisStep/);
+  assert.match(replay, /sampleReplay/);
+  assert.match(replay, /controlledSkaterIndex/);
+  assert.match(replay, /act\.arrowX\) \+ \(live \? act\.stickX : 0\)/);
+  assert.match(replay, /hit\.kind === "ice"/);
+  assert.match(replay, /rate = -3\.4/);
+  assert.match(replay, /rate = 0\.28/);
+  assert.match(replay, /Fast rewind/);
+  assert.match(replay, /Slow rewind/);
+  assert.match(replay, /Slow forward/);
+  assert.match(replay, /Fast forward/);
+  assert.match(replay, /shuttleRef\.current/);
+  assert.match(replay, /act\.aEdge && gamepadFaceDown\("a"\)/);
+  assert.match(replay, /gamepadFaceDown\("y"\)/);
+  assert.doesNotMatch(replay, /cursorRef\.current \+= act\.stickX/);
+  const turned = mark.orbitStick(1, 0.8, 1, 0.2, 1);
+  assert.equal(turned.theta, 2.85);
+  assert.ok(Math.abs(turned.phi - 0.55) < 1e-9);
+  assert.equal(mark.orbitStick(0, 0.2, 0, 1, 1).phi, 0.12);
+  assert.equal(mark.orbitStick(0, 1.4, 0, -1, 1).phi, 1.45);
+});
+
+test("moving a selected player stores the root that keeps the shadow on the mark", () => {
+  const saved = structuredClone(frame);
+  const release = mountFormation(saved.adjusted);
+  const s = world.skaters[0];
+  s.comX = s.x + 0.35;
+  s.comZ = s.z - 0.2;
+  const root = mark.rootForShadow(1, 2, s.comX, s.comZ, s.x, s.z);
+  s.x = root.x;
+  s.z = root.z;
+  s.yaw = 1.2;
+  writeAdjustedPositions(saved);
+  const stored = saved.adjusted.players.find((p) => p.id === s.id);
+  assert.equal(stored.x, root.x);
+  assert.equal(stored.z, root.z);
+  assert.equal(stored.yaw, 1.2);
+  assert.ok(Math.abs(stored.x + 0.35 - 1) < 1e-9);
+  assert.ok(Math.abs(stored.z - 0.2 - 2) < 1e-9);
+  const kept = saved.original.players.find((p) => p.id === s.id).x;
+  writeAdjustedPositions(saved, "original");
+  assert.equal(saved.original.players.find((p) => p.id === s.id).x, root.x);
+  assert.notEqual(kept, root.x);
+  assert.equal(formationSideOf(saved, "adjusted").players.find((p) => p.id === s.id).x, root.x);
+  assert.equal(formationSideOf(saved, "original").players.find((p) => p.id === s.id).yaw, 1.2);
+  release();
+});
+
+test("a carried puck keeps its place in the player's frame when the player turns", () => {
+  const yaw = 0.4;
+  const dx = 1.2;
+  const dz = -0.5;
+  const local = formLocalOffset(yaw, dx, dz);
+  const turned = yaw + 1.1;
+  const at = formWorldOffset(turned, 3, 4, local.lx, local.lz);
+  const again = formLocalOffset(turned, at.x - 3, at.z - 4);
+  assert.ok(Math.abs(again.lx - local.lx) < 1e-9);
+  assert.ok(Math.abs(again.lz - local.lz) < 1e-9);
+});
+
+test("an import stays on the left until it is saved, and removing it leaves the repo copy", () => {
+  const imported = { id: "import-1", name: "slot.json", frame };
+  const onDisk = { id: "bundled:formations/slot.json:0", name: "slot.json", frame };
+  const open = partitionFormationLibrary([imported], [onDisk]);
+  assert.deepEqual(open.imported.map((entry) => entry.id), ["import-1"]);
+  assert.deepEqual(open.repo.map((entry) => entry.id), ["bundled:formations/slot.json:0"]);
+
+  const written = { id: "bundled:formations/slot.json:0", name: "slot.json", frame };
+  const saved = partitionFormationLibrary([], [onDisk], [written]);
+  assert.equal(saved.imported.length, 0);
+  assert.equal(saved.repo.length, 1);
+  assert.equal(saved.repo[0], written);
+
+  const removed = partitionFormationLibrary([], [onDisk]);
+  assert.equal(removed.imported.length, 0);
+  assert.equal(removed.repo.length, 1);
+  assert.equal(removed.repo[0].id, onDisk.id);
+});
+
+test("undo and redo restore a slide and a turn", () => {
+  const h = freshFormHist();
+  openFormGesture(h, {
+    kind: "skater",
+    id: 4,
+    x0: 1,
+    z0: 2,
+    x1: 1,
+    z1: 2,
+    yaw0: 0,
+    yaw1: 0,
+    puck: false,
+    px0: 0,
+    pz0: 0,
+    px1: 0,
+    pz1: 0,
+  });
+  h.gesture.x1 = 4;
+  h.gesture.z1 = -1;
+  h.gesture.yaw1 = formYawSnap(1, 0);
+  closeFormGesture(h);
+  assert.equal(h.undo.length, 1);
+  assert.equal(h.redo.length, 0);
+  const back = undoFormEdit(h);
+  assert.equal(back.x0, 1);
+  assert.equal(back.z0, 2);
+  assert.equal(back.yaw0, 0);
+  assert.equal(h.redo.length, 1);
+  const again = redoFormEdit(h);
+  assert.equal(again.x1, 4);
+  assert.equal(again.z1, -1);
+  assert.equal(again.yaw1, -Math.PI / 2);
+  assert.ok(Math.abs(formYawToward(0, 1, 0, 0.1) - -0.24) < 1e-9);
+});
+
+test("playback writes lerped spots onto the mounted roster and marks the controlled skater", () => {
+  const start = structuredClone(frame);
+  start.userId = 0;
+  const next = structuredClone(start);
+  next.adjusted.players = start.adjusted.players.map((p) => ({ ...p, x: p.x + 4, z: p.z }));
+  const release = mountFormation(start.adjusted);
+  const prev = world.userId;
+  const mid = sampleReplay([start, next], 0.5);
+  applyReplayPose(mid.players, mid.puck);
+  world.userId = controlledSkaterIndex(mid, mid.players);
+  assert.equal(world.skaters[0].x, start.adjusted.players[0].x + 2);
+  assert.equal(world.userId, 0);
+  release();
+  world.userId = prev;
 });

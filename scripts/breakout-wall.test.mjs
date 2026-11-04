@@ -1,8 +1,9 @@
 /**
- * Half-wall breakout from a captured defensive-zone frame.
- * A stacked forward widens to the weak boards. The forecheck takes the
- * passing lanes that open up. A slot carry and an already-spaced breakout
- * leave that wide steer alone.
+ * Half-wall own-zone shape from replay-frame-1657.
+ * Teammates patrol the original-to-adjusted segment. Away wings follow the
+ * lane in to the carrier. Away defensemen keep their own
+ * sides at the deepest teammate's depth. The away center contains the
+ * third-deepest teammate. A slot carry does not use this shape.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -46,7 +47,7 @@ const input = await server.ssrLoadModule("/src/game/input.ts");
 
 const { resetWorld, stepSim, world } = sim;
 const { useGame } = store;
-const { BLUE_X, FACEOFF_SPOT_Z, FT, GOAL_LINE_X, RINK_W } = rink;
+const { FT, GOAL_LINE_X, RINK_W } = rink;
 const { setInjectedKeys } = input;
 
 const DT = 1 / 60;
@@ -98,84 +99,68 @@ function ownOf(side) {
   return side === "home" ? -world.homeAttack : world.homeAttack;
 }
 
-/** Captured ice, with x signed so +x is the breakout team's defending end. */
-const CAP = {
-  puck: { x: 21.204, z: 10.077 },
-  carrier: { x: 22.848, z: 10.626 },
-  partner: { x: 21.228, z: -1.291 },
-  stackIn: { x: 6.358, z: -2.146 },
-  stackOut: { x: 7.121, z: -2.852 },
-  strongF: { x: 6.286, z: 3.916 },
-  dHigh: { x: 15.191, z: 7.823 },
-  dDeep: { x: 19.207, z: -5.476 },
-  fDeep: { x: 22.885, z: -2.414 },
-  fMid: { x: 15.057, z: 0.485 },
-  fCheck: { x: 19.123, z: 3.324 },
+/** replay-frame-1657. Defending end is +x and the left wall is +z. */
+const SEP = 5.651270275108692;
+const RANGE = {
+  partner: {
+    a: { x: 25.716591465763795, z: 6.4272120315913766 },
+    b: { x: 19.754088738927226, z: -8.382408277293269 },
+  },
+  lw: {
+    a: { x: -3.4978563845666635, z: 9.312509469358371 },
+    b: { x: 0.45253845661317615, z: 11.51913246114101 },
+  },
+  c: {
+    a: { x: 4.150569789074841, z: -0.009951409127712842 },
+    b: { x: 15.389245187998362, z: 1.9511018340056967 },
+  },
+  rw: {
+    a: { x: -3.4036987197925126, z: -9.303157560823202 },
+    b: { x: 5.3401475470701145, z: -12.292418300126593 },
+  },
 };
+const LANE = {
+  right: { x: -2.231203141901407, z: -3.10726081195088 },
+  left: { x: -0.201869346767506, z: -8.315912466609797 },
+};
+const D_LAT = { left: 7.127775424831, right: 5.7765240490572465 };
+const C_Z = -0.7633902732897508;
+const CARRIER = { x: 21.830965651207613, z: 12.230468834019101 };
 
-function spotX(own, x) {
-  return own * x;
+function ice(own, spot) {
+  return { x: own * spot.x, z: own * spot.z };
 }
 
-function targets(own) {
-  const wide = {
-    x: own * (GOAL_LINE_X - 60 * FT),
-    z: -(RINK_W / 2 - 7.25 * FT),
-  };
-  const inner = FACEOFF_SPOT_Z + 0.65;
-  const outer = RINK_W / 2 - 1.85;
-  const wingZ = inner + (outer - inner) * 0.5;
-  const partner = { x: spotX(own, CAP.partner.x), z: CAP.partner.z };
-  const puck = { x: spotX(own, CAP.puck.x), z: CAP.puck.z };
-  const dx = partner.x - puck.x;
-  const dz = partner.z - puck.z;
-  const len = Math.hypot(dx, dz);
-  const travel = Math.max(0.45, len - 0.42 * 4);
-  const attack = -own;
-  const deny = {
-    x: puck.x + (dx / len) * travel + attack * FT,
-    z: puck.z + (dz / len) * travel,
-  };
-  const carrier = { x: spotX(own, CAP.carrier.x), z: CAP.carrier.z };
-  const fx = wide.x - carrier.x;
-  const fz = wide.z - carrier.z;
-  const fl = Math.hypot(fx, fz);
-  const check = {
-    x: carrier.x + (fx / fl) * (13.5 * FT),
-    z: carrier.z + (fz / fl) * (13.5 * FT),
-  };
-  const outlet = { x: spotX(own, CAP.strongF.x), z: CAP.strongF.z };
-  const mx = (puck.x + outlet.x) * 0.5;
-  const mz = (puck.z + outlet.z) * 0.5;
-  const pull = 2 * FT;
-  const shade = {
-    x: mx,
-    z: Math.abs(mz) <= pull ? 0 : mz - Math.sign(mz) * pull,
-  };
-  return {
-    wide,
-    deepD: { x: wide.x, z: -(FACEOFF_SPOT_Z - 4 * FT) },
-    highD: { x: own * (BLUE_X - 11 * FT), z: wingZ },
-    deny,
-    check,
-    shade,
-  };
+function mirrored(own, mirror, spot) {
+  return { x: own * spot.x, z: own * mirror * spot.z };
 }
 
-function hold(side, own) {
-  const carrier = byKind(side, "defense")[1];
-  const partner = byKind(side, "defense")[0];
-  const wings = byKind(side, "winger");
-  const userWing = wings[0];
-  const strong = wings[2];
-  place(carrier, spotX(own, CAP.carrier.x), CAP.carrier.z);
-  place(partner, spotX(own, CAP.partner.x), CAP.partner.z);
-  place(userWing, spotX(own, CAP.stackIn.x), CAP.stackIn.z);
-  place(strong, spotX(own, CAP.strongF.x), CAP.strongF.z);
+function mix(a, b, t) {
+  return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
+}
+
+function segDist(p, a, b) {
+  const abx = b.x - a.x;
+  const abz = b.z - a.z;
+  const len2 = abx * abx + abz * abz || 1;
+  let t = ((p.x - a.x) * abx + (p.z - a.z) * abz) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + abx * t), p.z - (a.z + abz * t));
+}
+
+function segT(p, a, b) {
+  const abx = b.x - a.x;
+  const abz = b.z - a.z;
+  const len2 = abx * abx + abz * abz || 1;
+  const t = ((p.x - a.x) * abx + (p.z - a.z) * abz) / len2;
+  return Math.max(0, Math.min(1, t));
+}
+
+function givePuck(carrier) {
   const puck = world.puck;
   puck.owner = carrier.id;
-  puck.x = spotX(own, CAP.puck.x);
-  puck.z = CAP.puck.z;
+  puck.x = carrier.x;
+  puck.z = carrier.z;
   puck.y = 0.05;
   puck.vx = 0;
   puck.vz = 0;
@@ -187,6 +172,9 @@ function hold(side, own) {
   world.stoppage = false;
   world.faceoff = false;
   world.delayedOffside = 0;
+}
+
+function parkNets() {
   for (const g of world.skaters) {
     if (g.kind !== "goalie") continue;
     const net = g.side === "home" ? -world.homeAttack : world.homeAttack;
@@ -194,57 +182,237 @@ function hold(side, own) {
   }
 }
 
-function near(s, spot, label, tol) {
-  const d = Math.hypot(s.x - spot.x, s.z - spot.z);
-  assert.ok(d < tol, `${label} ${s.id} at (${s.x.toFixed(2)}, ${s.z.toFixed(2)}) is ${d.toFixed(2)} m from the lane`);
+/** onLeft uses the carrier's left while facing up ice. */
+function setup(attack, onLeft) {
+  fresh(attack);
+  const own = ownOf("home");
+  const left = attack >= 0 ? -1 : 1;
+  const mirror = onLeft ? 1 : -1;
+  const carrier = byKind("home", "defense")[onLeft ? 0 : 1];
+  const z = (onLeft ? left : -left) * Math.abs(CARRIER.z);
+  place(carrier, own * CARRIER.x, z);
+  world.userId = carrier.id;
+  givePuck(carrier);
+  parkNets();
+  return { own, mirror, carrier, left };
 }
 
-test("a stacked half-wall breakout widens the outlet and fills the lanes", () => {
+function wingsHome() {
+  return byKind("home", "winger");
+}
+
+test("home teammates range between the original and adjusted spots", () => {
   for (const attack of [-1, 1]) {
-    fresh(attack);
-    const side = "home";
-    const own = ownOf(side);
-    assert.equal(own, attack === -1 ? 1 : -1);
-    const wings = byKind(side, "winger");
-    const foeD = byKind("away", "defense");
-    const foeF = byKind("away", "winger");
-    world.userId = wings[0].id;
-    place(wings[1], spotX(own, CAP.stackOut.x), CAP.stackOut.z);
-    place(foeD[0], spotX(own, CAP.dHigh.x), CAP.dHigh.z);
-    place(foeD[1], spotX(own, CAP.dDeep.x), CAP.dDeep.z);
-    place(foeF[0], spotX(own, CAP.fDeep.x), CAP.fDeep.z);
-    place(foeF[1], spotX(own, CAP.fMid.x), CAP.fMid.z);
-    place(foeF[2], spotX(own, CAP.fCheck.x), CAP.fCheck.z);
-    const want = targets(own);
+    for (const onLeft of [true, false]) {
+      const { own, mirror, carrier } = setup(attack, onLeft);
+      const [lw, c, rw] = wingsHome();
+      const partner = byKind("home", "defense").find((d) => d.id !== carrier.id);
+      const segs = {
+        partner: [mirrored(own, mirror, RANGE.partner.a), mirrored(own, mirror, RANGE.partner.b)],
+        lw: [ice(own, RANGE.lw.a), ice(own, RANGE.lw.b)],
+        c: [ice(own, RANGE.c.a), ice(own, RANGE.c.b)],
+        rw: [ice(own, RANGE.rw.a), ice(own, RANGE.rw.b)],
+      };
+      const started = {
+        partner: segs.partner[0],
+        lw: mix(segs.lw[0], segs.lw[1], 1),
+        c: mix(segs.c[0], segs.c[1], 0.5),
+        rw: segs.rw[0],
+      };
+      place(partner, started.partner.x, started.partner.z);
+      place(lw, started.lw.x, started.lw.z);
+      place(c, started.c.x, started.c.z);
+      place(rw, started.rw.x, started.rw.z);
+      const label = `attack ${attack} ${onLeft ? "left" : "right"} wall`;
+      const away = world.skaters.filter((s) => s.side === "away" && s.kind !== "goalie");
+      const span = { partner: [1, 0], lw: [1, 0], c: [1, 0], rw: [1, 0] };
+      const at = { partner, lw, c, rw };
+      for (let i = 0; i < 300; i++) {
+        place(carrier, own * CARRIER.x, (onLeft ? (attack >= 0 ? -1 : 1) : -(attack >= 0 ? -1 : 1)) * Math.abs(CARRIER.z));
+        away.forEach((s, n) => place(s, -own * (10 + n), (n - 2) * 3));
+        givePuck(carrier);
+        parkNets();
+        stepSim(DT);
+        for (const key of Object.keys(segs)) {
+          const s = at[key];
+          const [a, b] = segs[key];
+          const t = segT(s, a, b);
+          if (t < span[key][0]) span[key][0] = t;
+          if (t > span[key][1]) span[key][1] = t;
+        }
+      }
+      for (const key of Object.keys(segs)) {
+        const s = at[key];
+        const [a, b] = segs[key];
+        const d = segDist(s, a, b);
+        const covered = span[key][1] - span[key][0];
+        assert.ok(d < 1.6, `${label} ${key} left the segment by ${d.toFixed(2)} at (${s.x.toFixed(2)}, ${s.z.toFixed(2)})`);
+        assert.ok(covered > 0.45, `${label} ${key} stayed put (covered ${covered.toFixed(2)} of the segment)`);
+      }
+      const wingSide = Math.sign(segs.lw[1].z) || 1;
+      assert.ok(lw.z * wingSide > 4, `${label} LW left his side (${lw.z.toFixed(2)})`);
+      assert.ok(rw.z * wingSide < -4, `${label} RW crossed to the left (${rw.z.toFixed(2)})`);
+    }
+  }
+});
+
+test("a teammate off the segment skates onto it and can use either end", () => {
+  const { own, carrier } = setup(-1, true);
+  const c = wingsHome()[1];
+  const a = ice(own, RANGE.c.a);
+  const b = ice(own, RANGE.c.b);
+  place(c, 0, 0);
+  const others = world.skaters.filter((s) => s.id !== c.id && s.id !== carrier.id && s.kind !== "goalie");
+  for (let i = 0; i < 240; i++) {
+    place(carrier, CARRIER.x, CARRIER.z);
+    others.forEach((s, n) => place(s, -18 + (n % 5), (n - 4) * 2.4));
+    givePuck(carrier);
+    parkNets();
+    stepSim(DT);
+  }
+  const d = segDist(c, a, b);
+  assert.ok(d < 1.5, `center still off the segment by ${d.toFixed(2)}`);
+  place(c, a.x, a.z);
+  for (let i = 0; i < 100; i++) {
+    place(carrier, CARRIER.x, CARRIER.z);
+    others.forEach((s, n) => place(s, -18 + (n % 5), (n - 4) * 2.4));
+    givePuck(carrier);
+    stepSim(DT);
+  }
+  assert.ok(Math.hypot(c.x - a.x, c.z - a.z) > 3, "original end was a lock");
+  assert.ok(segDist(c, a, b) < 1.8, "left the segment from the original end");
+  place(c, b.x, b.z);
+  for (let i = 0; i < 100; i++) {
+    place(carrier, CARRIER.x, CARRIER.z);
+    others.forEach((s, n) => place(s, -18 + (n % 5), (n - 4) * 2.4));
+    givePuck(carrier);
+    stepSim(DT);
+  }
+  assert.ok(Math.hypot(c.x - b.x, c.z - b.z) > 3, "adjusted end was a lock");
+  assert.ok(segDist(c, a, b) < 1.8, "left the segment from the adjusted end");
+});
+
+test("away defensemen keep their sides and the deepest home depth", () => {
+  for (const attack of [-1, 1]) {
+    const { own, carrier } = setup(attack, true);
+    const [lw, c, rw] = wingsHome();
+    const partner = byKind("home", "defense").find((d) => d.id !== carrier.id);
+    const deep = ice(own, RANGE.lw.b);
+    place(lw, deep.x, deep.z);
+    place(c, ice(own, RANGE.c.b).x, ice(own, RANGE.c.b).z);
+    place(rw, ice(own, RANGE.rw.b).x, ice(own, RANGE.rw.b).z);
+    place(partner, ice(own, RANGE.partner.b).x, ice(own, RANGE.partner.b).z);
+    const foe = byKind("away", "defense");
+    const awayLeft = attack >= 0 ? 1 : -1;
+    place(foe[0], own * 4.3, -awayLeft * 9);
+    place(foe[1], own * 8.9, awayLeft * 5.5);
+    const label = `attack ${attack}`;
     for (let i = 0; i < 360; i++) {
-      hold(side, own);
+      place(carrier, own * CARRIER.x, (attack >= 0 ? -1 : 1) * Math.abs(CARRIER.z));
+      place(lw, deep.x, deep.z);
+      place(c, ice(own, RANGE.c.b).x, ice(own, RANGE.c.b).z);
+      place(rw, ice(own, RANGE.rw.b).x, ice(own, RANGE.rw.b).z);
+      place(partner, ice(own, RANGE.partner.b).x, ice(own, RANGE.partner.b).z);
+      givePuck(carrier);
+      parkNets();
       stepSim(DT);
     }
-    hold(side, own);
-    const label = `attack ${attack}`;
-    near(wings[1], want.wide, `${label} wide forward`, 1.35);
-    const deepD = foeD.slice().sort((a, b) => Math.hypot(a.x - want.deepD.x, a.z - want.deepD.z) - Math.hypot(b.x - want.deepD.x, b.z - want.deepD.z))[0];
-    const highD = foeD.find((d) => d !== deepD);
-    near(deepD, want.deepD, `${label} deep defender`, 1.35);
-    near(highD, want.highD, `${label} high defender`, 1.45);
-    const fore = foeF.slice().sort((a, b) => Math.hypot(a.x - want.check.x, a.z - want.check.z) - Math.hypot(b.x - want.check.x, b.z - want.check.z))[0];
-    near(fore, want.check, `${label} forechecker`, 1.45);
-    const deny = foeF.slice().sort((a, b) => Math.hypot(a.x - want.deny.x, a.z - want.deny.z) - Math.hypot(b.x - want.deny.x, b.z - want.deny.z))[0];
-    near(deny, want.deny, `${label} deep-D lane`, 1.45);
-    const shade = foeF.slice().sort((a, b) => Math.hypot(a.x - want.shade.x, a.z - want.shade.z) - Math.hypot(b.x - want.shade.x, b.z - want.shade.z))[0];
-    near(shade, want.shade, `${label} outlet lane`, 1.55);
-    assert.notEqual(fore.id, deny.id, `${label} one forward took two lanes`);
-    assert.notEqual(deny.id, shade.id, `${label} the lane forwards collapsed`);
-    const split = Math.hypot(wings[1].x - wings[0].x, wings[1].z - wings[0].z);
-    assert.ok(split > 6, `${label} forwards still stacked (${split.toFixed(2)})`);
-    if (attack === -1) {
-      assert.equal(wings[1].id, 4);
-      assert.equal(deepD.id, 8);
-      assert.equal(highD.id, 7);
-      assert.equal(fore.id, 11);
-      assert.equal(deny.id, 9);
-      assert.equal(shade.id, 10);
+    for (const d of foe) {
+      const dx = Math.abs(d.x - deep.x);
+      assert.ok(dx < 1.5, `${label} D ${d.id} depth ${d.x.toFixed(2)} is ${dx.toFixed(2)} m off the LW`);
     }
+    assert.ok(foe[0].z * awayLeft > 3, `${label} LD ${foe[0].id} on z ${foe[0].z.toFixed(2)}`);
+    assert.ok(foe[1].z * awayLeft < -3, `${label} RD ${foe[1].id} on z ${foe[1].z.toFixed(2)}`);
+    assert.ok(Math.abs(Math.abs(foe[0].z) - D_LAT.left) < 1.4, `${label} LD lateral`);
+    assert.ok(Math.abs(Math.abs(foe[1].z) - D_LAT.right) < 1.4, `${label} RD lateral`);
+  }
+});
+
+test("away wings follow the lane through to the carrier", () => {
+  const { own, carrier } = setup(-1, true);
+  const foe = byKind("away", "winger");
+  const rw = foe[2];
+  const lw = foe[0];
+  const wall = Math.sign(carrier.z) || 1;
+  const laneOf = (off) => ({
+    x: carrier.x + own * off.x,
+    z: carrier.z + wall * off.z,
+  });
+  const rwLane = laneOf(LANE.right);
+  const lwLane = laneOf(LANE.left);
+  const homeMates = world.skaters.filter((s) => s.side === "home" && s.id !== carrier.id && s.kind !== "goalie");
+  const hold = (park) => {
+    place(carrier, CARRIER.x, CARRIER.z);
+    homeMates.forEach((s, n) => place(s, 2 + n, (n - 2) * 4));
+    place(park, 0, -10);
+    givePuck(carrier);
+    parkNets();
+  };
+  const finish = (wing, lane, name) => {
+    place(wing, lane.x, lane.z);
+    const lx = lane.x - carrier.x;
+    const lz = lane.z - carrier.z;
+    const len = Math.hypot(lx, lz) || 1;
+    for (let i = 0; i < 180; i++) {
+      hold(wing === rw ? lw : rw);
+      stepSim(DT);
+    }
+    const gap = Math.hypot(wing.x - carrier.x, wing.z - carrier.z);
+    const along = ((wing.x - carrier.x) * lx + (wing.z - carrier.z) * lz) / len;
+    assert.ok(gap < 1.6, `${name} stopped ${gap.toFixed(2)} m short`);
+    assert.ok(along > 0.15, `${name} left the lane side (${along.toFixed(2)})`);
+  };
+  finish(rw, rwLane, "primary");
+  finish(lw, lwLane, "secondary");
+});
+
+test("away center contains the third-deepest home skater", () => {
+  for (const attack of [-1, 1]) {
+    const { own, mirror, carrier } = setup(attack, true);
+    const [lw, c, rw] = wingsHome();
+    const partner = byKind("home", "defense").find((d) => d.id !== carrier.id);
+    const spots = [lw, c, rw, partner];
+    const canon = [RANGE.lw.b, RANGE.c.b, RANGE.rw.b, RANGE.partner.b];
+    const pinHome = () => {
+      place(carrier, own * CARRIER.x, (attack >= 0 ? -1 : 1) * Math.abs(CARRIER.z));
+      spots.forEach((s, i) => {
+        const p = ice(own, canon[i]);
+        place(s, p.x, p.z);
+      });
+      givePuck(carrier);
+      parkNets();
+    };
+    const third = ice(own, RANGE.c.b);
+    const far = third.x - own * SEP;
+    const shadeZ = own * mirror * C_Z;
+    const ac = byKind("away", "winger")[1];
+    const rest = world.skaters.filter((s) => s.side === "away" && s.id !== ac.id && s.kind !== "goalie");
+    const pin = () => {
+      pinHome();
+      rest.forEach((s, n) => place(s, -own * (12 + n), (n - 1) * 4));
+    };
+    const label = `attack ${attack}`;
+    place(ac, far, shadeZ);
+    for (let i = 0; i < 150; i++) {
+      pin();
+      stepSim(DT);
+    }
+    assert.ok(Math.abs(ac.x - far) < 1.2, `${label} left the max gap (${ac.x.toFixed(2)})`);
+    place(ac, third.x, shadeZ);
+    for (let i = 0; i < 150; i++) {
+      pin();
+      stepSim(DT);
+    }
+    const zeroGap = (third.x - ac.x) * own;
+    assert.ok(zeroGap > -1.1 && zeroGap < SEP + 0.4, `${label} zero gap became ${zeroGap.toFixed(2)}`);
+    place(ac, third.x + own * 4, shadeZ);
+    for (let i = 0; i < 240; i++) {
+      pin();
+      stepSim(DT);
+    }
+    const past = (third.x - ac.x) * own;
+    assert.ok(past > -0.8, `${label} still let the center past him (${past.toFixed(2)})`);
+    assert.ok(past < SEP + 0.8, `${label} gap grew to ${past.toFixed(2)}`);
   }
 });
 

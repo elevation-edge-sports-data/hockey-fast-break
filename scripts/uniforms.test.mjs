@@ -51,9 +51,9 @@ test("new kits sit at 5 and 6 and the old 5–8 shift up by two", () => {
   assert.equal(kit5.crowdSec, "#3a3a3a");
   assert.equal(kit5.jersey, "#ce1126");
   assert.equal(kit5.sleeves, "#ce1126");
-  assert.equal(kit5.yoke, "#ffffff");
+  assert.equal(kit5.yoke, "#3a3a3a");
   assert.equal(kit5.pants, "#3a3a3a");
-  assert.equal(kit5.helmet, "#3a3a3a");
+  assert.equal(kit5.helmet, "#ce1126");
   assert.equal(kit5.stripe, "#ce1126");
   assert.equal(kit5.sockBand, "#111111");
   assert.equal(kit5.sockBandLow, "#111111");
@@ -63,7 +63,7 @@ test("new kits sit at 5 and 6 and the old 5–8 shift up by two", () => {
   const kit6 = UNIFORMS[5];
   assert.equal(kit6.crowdPri, "#3a3a3a");
   assert.equal(kit6.crowdSec, "#a2aaad");
-  assert.equal(kit6.helmet, "#a2aaad");
+  assert.equal(kit6.helmet, "#3a3a3a");
   assert.equal(kit6.jersey, "#3a3a3a");
   assert.equal(kit6.pants, "#3a3a3a");
   assert.equal(kit6.stripe, "#a2aaad");
@@ -74,12 +74,12 @@ test("new kits sit at 5 and 6 and the old 5–8 shift up by two", () => {
 
   assert.equal(UNIFORMS[6].jersey, "#ff5c14");
   assert.equal(UNIFORMS[6].stripe, "#ffffff");
-  assert.equal(UNIFORMS[7].helmet, "#1a58d4");
+  assert.equal(UNIFORMS[7].helmet, "#ffffff");
   assert.equal(UNIFORMS[7].stripe, "#1a58d4");
   assert.equal(UNIFORMS[7].socks, "#ffffff");
   assert.equal(UNIFORMS[8].jersey, "#f6eedc");
   assert.equal(UNIFORMS[8].stripe, "#e21832");
-  assert.equal(UNIFORMS[9].helmet, "#ce1126");
+  assert.equal(UNIFORMS[9].helmet, "#ffffff");
   assert.equal(UNIFORMS[9].jersey, "#ffffff");
   assert.equal(UNIFORMS[9].stripe, "#ce1126");
   assert.equal(UNIFORMS[9].socks, "#ffffff");
@@ -94,7 +94,7 @@ test("kit bars, crowd, and in-game chips share the worn helmet jersey and pants"
     assert.equal(worn.stripe, kit.pantStripe ?? kit.stripe);
   }
   assert.equal(kitWornColors(UNIFORMS[0]).stripe, "#5a1021");
-  assert.equal(kitWornColors(UNIFORMS[7]).helmet, "#1a58d4");
+  assert.equal(kitWornColors(UNIFORMS[7]).helmet, "#ffffff");
   assert.equal(kitWornColors(UNIFORMS[7]).jersey, "#ffffff");
   assert.equal(kitWornColors(UNIFORMS[7]).pants, "#1a58d4");
   assert.notEqual(kitWornColors(UNIFORMS[7]).jersey, UNIFORMS[7].crowdPri);

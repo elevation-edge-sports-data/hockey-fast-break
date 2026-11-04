@@ -14,6 +14,7 @@ import { Route as FormationsRouteImport } from './routes/formations'
 import { Route as PoseEditorRouteImport } from './routes/pose-editor'
 import { Route as PoseGalleryRouteImport } from './routes/pose-gallery'
 import { Route as PoseGalleryFullRouteImport } from './routes/pose-gallery-full'
+import { Route as ReplayRouteImport } from './routes/replay'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -40,6 +41,11 @@ const PoseGalleryFullRoute = PoseGalleryFullRouteImport.update({
   path: '/pose-gallery-full',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ReplayRoute = ReplayRouteImport.update({
+  id: '/replay',
+  path: '/replay',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -47,6 +53,7 @@ export interface FileRoutesByFullPath {
   '/pose-editor': typeof PoseEditorRoute
   '/pose-gallery': typeof PoseGalleryRoute
   '/pose-gallery-full': typeof PoseGalleryFullRoute
+  '/replay': typeof ReplayRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -54,6 +61,7 @@ export interface FileRoutesByTo {
   '/pose-editor': typeof PoseEditorRoute
   '/pose-gallery': typeof PoseGalleryRoute
   '/pose-gallery-full': typeof PoseGalleryFullRoute
+  '/replay': typeof ReplayRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -62,6 +70,7 @@ export interface FileRoutesById {
   '/pose-editor': typeof PoseEditorRoute
   '/pose-gallery': typeof PoseGalleryRoute
   '/pose-gallery-full': typeof PoseGalleryFullRoute
+  '/replay': typeof ReplayRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -71,6 +80,7 @@ export interface FileRouteTypes {
     | '/pose-editor'
     | '/pose-gallery'
     | '/pose-gallery-full'
+    | '/replay'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -78,6 +88,7 @@ export interface FileRouteTypes {
     | '/pose-editor'
     | '/pose-gallery'
     | '/pose-gallery-full'
+    | '/replay'
   id:
     | '__root__'
     | '/'
@@ -85,6 +96,7 @@ export interface FileRouteTypes {
     | '/pose-editor'
     | '/pose-gallery'
     | '/pose-gallery-full'
+    | '/replay'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -93,6 +105,7 @@ export interface RootRouteChildren {
   PoseEditorRoute: typeof PoseEditorRoute
   PoseGalleryRoute: typeof PoseGalleryRoute
   PoseGalleryFullRoute: typeof PoseGalleryFullRoute
+  ReplayRoute: typeof ReplayRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -132,6 +145,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PoseGalleryFullRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/replay': {
+      id: '/replay'
+      path: '/replay'
+      fullPath: '/replay'
+      preLoaderRoute: typeof ReplayRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -141,6 +161,7 @@ const rootRouteChildren: RootRouteChildren = {
   PoseEditorRoute: PoseEditorRoute,
   PoseGalleryRoute: PoseGalleryRoute,
   PoseGalleryFullRoute: PoseGalleryFullRoute,
+  ReplayRoute: ReplayRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

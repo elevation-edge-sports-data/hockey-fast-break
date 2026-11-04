@@ -143,6 +143,34 @@ function assertDefenseParked() {
   }
 }
 
+test("the center takes the dot and the wings stay on their own sides", () => {
+  for (const attack of [-1, 1]) {
+    drop({ attack });
+    for (const side of ["home", "away"]) {
+      const wings = world.skaters
+        .filter((s) => s.side === side && s.kind === "winger")
+        .sort((a, b) => a.id - b.id);
+      assert.equal(wings.length, 3, side);
+      const dot = side === "home" ? world.homeDot : world.awayDot;
+      assert.equal(dot, wings[1].id, `${side} center takes the dot`);
+      const left = attackDir(side) >= 0 ? -1 : 1;
+      assert.ok(wings[0].z * left > FACEOFF_R, `${side} LW is on the left`);
+      assert.ok(wings[2].z * left < -FACEOFF_R, `${side} RW is on the right`);
+      assert.ok(Math.abs(wings[1].z - world.faceZ) < 1e-9, `${side} C is on the dot line`);
+      const defs = world.skaters
+        .filter((s) => s.side === side && s.kind === "defense")
+        .sort((a, b) => a.id - b.id);
+      assert.equal(defs.length, 2, side);
+      assert.ok(defs[0].z * left > 1, `${side} LD is on the left (${defs[0].z.toFixed(2)})`);
+      assert.ok(defs[1].z * left < -1, `${side} RD is on the right (${defs[1].z.toFixed(2)})`);
+    }
+  }
+});
+
+function attackDir(side) {
+  return side === "home" ? world.homeAttack : -world.homeAttack;
+}
+
 test("opening Game drop separates wing pairs on opposite halves", () => {
   drop();
   assert.equal(world.faceX, 0);

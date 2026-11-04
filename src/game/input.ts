@@ -206,6 +206,9 @@ function track(tr: Face, pressed: boolean, now: number): void {
 
 export function attachInput(target: Window | HTMLElement): () => void {
   const onDown = (e: KeyboardEvent) => {
+    const el = e.target as HTMLElement | null;
+    const tag = el?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
     keys.add(e.code);
     if (GAME_CODES.has(e.code)) e.preventDefault();
   };
@@ -382,6 +385,11 @@ function readPad(): PadRead {
     };
   }
   return t9Raw(pad) ? readT9Pad(pad) : readStandardPad(pad);
+}
+
+/** Remapped gamepad face button. Keyboard A and Y do not count. */
+export function gamepadFaceDown(face: "a" | "y"): boolean {
+  return face === "a" ? readPad().a : readPad().y;
 }
 
 // Pass and shot holds share this face clock (performance time, seconds).
