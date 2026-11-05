@@ -617,6 +617,11 @@ h2 {
   place-items: center;
 }
 
+.hud-actions button.is-on {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
 .touch {
   display: none;
   position: absolute;
@@ -1689,19 +1694,12 @@ h2 {
 
 .formation-lib {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-areas:
-    "top top"
-    "side stage";
-  height: 100dvh;
-}
-
-.formation-lib:not(.replay-view) {
   grid-template-columns: 280px minmax(0, 1fr) 280px;
+  grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas:
     "top top top"
     "side stage repo";
+  height: 100dvh;
 }
 
 .formation-lib:not(.replay-view) .formation-top {
@@ -1923,6 +1921,11 @@ h2 {
 .replay-view .formation-side .btn-ghost {
   width: 100%;
   margin-top: 8px;
+}
+
+.replay-view .formation-save .btn-ghost {
+  width: auto;
+  margin-top: 0;
 }
 
 .replay-view .formation-top {

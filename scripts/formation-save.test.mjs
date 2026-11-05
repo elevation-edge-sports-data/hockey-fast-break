@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { formationFileName, saveFormationFile } from "./formation-save.mjs";
+import { deleteReplayFile, saveReplayFile } from "./replay-save.mjs";
 
 test("formation file names stay inside formations/", () => {
   assert.equal(formationFileName("power play"), "power play.json");
@@ -32,4 +33,28 @@ test("save writes the frame json and not a path outside formations/", () => {
   saveFormationFile(root, "renamed.json", { frame: 4, time: 2 }, "renamed.json");
   assert.equal(existsSync(join(root, "formations", "renamed.json")), true);
   assert.equal(JSON.parse(readFileSync(join(root, "formations", "renamed.json"), "utf8")).frame, 4);
+});
+
+test("save writes a replay array under replays/ and rename removes the old file", () => {
+  const root = mkdtempSync(join(tmpdir(), "hfb-replays-"));
+  const frames = [
+    { frame: 1, time: 0 },
+    { frame: 2, time: 1 / 60 },
+  ];
+  const name = saveReplayFile(root, "clip", frames);
+  assert.equal(name, "clip.json");
+  const text = readFileSync(join(root, "replays", "clip.json"), "utf8");
+  assert.equal(JSON.parse(text).length, 2);
+  assert.equal(JSON.parse(text)[1].frame, 2);
+  const renamed = saveReplayFile(root, "renamed", frames, "clip.json");
+  assert.equal(renamed, "renamed.json");
+  assert.equal(existsSync(join(root, "replays", "clip.json")), false);
+  assert.equal(JSON.parse(readFileSync(join(root, "replays", "renamed.json"), "utf8")).length, 2);
+  assert.throws(() => saveReplayFile(root, "nope", { frame: 1 }));
+  assert.throws(() => saveReplayFile(root, "..", frames));
+  assert.throws(() => saveReplayFile(root, "empty", []));
+  assert.equal(deleteReplayFile(root, "renamed.json"), "renamed.json");
+  assert.equal(existsSync(join(root, "replays", "renamed.json")), false);
+  assert.equal(deleteReplayFile(root, "renamed"), "renamed.json");
+  assert.throws(() => deleteReplayFile(root, ".."));
 });

@@ -297,6 +297,35 @@ test("an offside whistle stays on the puck spot, the user skates, and others gli
   assert.ok(released > 0.15 && released < 2.4, `release ${released.toFixed(2)}`);
 });
 
+test("X skips the offside delay straight to the faceoff", () => {
+  sheet();
+  park();
+  const u = user();
+  u.x = 4;
+  u.z = 2;
+  world.puck.owner = u.id;
+  world.puck.x = u.x;
+  world.puck.z = u.z;
+  world.stoppage = true;
+  world.whistle = "offside";
+  world.stoppageT = 0.2;
+  world.faceoff = false;
+  world.faceoffA = false;
+  useGame.getState().setWhistle("offside");
+  const faceX = world.faceX;
+  const faceZ = world.faceZ;
+  frames(1, []);
+  assert.equal(world.whistle, "offside");
+  frames(1, ["KeyF"]);
+  assert.equal(world.whistle, null);
+  assert.equal(useGame.getState().whistle, null);
+  assert.equal(world.stoppage, false);
+  assert.equal(world.faceoff, true);
+  assert.equal(world.puck.x, faceX);
+  assert.equal(world.puck.z, faceZ);
+  assert.ok(world.stoppageT < 0.5, `delay was not skipped, stoppageT ${world.stoppageT}`);
+});
+
 test("RT starts a dive after either goal", () => {
   for (const side of ["home", "away"]) {
     sheet();

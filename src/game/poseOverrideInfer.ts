@@ -17,6 +17,7 @@ import {
   rageDraw,
   replayFrameLocked,
   instantReplayPoseName,
+  mountedFormationPose,
   shotFollowTime,
   ironDefensePose,
   setGoaliePoseLockHook,
@@ -146,6 +147,10 @@ setGoaliePoseLockHook(captureGoaliePoseHold);
 
 /** Live play only. Galleries pass the pose name in and do not use this. */
 export function inferNamedPose(s: Skater, index: number): string | null {
+  if (!capturingGoaliePose) {
+    const mounted = mountedFormationPose(s.id);
+    if (mounted !== undefined) return mounted;
+  }
   if (!capturingGoaliePose && world.replayKind === "goal") {
     const recorded = instantReplayPoseName(s.id);
     if (recorded !== undefined) return recorded;

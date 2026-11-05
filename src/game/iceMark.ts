@@ -126,6 +126,14 @@ export function nearestMark(
   return best;
 }
 
+/** Tap Y: no lock, then the puck, then each skater, then no lock again. */
+export function cycleMarkLock(lock: MarkLock | null, skaterCount: number): MarkLock | null {
+  if (!lock) return { kind: "puck" };
+  if (lock.kind === "puck") return skaterCount > 0 ? { kind: "skater", index: 0 } : null;
+  const next = lock.index + 1;
+  return next < skaterCount ? { kind: "skater", index: next } : null;
+}
+
 export function lerpAngle(a: number, b: number, t: number): number {
   let d = b - a;
   while (d > Math.PI) d -= Math.PI * 2;

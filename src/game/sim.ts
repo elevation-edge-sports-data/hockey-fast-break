@@ -28,7 +28,7 @@ import {
   RINK_W,
 } from "./rink";
 import { BUTTERFLY_STANCE_DROP, GOALIE_STICK_LEN, GOALIE_Z, goalieRaisedHandCovers } from "./goalieStance";
-import { readActions, setInjectedKeys, type Actions } from "./input";
+import { readActions, setInjectedKeys, windowHasInputFocus, type Actions } from "./input";
 import { burstCarryLocal, dekePuckLocal, neutralCarryBlend, neutralCarryLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal, SKATER_STICK_LEN } from "./stickSide";
 import {
   CHAOS_CAP,
@@ -1125,6 +1125,7 @@ function resetSkaters(): void {
   goaliePlayChargeId = -1;
   userGoaliePokePoseUntil = -1;
   goaliePlayReleaseUntil.clear();
+  mountedPoseById = null;
   goalieDiveSave.clear();
   world.whistle = null;
   world.lastShotSlap = false;
@@ -7180,6 +7181,109 @@ function deepBreakoutSpot(s: Skater): { tx: number; tz: number } | null {
   return deepBreakoutPlan()?.get(s.id) ?? null;
 }
 
+/**
+ * Own-zone breakout once the puck is deeper than the end-zone faceoff dot.
+ * From replay-frame-1348 adjusted. Canonical defending end is +x and team
+ * left is +z. A half-wall carry and a net-behind carry keep their own shapes.
+ *
+ * The partner matches the puck's depth and holds his own boards, so he does
+ * not crowd the carrier. Wings sit just on the defensive side of center, at
+ * the boards. The center holds the near blue line, shaded off the puck and
+ * still in the slot. Each away defenseman sits OWN_DOT_D_GAP further from
+ * the home net than the deepest home skater on that side, on the faceoff dot.
+ */
+const OWN_DOT_BREAKOUT = {
+  lw: { x: 1.6349839693193946, z: 11.880560261897203 },
+  c: { x: 7.337056921345413, z: 1.782784275758318 },
+  rw: { x: 2.5611692259318803, z: -12.16174687296374 },
+};
+/** Toward the away net, past the deepest home skater on that side. Frame 1348 gaps are 2.93 m and 3.07 m. */
+const OWN_DOT_D_GAP = 3;
+
+function ownDotCarrier(): Skater | null {
+  if (world.faceoff || world.stoppage || world.whistle) return null;
+  if (deepBreakoutCarrier() || halfWallCarrier()) return null;
+  const id = world.puck.owner;
+  if (id === null) return null;
+  const holder = world.skaters[id];
+  if (!holder || holder.side !== "home" || holder.kind !== "defense") return null;
+  const own = defendDir(holder.side);
+  if (holder.x * own <= BLUE_X - 0.35) return null;
+  if (world.puck.x * own <= FACEOFF_EZ_X) return null;
+  return holder;
+}
+
+/** Team left for the lower id, then the other half. World z sign. */
+function ownDotSideSign(d: Skater): number {
+  const mates = world.skaters
+    .filter((p) => p.side === d.side && p.kind === "defense")
+    .sort((a, b) => a.id - b.id);
+  const i = Math.max(0, mates.findIndex((p) => p.id === d.id));
+  const left = wingLeftSign(attackDir(d.side));
+  return i % 2 === 0 ? left : -left;
+}
+
+let ownDotFrame = Number.NaN;
+let ownDotPlan: Map<number, { tx: number; tz: number }> | null = null;
+
+function ownDotBreakoutPlan(): Map<number, { tx: number; tz: number }> | null {
+  if (ownDotFrame === world.time) return ownDotPlan;
+  ownDotFrame = world.time;
+  ownDotPlan = null;
+  const holder = ownDotCarrier();
+  if (!holder) return null;
+  const own = defendDir(holder.side);
+  const spots = new Map<number, { tx: number; tz: number }>();
+  const worldOf = (spot: { x: number; z: number }) => ({ tx: own * spot.x, tz: own * spot.z });
+  for (const d of world.skaters) {
+    if (d.side !== holder.side || d.kind !== "defense" || d.id === holder.id || d.id === world.userId) {
+      continue;
+    }
+    spots.set(d.id, clampIceSpot(world.puck.x, ownDotSideSign(d) * boardsZ()));
+  }
+  const wings = forwardSlots(holder.side);
+  const weak = -(Math.sign(world.puck.z) || Math.sign(holder.z) || 1);
+  for (const w of wings) {
+    if (w.id === world.userId || w.id === holder.id) continue;
+    const role = forwardRoleOf(wings, w);
+    if (role === "center") {
+      const spot = worldOf(OWN_DOT_BREAKOUT.c);
+      spots.set(w.id, { tx: spot.tx, tz: weak * Math.abs(OWN_DOT_BREAKOUT.c.z) });
+    } else if (role === "left") spots.set(w.id, worldOf(OWN_DOT_BREAKOUT.lw));
+    else spots.set(w.id, worldOf(OWN_DOT_BREAKOUT.rw));
+  }
+  const homeOwn = own;
+  const homeSpots = [...spots.values()];
+  for (const d of world.skaters) {
+    if (d.side === holder.side || d.kind !== "defense" || d.id === world.userId) continue;
+    const sign = ownDotSideSign(d);
+    let bestX = Number.NaN;
+    const consider = (x: number, z: number) => {
+      if (z * sign <= 0.35) return;
+      if (Number.isNaN(bestX) || x * homeOwn < bestX * homeOwn) bestX = x;
+    };
+    for (const p of world.skaters) {
+      if (p.side !== holder.side || p.kind === "goalie") continue;
+      consider(p.x, p.z);
+    }
+    for (const spot of homeSpots) consider(spot.tx, spot.tz);
+    consider(holder.x, holder.z);
+    if (Number.isNaN(bestX)) {
+      const onLeft = sign * own > 0;
+      const wing = onLeft ? OWN_DOT_BREAKOUT.lw : OWN_DOT_BREAKOUT.rw;
+      bestX = own * wing.x;
+    }
+    spots.set(d.id, clampIceSpot(bestX - homeOwn * OWN_DOT_D_GAP, sign * FACEOFF_SPOT_Z));
+  }
+  ownDotPlan = spots;
+  return ownDotPlan;
+}
+
+function ownDotBreakoutSpot(s: Skater): { tx: number; tz: number } | null {
+  if (s.id === world.userId || s.kind === "goalie" || s.id === world.puck.owner) return null;
+  return ownDotBreakoutPlan()?.get(s.id) ?? null;
+}
+
 function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; burst: boolean } {
   const bitten = dekeMissWish(s);
   if (bitten) return bitten;
@@ -7898,6 +8002,33 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
       openEnd = 0;
       wrapDeep = false;
       if (meetPass || missed) pointReceive = false;
+    }
+  }
+  // After the half-wall and the deep breakout, both of which refuse this carrier.
+  // Faceoff hold already won above. A pass chase above also keeps the puck.
+  if (
+    !faceoffDHold &&
+    !wrapDeep &&
+    !retrieving &&
+    openEnd === 0 &&
+    !passToMe &&
+    s.id !== puck.owner &&
+    s.id !== world.userId &&
+    s.kind !== "goalie"
+  ) {
+    const dotSpot = ownDotBreakoutSpot(s);
+    if (dotSpot) {
+      c.tx = dotSpot.tx;
+      c.tz = dotSpot.tz;
+      shapeHold = true;
+      depthHold = false;
+      breakoutHold = false;
+      rushJoin = false;
+      cornerHold = false;
+      ozHoldSkate = false;
+      netCrash = false;
+      wallChase = false;
+      userPress = null;
     }
   }
   if (
@@ -10102,17 +10233,34 @@ function goaliePlayReleaseLive(s: Skater): boolean {
   return true;
 }
 
+/** Pass, sauce, or shot button, or a shot wind-up already stored on the goalie. */
+function goaliePlayCharging(s: Skater): boolean {
+  return goaliePlayChargeId === s.id || s.windup > 0.04;
+}
+
 /**
- * Play-puck sequence. Charge is the first pose. The release is the second.
- * Holding the puck with no windup stays on goaliePlayPuck1.
+ * This goalie still has the puck and is winding up a pass, sauce, or shot.
+ * A quiet hold, a loose puck, and a teammate's puck stay on the zone stance.
+ */
+function goaliePlayWindup(s: Skater): boolean {
+  if (s.dive > 0.04 || s.tumble !== 0 || s.celebrate > 0.05) return false;
+  if (s.gloveFlash > 0.12 || s.coverPose > 0.08) return false;
+  if (world.stoppage || world.faceoff || world.goalieShot !== null) return false;
+  if (world.puck.owner !== s.id) return false;
+  if (goalieShotSave(s) || ironDefensePose(s)) return false;
+  return goaliePlayCharging(s);
+}
+
+/**
+ * Play-puck sequence. The wind-up is the first pose. The release is the second.
+ * A goalie who is not winding up or releasing a pass, sauce, or shot stays off both.
  */
 export function goaliePlayPuckPose(s: Skater): "goaliePlayPuck1" | "goaliePlayPuck2" | null {
   if (s.kind !== "goalie") return null;
   const pinned = replayPinnedGoalie(s);
   if (pinned) return pinned.play;
   if (goaliePlayReleaseLive(s)) return "goaliePlayPuck2";
-  if (!goaliePlaysPuck(s)) return null;
-  if (goaliePlayChargeId === s.id) return "goaliePlayPuck1";
+  if (!goaliePlayWindup(s)) return null;
   return "goaliePlayPuck1";
 }
 
@@ -10122,27 +10270,16 @@ export function goalieInMid(s: Skater): boolean {
 }
 
 /**
- * Handling a loose puck, or skating out to one.
- * The body stays in the perimeter Z. Zone kind is unchanged: a shot in flight,
- * a rebound, and iron keep the save poses. A cover or a clear leaves this.
+ * Wind-up or release of a pass, sauce, or shot.
+ * The goalie has the puck during the wind-up. The release window is the short
+ * beat after it leaves. A loose puck, a teammate's puck, and a quiet hold do not.
  */
 export function goaliePlaysPuck(s: Skater): boolean {
   if (s.kind !== "goalie") return false;
   const pinned = replayPinnedGoalie(s);
   if (pinned) return pinned.plays;
-  if (s.dive > 0.04 || s.tumble !== 0 || s.celebrate > 0.05) return false;
-  if (s.gloveFlash > 0.12 || s.coverPose > 0.08) return false;
-  if (world.stoppage || world.faceoff || world.goalieShot !== null) return false;
-  if (world.puck.owner === s.id) return true;
-  if (goalieShotSave(s) || ironDefensePose(s)) return false;
-  const end = (defendDir(s.side) > 0 ? 1 : -1) as 1 | -1;
-  if (zoneAtX(world.puck.x) === end) {
-    const sinceSave = world.time - world.goalieSaveT;
-    if (world.reboundN >= 1 && sinceSave >= 0 && sinceSave < 2.6) return false;
-    const sinceIron = world.time - ironStanceT;
-    if (ironStanceEnd === end && sinceIron >= 0 && sinceIron < 2.6) return false;
-  }
-  return goalieLooseSkate.has(s.id) || goalieUserChasingLoose(s);
+  if (goaliePlayReleaseLive(s)) return true;
+  return goaliePlayWindup(s);
 }
 
 /** Mid ice-blade center in the yaw+π frame, sampled from the posed mesh. */
@@ -21787,6 +21924,7 @@ export function mirrorFreeCamEnds(): void {
 }
 
 function tickFreeCam(dt: number, act: Actions): void {
+  if (!windowHasInputFocus()) return;
   const fc = world.freeCam;
   // Current sample only. A stick that has sprung back near center is not a hold.
   const mag = Math.hypot(act.moveX, act.moveY);
@@ -22377,6 +22515,19 @@ type ReplaySnap = {
     lastShotSlap: boolean;
     lastShotBackhand: boolean;
   };
+  /** Scoreboard at this frame. The live store stays on the present. */
+  hud?: ReplayHud;
+};
+
+type ReplayHud = {
+  homeScore: number;
+  awayScore: number;
+  period: number;
+  periodClock: number;
+  homeOnGoal: number;
+  awayOnGoal: number;
+  homeAttempts: number;
+  awayAttempts: number;
 };
 
 type ReplayTargets = {
@@ -22401,6 +22552,8 @@ let goalBoardHold: {
 type ReplayScrub = "lt" | "rt" | "lb" | "rb";
 type ReplayLock = { kind: "free" } | { kind: "puck" } | { kind: "skater"; index: number };
 let replayScrub: ReplayScrub | null = null;
+/** Held in-game transport button. 0 is released. Gamepad shoulders still win. */
+let replayShuttle = 0;
 let replayLock: ReplayLock = { kind: "free" };
 let replayYHeld = false;
 let replayYMoved = false;
@@ -22546,6 +22699,30 @@ export function instantReplayPoseName(id: number): string | null | undefined {
 }
 
 let replayPoseById: Map<number, string | null> | null = null;
+/** Poses from a mounted formation or replay-viewer frame, keyed by skater id. */
+let mountedPoseById: Map<number, string | null> | null = null;
+
+/** Show these recorded poses instead of inferring them. Null clears the mount. */
+export function setMountedFormationPoses(players: readonly { id: number; pose?: string | null }[] | null): void {
+  if (!players) {
+    mountedPoseById = null;
+    return;
+  }
+  goaliePlayChargeId = -1;
+  goaliePlayReleaseUntil.clear();
+  const next = new Map<number, string | null>();
+  for (const p of players) {
+    if (p.pose === undefined) continue;
+    next.set(p.id, p.pose);
+  }
+  mountedPoseById = next.size ? next : null;
+}
+
+/** Recorded pose for a mounted formation frame. Undefined when this id was not recorded. */
+export function mountedFormationPose(id: number): string | null | undefined {
+  if (!mountedPoseById || !mountedPoseById.has(id)) return undefined;
+  return mountedPoseById.get(id) ?? null;
+}
 
 function snapBody(s: Skater, index = 0): ReplayBody {
   return {
@@ -22674,6 +22851,65 @@ function restoreGoalBoards(): void {
   world.scrimmageAwayGone = hold.scrimmageAwayGone.slice();
 }
 
+function snapHud(): ReplayHud {
+  const ui = useGame.getState();
+  const shots = ui.teamShots;
+  return {
+    homeScore: ui.homeScore,
+    awayScore: ui.awayScore,
+    period: ui.period,
+    periodClock: ui.periodClock,
+    homeOnGoal: shots.home.onGoal,
+    awayOnGoal: shots.away.onGoal,
+    homeAttempts: shots.home.attempts,
+    awayAttempts: shots.away.attempts,
+  };
+}
+
+let replayBoard: ReplayHud | null = null;
+const replayBoardListeners = new Set<() => void>();
+
+function sameReplayBoard(a: ReplayHud, b: ReplayHud): boolean {
+  return (
+    a.homeScore === b.homeScore &&
+    a.awayScore === b.awayScore &&
+    a.period === b.period &&
+    a.periodClock === b.periodClock &&
+    a.homeOnGoal === b.homeOnGoal &&
+    a.awayOnGoal === b.awayOnGoal &&
+    a.homeAttempts === b.homeAttempts &&
+    a.awayAttempts === b.awayAttempts
+  );
+}
+
+function publishReplayBoard(next: ReplayHud | null): void {
+  if (replayBoard === next) return;
+  if (replayBoard && next && sameReplayBoard(replayBoard, next)) return;
+  replayBoard = next;
+  for (const fn of replayBoardListeners) fn();
+}
+
+function noteReplayBoard(snap: ReplaySnap): void {
+  if (!world.replay) return;
+  publishReplayBoard(snap.hud ?? null);
+}
+
+function clearReplayBoard(): void {
+  publishReplayBoard(null);
+}
+
+/** Score, clock, and shots for the replay frame on screen. Null in live play. */
+export function replayBoardNow(): ReplayHud | null {
+  return replayBoard;
+}
+
+export function subscribeReplayBoard(listener: () => void): () => void {
+  replayBoardListeners.add(listener);
+  return () => {
+    replayBoardListeners.delete(listener);
+  };
+}
+
 function recordReplay(force = false): void {
   if (world.replay) return;
   // Hold and non-goal stoppages stay out so a long whistle does not fill REPLAY_CAP.
@@ -22707,6 +22943,7 @@ function recordReplay(force = false): void {
     },
     ceremony,
     targets: snapTargets(),
+    hud: snapHud(),
   };
   replayW = (replayW + 1) % REPLAY_CAP;
   if (replayN < REPLAY_CAP) replayN++;
@@ -22787,6 +23024,7 @@ function applyReplaySnap(snap: ReplaySnap): void {
   if (snap.ref2) applyOneRef(world.ref2, snap.ref2);
   if (snap.ref3) applyOneRef(world.ref3, snap.ref3);
   if (snap.ref4) applyOneRef(world.ref4, snap.ref4);
+  noteReplayBoard(snap);
 }
 
 function dumpReplayBuf(): ReplaySnap[] {
@@ -22840,7 +23078,9 @@ function clearReplayCamControl(): void {
   replayMarkMoved = false;
   replayPanning = false;
   replayTrackPuck = true;
+  replayShuttle = 0;
   dropReplayEdit();
+  refreshTransportSnap();
 }
 
 function publishReplayEdit(): void {
@@ -22880,6 +23120,7 @@ function cloneReplaySnap(snap: ReplaySnap): ReplaySnap {
       end: rec.end,
     })),
     ceremony: snap.ceremony,
+    hud: snap.hud ? { ...snap.hud } : undefined,
     targets: snap.targets
       ? {
           drillGone: snap.targets.drillGone.slice(),
@@ -22956,6 +23197,8 @@ export type ReplayFormationSide = {
     side: "home" | "away";
     kind: SkaterKind;
     number: number;
+    /** Named pose sampled while this frame was live. Null is no override. */
+    pose?: string | null;
   }[];
 };
 
@@ -22991,6 +23234,7 @@ function formationSide(snap: ReplaySnap): ReplayFormationSide {
         side: roster.side,
         kind: roster.kind,
         number: roster.number,
+        ...(b.pose !== undefined ? { pose: b.pose } : {}),
       };
     }),
   };
@@ -23146,6 +23390,7 @@ function publishReplayPct(): void {
 
 function endReplay(): void {
   const kind = world.replayKind;
+  clearReplayBoard();
   clearReplayRangeMarks();
   replayRagePose.clear();
   world.replay = false;
@@ -23253,6 +23498,7 @@ function dropInstantReplay(): void {
   instantModeI = 0;
   instantT = 0;
   replayPoseById = null;
+  clearReplayBoard();
 }
 
 function instantModesOk(): boolean {
@@ -23388,6 +23634,12 @@ function finishInstantReplay(): void {
 
 function stepInstantReplay(dt: number, act: Actions): boolean {
   if (!instantOn) return false;
+  // The stick is pause. Here it also skips, the same end as X during the delay and then the stick.
+  if (act.r3Edge) {
+    finishInstantReplay();
+    pauseGame();
+    return true;
+  }
   if (act.xEdge) {
     finishInstantReplay();
     return true;
@@ -23597,7 +23849,10 @@ const REPLAY_PICK_HIP = 0.28;
 const REPLAY_PICK_HIP_EDIT = 0.55;
 /** Added to the skater radius for the upright click column while a frame is locked. */
 const REPLAY_PICK_BODY_EXTRA = 0.35;
-/** Arrow-key slide of a selected player, the puck, or the ice X, metres per second. */
+/**
+ * Slide of a selected player or the puck, metres per second.
+ * The free ice X uses the camera radius times 0.9, same as pause-replay pan.
+ */
 const REPLAY_EDIT_SPEED = 4;
 /** Keyboard A plus arrows. Radians per second, so an 8-way tap eases instead of snapping. */
 const REPLAY_YAW_RATE = 2.4;
@@ -23633,14 +23888,29 @@ function replayMarkHit(x: number, z: number): ReplayLock | null {
   return best;
 }
 
-/** After the stick pan is released, an X sitting on a center of mass locks there. */
+/**
+ * After the stick pan is released, an X sitting on a center of mass locks there.
+ * On a locked frame that lock is also the body the next slide repositions,
+ * the same as driving the formation-library X onto a player or the puck.
+ */
 function catchReplayMarkLock(): void {
+  if (!windowHasInputFocus()) return;
   if (!replayMarkMoved || replayPanning) return;
   // A miss ends the catch. A body that later crosses a stationary X must not take it.
   const hit = replayMarkHit(world.replayCam.lx, world.replayCam.lz);
   replayMarkMoved = false;
   if (!hit) return;
   replayLock = hit;
+  replayTrackPuck = false;
+  if (!replayFrameLock) return;
+  if (hit.kind === "skater") {
+    replayEditId = hit.index;
+    replayEditPuck = false;
+  } else {
+    replayEditId = null;
+    replayEditPuck = true;
+  }
+  publishReplayEdit();
 }
 
 function raySphereT(
@@ -23941,6 +24211,18 @@ export function zoomReplayPointer(deltaY: number): void {
 }
 
 function tickPauseReplayCam(dt: number, act: Actions): void {
+  if (!windowHasInputFocus()) {
+    // Remember Y so a release in a background window does not cycle the lock
+    // when this window is focused again. Do not move the camera.
+    if (act.yDown) {
+      if (Math.hypot(act.moveX, act.moveY) > REPLAY_STICK_GATE) replayYMoved = true;
+    } else {
+      replayYMoved = false;
+    }
+    replayYHeld = act.yDown;
+    replayPanning = true;
+    return;
+  }
   const cam = world.replayCam;
   // Arrows and the left stick edit the locked frame. Both also sit on moveX and moveY.
   // WASD is only on moveX and moveY. While a frame is locked it must not slide
@@ -23992,6 +24274,7 @@ function replayArrowDelta(
   act: Actions,
   useStick = true,
   useArrows = true,
+  speed = REPLAY_EDIT_SPEED,
 ): { dx: number; dz: number } | null {
   const ax = useArrows ? act.arrowX : 0;
   const ay = useArrows ? act.arrowY : 0;
@@ -24008,7 +24291,7 @@ function replayArrowDelta(
   const planar = Math.hypot(dx, dz);
   if (planar < 1e-8) return null;
   const weight = arrows ? 1 : Math.min(1, Math.hypot(sx, sy));
-  const scale = (REPLAY_EDIT_SPEED * weight * dt) / planar;
+  const scale = (speed * weight * dt) / planar;
   return { dx: dx * scale, dz: dz * scale };
 }
 
@@ -24153,13 +24436,21 @@ function replayArrowWorld(act: Actions): { dx: number; dz: number } | null {
 }
 
 function nudgeReplayEdit(dt: number, act: Actions): void {
+  if (!windowHasInputFocus()) return;
   const edit = replayEdit;
   if (!edit) return;
   const selected = replayEditId !== null ? edit.bodies[replayEditId] : undefined;
   // Gamepad A snaps yaw to the left stick. Keyboard A eases yaw toward the arrows.
   const stickAim = selected && act.aDown ? replayStickWorld(act) : null;
   const arrowAim = selected && act.keyA && !stickAim ? replayArrowWorld(act) : null;
-  const step = replayArrowDelta(dt, act, !stickAim, !arrowAim);
+  const movingBody = replayEditId !== null || replayEditPuck;
+  const step = replayArrowDelta(
+    dt,
+    act,
+    !stickAim,
+    !arrowAim,
+    movingBody ? REPLAY_EDIT_SPEED : world.replayCam.radius * 0.9,
+  );
   if (!step && !stickAim && !arrowAim) {
     closeReplayGesture();
     return;
@@ -24248,7 +24539,72 @@ function pauseReplayRate(act: Actions): number {
   if (scrub === "rt") return 3.4;
   if (scrub === "lb") return -0.28;
   if (scrub === "rb") return 0.28;
+  if (replayShuttle !== 0) {
+    world.replayPlaying = false;
+    return replayShuttle;
+  }
   return world.replayPlaying ? 1 : 0;
+}
+
+let transportSnap = "0:0";
+const transportListeners = new Set<() => void>();
+
+function refreshTransportSnap(): void {
+  const atEnd =
+    world.replayKind === "pause" && replayPlay.length > 1 && world.replayT >= replaySpan() - 1e-4;
+  const showPause = world.replayPlaying && replayShuttle === 0 && !atEnd;
+  const next = `${replayShuttle}:${showPause ? 1 : 0}`;
+  if (next === transportSnap) return;
+  transportSnap = next;
+  for (const fn of transportListeners) fn();
+}
+
+/** `rate:1` while the transport icon is pause. Rate is 0 when no shuttle button is held. */
+export function replayTransportSnap(): string {
+  return transportSnap;
+}
+
+export function subscribeReplayTransport(listener: () => void): () => void {
+  transportListeners.add(listener);
+  return () => {
+    transportListeners.delete(listener);
+  };
+}
+
+/** Hold a replay-viewer shuttle rate. Release with the same rate. */
+export function pressReplayShuttle(rate: number): void {
+  if (world.replayKind !== "pause" || replayFrameLock) return;
+  replayShuttle = rate;
+  world.replayPlaying = false;
+  refreshTransportSnap();
+}
+
+export function releaseReplayShuttle(rate: number): void {
+  if (replayShuttle !== rate) return;
+  replayShuttle = 0;
+  refreshTransportSnap();
+}
+
+/** Play/pause. Starting at the last frame begins again at the first, same as the viewer. */
+export function toggleReplayTransport(): void {
+  if (world.replayKind !== "pause" || replayFrameLock) return;
+  replayShuttle = 0;
+  const atEnd = replayPlay.length > 1 && world.replayT >= replaySpan() - 1e-4;
+  if (world.replayPlaying && !atEnd) {
+    world.replayPlaying = false;
+    refreshTransportSnap();
+    return;
+  }
+  if (atEnd) {
+    world.replayT = 0;
+    world.replayHardCut = true;
+    const first = replayPlay[0];
+    if (first) applyReplaySnap(first);
+    applyReplayLock();
+    publishReplayPct();
+  }
+  world.replayPlaying = true;
+  refreshTransportSnap();
 }
 
 function stepReplay(dt: number, act: Actions): void {
@@ -24278,6 +24634,7 @@ function stepReplay(dt: number, act: Actions): void {
     catchReplayMarkLock();
     applyReplayLock();
     publishReplayPct();
+    refreshTransportSnap();
     return;
   }
   holdGoalBoards();
@@ -26436,6 +26793,26 @@ function stepOpenIce(dt: number, act: Actions): void {
   recordReplay();
 }
 
+/** X during a crowd or offside whistle. The same jump the timer takes when it runs out. */
+function skipTimedWhistle(): boolean {
+  if (world.whistle === "crowd") {
+    if (!world.periodOver) resetWorld({ keepScore: true });
+    return true;
+  }
+  if (world.whistle === "offside") {
+    if (world.periodOver) return true;
+    if (world.shootout) return true;
+    if (endScrimmageMatch()) return true;
+    if (overtimeWinner) {
+      endOvertimeMatch();
+      return true;
+    }
+    resetWorld({ keepScore: true });
+    return true;
+  }
+  return false;
+}
+
 function stepPlay(dt: number, act: Actions): void {
   latchPrecede();
   userWinding = false;
@@ -26468,6 +26845,11 @@ function stepPlay(dt: number, act: Actions): void {
   }
 
   if (world.periodEndT > 0) {
+    if (act.xEdge) {
+      world.periodEndT = 0;
+      startNextPeriod();
+      return;
+    }
     world.periodEndT = Math.max(0, world.periodEndT - dt);
     if (world.periodEndT <= 0) {
       startNextPeriod();
@@ -26601,6 +26983,7 @@ function stepPlay(dt: number, act: Actions): void {
   if (world.stoppage) {
     dropWingClaims();
     world.stoppageT += dt;
+    if (act.xEdge && skipTimedWhistle()) return;
     // The knock frame already returned past stepPuck. Keep the loose target
     // falling through the whistle so the replay includes it hitting the ice.
     if (ui.clockMode === "drill" || ui.clockMode === "scrimmage") stepDrillCards(dt);

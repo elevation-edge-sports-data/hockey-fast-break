@@ -1,6 +1,6 @@
 import { lerpAngle } from "./iceMark";
 import { GOAL_LINE_X, RINK_L } from "./rink";
-import { world, type Skater, type SkaterKind } from "./sim";
+import { setMountedFormationPoses, world, type Skater, type SkaterKind } from "./sim";
 
 export type FormationPlayer = {
   index: number;
@@ -14,6 +14,8 @@ export type FormationPlayer = {
   kind?: SkaterKind;
   /** Recorded jersey. Absent on older downloads, which still derive one from the id. */
   number?: number;
+  /** Named pose sampled in gameplay. Absent on older downloads, which still infer one. */
+  pose?: string | null;
 };
 
 export type FormationSide = {
@@ -94,6 +96,14 @@ function optionalNum(v: unknown): number | undefined {
   return n === null ? undefined : n;
 }
 
+/** Missing is allowed. Null is a recorded frame with no named pose. Anything else rejects the player. */
+function optionalPose(v: unknown): string | null | undefined | false {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  if (typeof v === "string") return v;
+  return false;
+}
+
 /** Missing is allowed. A present value of the wrong shape rejects the player. */
 function optionalSide(v: unknown): "home" | "away" | undefined | null {
   if (v == null) return undefined;
@@ -119,8 +129,9 @@ function asPlayer(v: unknown): FormationPlayer | null {
   const side = optionalSide(p.side);
   const kind = optionalKind(p.kind);
   const jersey = p.number == null ? undefined : num(p.number);
+  const pose = optionalPose(p.pose);
   if (index === null || id === null || x === null || z === null || yaw === null) return null;
-  if (side === null || kind === null || jersey === null) return null;
+  if (side === null || kind === null || jersey === null || pose === false) return null;
   return {
     index,
     id,
@@ -130,6 +141,7 @@ function asPlayer(v: unknown): FormationPlayer | null {
     ...(side !== undefined ? { side } : {}),
     ...(kind !== undefined ? { kind } : {}),
     ...(jersey !== undefined ? { number: jersey } : {}),
+    ...(pose !== undefined ? { pose } : {}),
   };
 }
 
@@ -388,10 +400,12 @@ export function mountFormation(side: FormationSide): () => void {
   world.puck.vz = 0;
   world.puck.vy = 0;
   world.puck.owner = side.puck.owner;
+  setMountedFormationPoses(side.players);
   let done = false;
   return () => {
     if (done) return;
     done = true;
+    setMountedFormationPoses(null);
     world.skaters = prevSkaters;
     world.puck.x = puck.x;
     world.puck.z = puck.z;
@@ -608,6 +622,7 @@ export function sampleReplay(frames: readonly FormationFrame[], cursor: number):
       ...(side ? { side } : {}),
       ...(kind ? { kind } : {}),
       ...(number !== undefined ? { number } : {}),
+      ...(p.pose !== undefined ? { pose: p.pose } : q.pose !== undefined ? { pose: q.pose } : {}),
     };
   });
   const ap = a.adjusted.puck;
@@ -675,4 +690,5 @@ export function applyReplayPose(players: readonly FormationPlayer[], puck: Forma
   world.puck.vz = 0;
   world.puck.vy = 0;
   world.puck.owner = puck.owner;
+  setMountedFormationPoses(players);
 }

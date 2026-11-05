@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Pause, Play, RotateCcw } from "lucide-react";
+import { Maximize2, Minimize2, Pause, Play, RotateCcw } from "lucide-react";
 import { setTouchBurst, setTouchFace, setTouchLt, setTouchMove, setTouchStart } from "./input";
 import {
   applyLiveLineup,
@@ -28,6 +28,13 @@ import {
   redoReplayEdit,
   replayUndoDepth,
   replayRedoDepth,
+  replayBoardNow,
+  subscribeReplayBoard,
+  replayTransportSnap,
+  subscribeReplayTransport,
+  pressReplayShuttle,
+  releaseReplayShuttle,
+  toggleReplayTransport,
   drillMaxScore,
   startCpuDrillWatchFromUrl,
   startCpuScrimmageWatchFromUrl,
@@ -408,6 +415,19 @@ function usePauseDraft() {
 
 function useReplayPct() {
   return useSyncExternalStore(subscribeReplayPct, replayFootagePct, replayFootagePct);
+}
+
+function useReplayBoard() {
+  return useSyncExternalStore(subscribeReplayBoard, replayBoardNow, replayBoardNow);
+}
+
+function useReplayTransport(): { shuttle: number; showPause: boolean } {
+  const snap = useSyncExternalStore(subscribeReplayTransport, replayTransportSnap, replayTransportSnap);
+  const cut = snap.indexOf(":");
+  return {
+    shuttle: Number(snap.slice(0, cut)),
+    showPause: snap.endsWith(":1"),
+  };
 }
 
 function useReplayFrameLock() {
@@ -1264,7 +1284,14 @@ const PRACTICE_SHOT_ROWS = [
 ] as const;
 
 function TeamShotLines() {
-  const shots = useGame((s) => s.teamShots);
+  const live = useGame((s) => s.teamShots);
+  const board = useReplayBoard();
+  const shots = board
+    ? {
+        home: { onGoal: board.homeOnGoal, attempts: board.homeAttempts },
+        away: { onGoal: board.awayOnGoal, attempts: board.awayAttempts },
+      }
+    : live;
   return (
     <div className="team-shots" aria-label="Team shots">
       <span>Shots on goal</span>
@@ -1309,6 +1336,118 @@ function PracticeShotProfile() {
         })}
       </tbody>
     </table>
+  );
+}
+
+function TransportIcon({ name }: { name: "fast-rewind" | "slow-rewind" | "play" | "pause" | "slow-forward" | "fast-forward" }) {
+  return (
+    <svg className="replay-transport-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      {name === "fast-rewind" ? (
+        <>
+          <polygon points="11 4 3 12 11 20" />
+          <polygon points="21 4 13 12 21 20" />
+        </>
+      ) : null}
+      {name === "fast-forward" ? (
+        <>
+          <polygon points="3 4 11 12 3 20" />
+          <polygon points="13 4 21 12 13 20" />
+        </>
+      ) : null}
+      {name === "slow-rewind" ? (
+        <>
+          <rect x="3" y="4" width="2.4" height="16" />
+          <polygon points="20 4 9 12 20 20" />
+        </>
+      ) : null}
+      {name === "slow-forward" ? (
+        <>
+          <polygon points="4 4 15 12 4 20" />
+          <rect x="18.6" y="4" width="2.4" height="16" />
+        </>
+      ) : null}
+      {name === "play" ? <polygon points="7 4 19 12 7 20" /> : null}
+      {name === "pause" ? (
+        <>
+          <rect x="6" y="4" width="3.4" height="16" />
+          <rect x="14.6" y="4" width="3.4" height="16" />
+        </>
+      ) : null}
+    </svg>
+  );
+}
+
+function ShuttleButton({
+  label,
+  icon,
+  rate,
+  on,
+  disabled,
+  onPress,
+  onRelease,
+}: {
+  label: string;
+  icon: "fast-rewind" | "slow-rewind" | "slow-forward" | "fast-forward";
+  rate: number;
+  on: boolean;
+  disabled: boolean;
+  onPress: (rate: number) => void;
+  onRelease: (rate: number) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={on ? "is-on" : undefined}
+      disabled={disabled}
+      aria-label={label}
+      aria-pressed={on}
+      tabIndex={-1}
+      onPointerDown={(e) => {
+        if (e.button !== 0 || disabled) return;
+        onPress(rate);
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerUp={() => onRelease(rate)}
+      onPointerCancel={() => onRelease(rate)}
+      onLostPointerCapture={() => onRelease(rate)}
+      onKeyDown={(e) => {
+        if (e.repeat || (e.key !== " " && e.key !== "Enter")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onPress(rate);
+      }}
+      onKeyUp={(e) => {
+        if (e.key !== " " && e.key !== "Enter") return;
+        e.preventDefault();
+        e.stopPropagation();
+        onRelease(rate);
+      }}
+    >
+      <TransportIcon name={icon} />
+    </button>
+  );
+}
+
+function InGameReplayTransport() {
+  const locked = useReplayFrameLock();
+  const { shuttle, showPause } = useReplayTransport();
+  return (
+    <>
+      <ShuttleButton label="Fast rewind" icon="fast-rewind" rate={-3.4} on={shuttle === -3.4} disabled={locked} onPress={pressReplayShuttle} onRelease={releaseReplayShuttle} />
+      <ShuttleButton label="Slow rewind" icon="slow-rewind" rate={-0.28} on={shuttle === -0.28} disabled={locked} onPress={pressReplayShuttle} onRelease={releaseReplayShuttle} />
+      <button
+        type="button"
+        disabled={locked}
+        aria-pressed={showPause}
+        aria-label="Play/pause"
+        tabIndex={-1}
+        onClick={() => toggleReplayTransport()}
+      >
+        <TransportIcon name={showPause ? "pause" : "play"} />
+      </button>
+      <ShuttleButton label="Slow forward" icon="slow-forward" rate={0.28} on={shuttle === 0.28} disabled={locked} onPress={pressReplayShuttle} onRelease={releaseReplayShuttle} />
+      <ShuttleButton label="Fast forward" icon="fast-forward" rate={3.4} on={shuttle === 3.4} disabled={locked} onPress={pressReplayShuttle} onRelease={releaseReplayShuttle} />
+    </>
   );
 }
 
@@ -1358,6 +1497,11 @@ export function Overlay() {
   const pauseDraft = usePauseDraft();
   const periodOver = useGame((s) => s.periodOver);
   const periodBreak = useGame((s) => s.periodBreak);
+  const board = useReplayBoard();
+  const shownHome = board?.homeScore ?? homeScore;
+  const shownAway = board?.awayScore ?? awayScore;
+  const shownClock = board?.periodClock ?? periodClock;
+  const shownPeriod = board?.period ?? period;
   const periodEnd =
     periodBreak > 0 && (clockMode === "game" || clockMode === "roller")
       ? periodEndCopy(periodBreak, homeScore, awayScore, clockMode)
@@ -1440,7 +1584,7 @@ export function Overlay() {
   return (
     <div className={playing ? "hud" : "hud is-title"}>
       <div className="hud-top-stack">
-        {(playing && !paused) || replay ? null : (
+        {playing && !paused ? null : (
         <div className="uni-banner">
           <div className="uni-cluster">
             <div className="uni-side">
@@ -1501,7 +1645,7 @@ export function Overlay() {
                   <span className="who">DRILL</span>
                   <b>{drillScore}</b>
                   <span key={drillTargets}>/ {drillMaxScore()}</span>
-                  <span className="period-clock">{fmtClock(periodClock)}</span>
+                  <span className="period-clock">{fmtClock(shownClock)}</span>
                   {cpuDrillNote ? <span className="period-clock">{cpuDrillNote}</span> : null}
                 </>
               ) : clockMode === "scrimmage" ? (
@@ -1521,7 +1665,7 @@ export function Overlay() {
                     CPU
                     <UniStripe kit={awayUni} />
                   </span>
-                  <span className="period-clock">{fmtClock(periodClock)}</span>
+                  <span className="period-clock">{fmtClock(shownClock)}</span>
                   {cpuDrillNote ? <span className="period-clock">{cpuDrillNote}</span> : null}
                 </>
               ) : (
@@ -1530,16 +1674,16 @@ export function Overlay() {
                     <UniStripe kit={homeUni} />
                     YOU
                   </span>
-                  <b>{homeScore}</b>
+                  <b>{shownHome}</b>
                   <span>—</span>
-                  <b>{awayScore}</b>
+                  <b>{shownAway}</b>
                   <span className="who">
                     CPU
                     <UniStripe kit={awayUni} />
                   </span>
                   {showsPeriodClock(clockMode) ? (
                     <span className="period-clock">
-                      {periodOrdinal(period, clockMode)} {fmtClock(periodClock)}
+                      {periodOrdinal(shownPeriod, clockMode)} {fmtClock(shownClock)}
                     </span>
                   ) : null}
                 </>
@@ -1754,7 +1898,19 @@ export function Overlay() {
         ) : null}
         <MainMenus />
         <div className="hud-actions">
-          {playing ? (
+          {replay ? <InGameReplayTransport /> : null}
+          {replay ? (
+            <button
+              type="button"
+              aria-label={paused ? "Hide HUD details" : "Show HUD details"}
+              onClick={() => {
+                if (paused) resumePausedGame();
+                else pauseGame();
+              }}
+            >
+              {paused ? <Maximize2 size={16} /> : <Minimize2 size={16} />}
+            </button>
+          ) : playing ? (
             <button
               type="button"
               aria-label={paused ? "Resume" : "Pause"}
@@ -1766,25 +1922,27 @@ export function Overlay() {
               {paused ? <Play size={16} /> : <Pause size={16} />}
             </button>
           ) : null}
-          <button
-            type="button"
-            aria-label="Reset"
-            tabIndex={paused ? -1 : 0}
-            onKeyDown={(e) => {
-              if (paused && e.code === "Space") e.preventDefault();
-            }}
-            onClick={() => {
-              useGame.getState().applyCornerReset();
-              if (playing && paused) {
-                resetPausedGame();
-                return;
-              }
-              resetWorld();
-              if (!playing) setPlaying(true);
-            }}
-          >
-            <RotateCcw size={16} />
-          </button>
+          {replay ? null : (
+            <button
+              type="button"
+              aria-label="Reset"
+              tabIndex={paused ? -1 : 0}
+              onKeyDown={(e) => {
+                if (paused && e.code === "Space") e.preventDefault();
+              }}
+              onClick={() => {
+                useGame.getState().applyCornerReset();
+                if (playing && paused) {
+                  resetPausedGame();
+                  return;
+                }
+                resetWorld();
+                if (!playing) setPlaying(true);
+              }}
+            >
+              <RotateCcw size={16} />
+            </button>
+          )}
         </div>
       </footer>
 

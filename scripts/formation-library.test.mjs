@@ -59,8 +59,14 @@ const {
   formLocalOffset,
   formWorldOffset,
 } = lib;
+const replayLib = await server.ssrLoadModule("/src/game/replayLibrary.ts");
+const store = await server.ssrLoadModule("/src/game/store.ts");
+const { readReplayLibrary, writeReplayLibrary, partitionReplayLibrary, replayClipFromFile } = replayLib;
+const { gameSpeedRate } = store;
 const mark = await server.ssrLoadModule("/src/game/iceMark.ts");
 const { world } = sim;
+const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
+const { inferNamedPose } = poses;
 
 const frame = {
   frame: 12,
@@ -215,6 +221,43 @@ test("a recorded side, kind, and jersey are shown, and a bad one is rejected", (
   const badNumber = structuredClone(frame);
   badNumber.adjusted.players[0].number = "seven";
   assert.equal(framesFromUnknown(badNumber), "That file is not a replay frame.");
+  const badPose = structuredClone(frame);
+  badPose.adjusted.players[0].pose = 1;
+  assert.equal(framesFromUnknown(badPose), "That file is not a replay frame.");
+});
+
+test("a recorded pose is shown, and an older frame without one still parses", () => {
+  const tagged = structuredClone(frame);
+  tagged.adjusted.players[0] = {
+    ...tagged.adjusted.players[0],
+    side: "home",
+    kind: "goalie",
+    number: 39,
+    pose: "goaliePlayPuck1",
+  };
+  tagged.adjusted.players[1] = { ...tagged.adjusted.players[1], pose: null };
+  const parsed = parseFormationJson(JSON.stringify(tagged));
+  assert.equal(parsed[0].adjusted.players[0].pose, "goaliePlayPuck1");
+  assert.equal(parsed[0].adjusted.players[1].pose, null);
+  assert.equal(parsed[0].original.players[0].pose, undefined);
+  const release = mountFormation(parsed[0].adjusted);
+  try {
+    const goalie = world.skaters.find((s) => s.kind === "goalie");
+    assert.equal(inferNamedPose(goalie, goalie.id), "goaliePlayPuck1");
+    const next = structuredClone(parsed[0]);
+    next.frame = 13;
+    next.adjusted.players[0] = { ...next.adjusted.players[0], pose: "goalieMid" };
+    const mid = sampleReplay([parsed[0], next], 0.5);
+    assert.equal(mid.players[0].pose, "goaliePlayPuck1");
+    const landed = sampleReplay([parsed[0], next], 1);
+    assert.equal(landed.players[0].pose, "goalieMid");
+    applyReplayPose(landed.players, landed.puck);
+    assert.equal(inferNamedPose(world.skaters.find((s) => s.id === goalie.id), goalie.id), "goalieMid");
+  } finally {
+    release();
+  }
+  const goalie = world.skaters.find((s) => s.kind === "goalie");
+  if (goalie) assert.notEqual(inferNamedPose(goalie, goalie.id), "goaliePlayPuck1");
 });
 
 test("a control id is kept when it is numeric and ignored when it is not", () => {
@@ -299,7 +342,17 @@ test("the ice X uses the pause-replay zoom speed and the shadow center", () => {
   assert.match(replay, /shuttleRef\.current/);
   assert.match(replay, /act\.aEdge && gamepadFaceDown\("a"\)/);
   assert.match(replay, /gamepadFaceDown\("y"\)/);
+  assert.match(replay, /nearestMark/);
+  assert.match(replay, /cycleMarkLock/);
+  assert.match(view, /cycleMarkLock/);
+  assert.match(view, /windowHasInputFocus/);
+  assert.match(replay, /windowHasInputFocus/);
   assert.doesNotMatch(replay, /cursorRef\.current \+= act\.stickX/);
+  assert.equal(mark.cycleMarkLock(null, 2).kind, "puck");
+  assert.deepEqual(mark.cycleMarkLock({ kind: "puck" }, 2), { kind: "skater", index: 0 });
+  assert.deepEqual(mark.cycleMarkLock({ kind: "skater", index: 0 }, 2), { kind: "skater", index: 1 });
+  assert.equal(mark.cycleMarkLock({ kind: "skater", index: 1 }, 2), null);
+  assert.equal(mark.cycleMarkLock({ kind: "puck" }, 0), null);
   const turned = mark.orbitStick(1, 0.8, 1, 0.2, 1);
   assert.equal(turned.theta, 2.85);
   assert.ok(Math.abs(turned.phi - 0.55) < 1e-9);
@@ -397,6 +450,58 @@ test("undo and redo restore a slide and a turn", () => {
   assert.equal(again.z1, -1);
   assert.equal(again.yaw1, -Math.PI / 2);
   assert.ok(Math.abs(formYawToward(0, 1, 0, 0.1) - -0.24) < 1e-9);
+});
+
+test("a loaded replay stays on the left until it is saved", () => {
+  const frames = [frame, { ...structuredClone(frame), frame: 13, time: 0.4 }];
+  const text = JSON.stringify(frames);
+  const clip = replayClipFromFile("replay-1-2.json", text, "load-1");
+  assert.equal(typeof clip, "object");
+  assert.equal(clip.frames.length, 2);
+  const onDisk = { id: "bundled:../../replays/replay-1-2.json:0", name: "replay-1-2.json", frames };
+  const open = partitionReplayLibrary([clip], [onDisk]);
+  assert.deepEqual(
+    open.imported.map((entry) => entry.id),
+    ["load-1"],
+  );
+  assert.equal(open.repo[0].id, onDisk.id);
+  const written = { id: "bundled:replays/replay-1-2.json:0", name: "replay-1-2.json", frames };
+  const saved = partitionReplayLibrary([], [onDisk], [written]);
+  assert.equal(saved.imported.length, 0);
+  assert.equal(saved.repo.length, 1);
+  assert.equal(saved.repo[0], written);
+  assert.equal(writeReplayLibrary([clip]), null);
+  assert.equal(readReplayLibrary()[0].id, "load-1");
+  assert.equal(readReplayLibrary()[0].frames.length, 2);
+  assert.equal(writeReplayLibrary([]), null);
+});
+
+test("replay playback uses the in-game game-speed clock and the formation save layout", () => {
+  const replay = readFileSync(join(repo, "src/game/ReplayViewerView.tsx"), "utf8");
+  const overlay = readFileSync(join(repo, "src/game/Overlay.tsx"), "utf8");
+  const css = readFileSync(join(repo, "src/styles.css"), "utf8");
+  const simSrc = readFileSync(join(repo, "src/game/sim.ts"), "utf8");
+  assert.ok(Math.abs(gameSpeedRate(0.85) - 0.68) < 1e-9);
+  assert.match(simSrc, /playAcc \+= d \* gameSpeedRate\(useGame\.getState\(\)\.gameSpeed\)/);
+  assert.match(replay, /60 \* gameSpeedRate\(useGame\.getState\(\)\.gameSpeed\) \* dt/);
+  assert.doesNotMatch(replay, /cursorRef\.current \+= dt \* 60/);
+  assert.match(replay, /Load replay/);
+  assert.doesNotMatch(replay, /Open replay/);
+  assert.doesNotMatch(replay, /\{clip\.name\}/);
+  assert.match(replay, /aria-label="Loaded replay name"/);
+  assert.match(replay, /aria-label="Replay file name"/);
+  assert.match(replay, /\/api\/replays/);
+  assert.match(replay, />\s*Rename\s*</);
+  assert.match(replay, /formation-repo/);
+  assert.match(replay, /void removeRepo\(chosen\.id\)/);
+  assert.match(replay, /method: "DELETE"/);
+  assert.match(overlay, /\{playing && !paused \? null : \(\s*<div className="uni-banner">/);
+  assert.doesNotMatch(overlay, /\(playing && !paused\) \|\| replay \? null/);
+  assert.match(
+    css,
+    /\.formation-lib \{\s*display: grid;\s*grid-template-columns: 280px minmax\(0, 1fr\) 280px;\s*grid-template-rows: auto minmax\(0, 1fr\);\s*grid-template-areas:\s*"top top top"\s*"side stage repo";/,
+  );
+  assert.doesNotMatch(css, /grid-template-areas:\s*"top top"\s*"side stage"/);
 });
 
 test("playback writes lerped spots onto the mounted roster and marks the controlled skater", () => {

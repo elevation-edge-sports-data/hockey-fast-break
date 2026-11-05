@@ -357,6 +357,31 @@ test("three periods switch ends and keep the attack net at the top", () => {
   assert.equal(useGame.getState().homeScore, 0);
 });
 
+test("X skips the end-of-period delay into the next period", () => {
+  freshGame();
+  useGame.getState().setHomeScore(2);
+  useGame.getState().setAwayScore(1);
+  expirePeriod();
+  assert.equal(useGame.getState().periodBreak, 1);
+  assert.equal(world.period, 1);
+  assert.ok(world.periodEndT > 1);
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(world.period, 1);
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.equal(useGame.getState().periodBreak, 0);
+  assert.equal(world.periodEndT, 0);
+  assert.equal(world.period, 2);
+  assert.equal(useGame.getState().period, 2);
+  assert.equal(world.homeAttack, 1);
+  assert.equal(world.faceoff, true);
+  assert.equal(useGame.getState().homeScore, 2);
+  assert.equal(useGame.getState().awayScore, 1);
+  assert.equal(world.periodClock, 1200);
+});
+
 test("roller is two 18:00 periods and switches ends after the first", () => {
   assert.equal(ROLLER_PERIODS, 2);
   assert.equal(ROLLER_CLOCK_DISPLAY_MINUTES, 18);

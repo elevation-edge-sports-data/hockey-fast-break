@@ -547,6 +547,28 @@ const knobGeo = new THREE.BoxGeometry(0.036, 0.026, 0.036);
 /** Wide lower paddle, half the old unit height. The shaft group still scales it. */
 const goaliePaddleGeo = new THREE.BoxGeometry(GOALIE_PADDLE_W, 0.5, GOALIE_PADDLE_T);
 const numPlane = new THREE.PlaneGeometry(0.28, 0.28);
+
+/** Back number. Height stays 0.28; width follows the digit texture so the glyphs are not stretched. */
+function BackNumber({
+  material,
+  position,
+}: {
+  material: THREE.MeshBasicMaterial;
+  position: [number, number, number];
+}) {
+  const mesh = useRef<THREE.Mesh>(null);
+  useLayoutEffect(() => {
+    const fit = () => {
+      const image = material.map?.image as { width?: number; height?: number } | undefined;
+      if (!mesh.current || !image?.width || !image.height) return;
+      mesh.current.scale.x = image.width / image.height;
+    };
+    fit();
+    material.map?.addEventListener("update", fit);
+    return () => material.map?.removeEventListener("update", fit);
+  }, [material]);
+  return <mesh ref={mesh} geometry={numPlane} material={material} position={position} rotation={[0, Math.PI, 0]} />;
+}
 const shadowGeo = new THREE.CircleGeometry(0.42, 16);
 const puckDiscGeo = new THREE.CircleGeometry(PUCK_MARK_INNER, 28);
 const puckRingGeo = new THREE.RingGeometry(PUCK_MARK_INNER, PUCK_MARK_OUTER, 32);
@@ -787,29 +809,51 @@ const FAR_SIDE_STICK_REACH = 0.07;
 export function applyFarSideCull(material: THREE.Material, reach = FAR_SIDE_REACH): void {
   const reachText = reach.toFixed(2);
   material.onBeforeCompile = (shader) => {
-    if (!shader.fragmentShader.includes("#include <normal_fragment_begin>")) return;
     if (!shader.vertexShader.includes("#include <project_vertex>")) return;
-    shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", "#include <common>\nvarying vec3 vFarOrigin;")
-      .replace(
-        "#include <project_vertex>",
-        `#include <project_vertex>
+    if (!shader.vertexShader.includes("#include <common>")) return;
+    if (!shader.fragmentShader.includes("#include <common>")) return;
+    const standard = shader.fragmentShader.includes("#include <normal_fragment_begin>");
+    if (!standard && !shader.fragmentShader.includes("#include <opaque_fragment>")) return;
+    const origin = `#include <project_vertex>
 #ifdef USE_INSTANCING
 	vFarOrigin = (modelViewMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 #else
 	vFarOrigin = (modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-#endif`,
-      );
-    shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "#include <common>\nvarying vec3 vFarOrigin;")
-      .replace(
-        "#include <normal_fragment_begin>",
-        `#include <normal_fragment_begin>
+#endif`;
+    if (standard) {
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vFarOrigin;")
+        .replace("#include <project_vertex>", origin);
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vFarOrigin;")
+        .replace(
+          "#include <normal_fragment_begin>",
+          `#include <normal_fragment_begin>
 	if (!gl_FrontFacing || dot(normal, vViewPosition) < 0.0) discard;
 	{
 		float farOrigin = length(vFarOrigin);
 		if (farOrigin < ${reachText} && length(vViewPosition) > farOrigin) discard;
 	}`,
+        );
+      return;
+    }
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vFarOrigin;\nvarying vec3 vFarView;")
+      .replace(
+        "#include <project_vertex>",
+        `${origin}
+	vFarView = mvPosition.xyz;`,
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vFarOrigin;\nvarying vec3 vFarView;")
+      .replace(
+        "#include <opaque_fragment>",
+        `if (!gl_FrontFacing) discard;
+	{
+		float farOrigin = length(vFarOrigin);
+		if (farOrigin < ${reachText} && length(vFarView) > farOrigin) discard;
+	}
+	#include <opaque_fragment>`,
       );
   };
   material.customProgramCacheKey = () => `far-side-${reachText}`;
@@ -827,34 +871,41 @@ function mat(color: string, extras: THREE.MeshStandardMaterialParameters = {}, r
   return material;
 }
 
+/** Unlit kit color. The hex is the color on screen, same as the number trim. */
+function basicMat(color: string, extras: THREE.MeshBasicMaterialParameters = {}, reach = FAR_SIDE_REACH) {
+  const material = new THREE.MeshBasicMaterial({ color, ...extras });
+  applyFarSideCull(material, reach);
+  return material;
+}
+
 type KitMats = {
-  helmet: THREE.MeshStandardMaterial;
-  visor: THREE.MeshStandardMaterial;
-  jersey: THREE.MeshStandardMaterial;
-  yoke: THREE.MeshStandardMaterial;
-  sleeves: THREE.MeshStandardMaterial;
-  pants: THREE.MeshStandardMaterial;
-  stripe: THREE.MeshStandardMaterial;
-  sockBand: THREE.MeshStandardMaterial;
-  sockBandLow: THREE.MeshStandardMaterial;
-  armStripe: THREE.MeshStandardMaterial | null;
-  socks: THREE.MeshStandardMaterial;
-  gloves: THREE.MeshStandardMaterial;
-  skates: THREE.MeshStandardMaterial;
-  blade: THREE.MeshStandardMaterial;
-  stick: THREE.MeshStandardMaterial;
-  tape: THREE.MeshStandardMaterial;
+  helmet: THREE.MeshBasicMaterial;
+  visor: THREE.MeshBasicMaterial;
+  jersey: THREE.MeshBasicMaterial;
+  yoke: THREE.MeshBasicMaterial;
+  sleeves: THREE.MeshBasicMaterial;
+  pants: THREE.MeshBasicMaterial;
+  stripe: THREE.MeshBasicMaterial;
+  sockBand: THREE.MeshBasicMaterial;
+  sockBandLow: THREE.MeshBasicMaterial;
+  armStripe: THREE.MeshBasicMaterial | null;
+  socks: THREE.MeshBasicMaterial;
+  gloves: THREE.MeshBasicMaterial;
+  skates: THREE.MeshBasicMaterial;
+  blade: THREE.MeshBasicMaterial;
+  stick: THREE.MeshBasicMaterial;
+  tape: THREE.MeshBasicMaterial;
   number: THREE.MeshBasicMaterial;
   shadow: THREE.MeshBasicMaterial;
   ring: THREE.MeshBasicMaterial;
   ringFill: THREE.MeshBasicMaterial;
-  blocker: THREE.MeshStandardMaterial;
-  catcher: THREE.MeshStandardMaterial;
-  catcherWeb: THREE.MeshStandardMaterial;
+  blocker: THREE.MeshBasicMaterial;
+  catcher: THREE.MeshBasicMaterial;
+  catcherWeb: THREE.MeshBasicMaterial;
   catcherMesh: THREE.MeshBasicMaterial;
-  pads: THREE.MeshStandardMaterial;
-  cage: THREE.MeshStandardMaterial;
-  mask: THREE.MeshStandardMaterial;
+  pads: THREE.MeshBasicMaterial;
+  cage: THREE.MeshBasicMaterial;
+  mask: THREE.MeshBasicMaterial;
   numberMap: THREE.CanvasTexture;
 };
 
@@ -892,109 +943,41 @@ function goaliePadColor(kit: UniformKit): string {
   return pants === kit.jersey.toLowerCase() ? kit.yoke : kit.jersey;
 }
 
-function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
+function buildKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
   const numberMap = createNumberTexture(num, kit.number, kit.numberOutline);
   const pad = kit.jersey;
   const legPad = goalie ? goaliePadColor(kit) : pad;
   return {
-    helmet: mat(kit.helmet, {
-      roughness: 0.26,
-      metalness: 0.14,
-      envMapIntensity: 0.3,
-      emissive: kit.helmet,
-      emissiveIntensity: 0.18,
-    }),
+    helmet: basicMat(kit.helmet),
     visor: (() => {
-      const visor = new THREE.MeshStandardMaterial({
+      const visor = new THREE.MeshBasicMaterial({
         color: kit.visor,
-        roughness: 0.08,
-        metalness: 0.4,
         transparent: true,
         opacity: 0.72,
       });
       applyFarSideCull(visor);
       return visor;
     })(),
-    jersey: mat(kit.jersey, {
-      roughness: 0.48,
-      envMapIntensity: 1.4,
-      emissive: kit.jersey,
-      emissiveIntensity: 0.28,
-    }),
-    yoke: mat(kit.yoke, {
-      roughness: 0.46,
-      envMapIntensity: 1.4,
-      emissive: kit.yoke,
-      emissiveIntensity: 0.26,
-    }),
-    sleeves: mat(kit.sleeves, {
-      roughness: 0.48,
-      envMapIntensity: 1.4,
-      emissive: kit.sleeves,
-      emissiveIntensity: 0.28,
-    }),
-    pants: mat(kit.pants, {
-      roughness: 0.5,
-      envMapIntensity: 1.35,
-      emissive: kit.pants,
-      emissiveIntensity: 0.22,
+    jersey: basicMat(kit.jersey),
+    yoke: basicMat(kit.yoke),
+    sleeves: basicMat(kit.sleeves),
+    pants: basicMat(kit.pants, {
       transparent: false,
       depthWrite: true,
       polygonOffset: true,
       polygonOffsetFactor: -2,
       polygonOffsetUnits: -2,
     }),
-    stripe: mat(kit.pantStripe ?? kit.stripe, {
-      roughness: 0.48,
-      envMapIntensity: 1.4,
-      emissive: kit.pantStripe ?? kit.stripe,
-      emissiveIntensity: 0.3,
-    }),
-    sockBand: mat(kit.sockBand ?? kit.stripe, {
-      roughness: 0.48,
-      envMapIntensity: 1.4,
-      emissive: kit.sockBand ?? kit.stripe,
-      emissiveIntensity: 0.3,
-    }),
-    sockBandLow: mat(kit.sockBandLow ?? kit.stripe, {
-      roughness: 0.48,
-      envMapIntensity: 1.4,
-      emissive: kit.sockBandLow ?? kit.stripe,
-      emissiveIntensity: 0.3,
-    }),
-    armStripe: kit.armStripe
-      ? mat(kit.armStripe, {
-          roughness: 0.48,
-          envMapIntensity: 1.4,
-          emissive: kit.armStripe,
-          emissiveIntensity: 0.3,
-        })
-      : null,
-    socks: mat(kit.socks, {
-      roughness: 0.5,
-      envMapIntensity: 1.3,
-      emissive: kit.socks,
-      emissiveIntensity: 0.24,
-    }),
-    gloves: mat(kit.gloves, {
-      roughness: 0.48,
-      envMapIntensity: 1.25,
-      emissive: kit.gloves,
-      emissiveIntensity: 0.2,
-    }),
-    skates: mat(kit.skates, { roughness: 0.4, metalness: 0.12 }),
-    blade: mat(
-      "#c5ccd4",
-      {
-        roughness: 0.38,
-        metalness: 0.28,
-        emissive: "#9aa3ab",
-        emissiveIntensity: 0.22,
-      },
-      FAR_SIDE_STICK_REACH,
-    ),
-    stick: mat(kit.stick, { roughness: 0.4 }, FAR_SIDE_STICK_REACH),
-    tape: mat(kit.tape, { roughness: 0.8 }, FAR_SIDE_STICK_REACH),
+    stripe: basicMat(kit.pantStripe ?? kit.stripe),
+    sockBand: basicMat(kit.sockBand ?? kit.stripe),
+    sockBandLow: basicMat(kit.sockBandLow ?? kit.stripe),
+    armStripe: kit.armStripe ? basicMat(kit.armStripe) : null,
+    socks: basicMat(kit.socks),
+    gloves: basicMat(kit.gloves),
+    skates: basicMat(kit.skates),
+    blade: basicMat("#c5ccd4", {}, FAR_SIDE_STICK_REACH),
+    stick: basicMat(kit.stick, {}, FAR_SIDE_STICK_REACH),
+    tape: basicMat(kit.tape, {}, FAR_SIDE_STICK_REACH),
     number: new THREE.MeshBasicMaterial({
       map: numberMap,
       transparent: true,
@@ -1011,7 +994,7 @@ function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
       depthWrite: false,
     }),
     ring: new THREE.MeshBasicMaterial({
-      color: kit.ribbon,
+      color: kit.id === 5 ? "#000000" : kit.ribbon,
       transparent: true,
       opacity: 0.92,
       depthWrite: false,
@@ -1024,9 +1007,9 @@ function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
       depthWrite: false,
       side: THREE.DoubleSide,
     }),
-    blocker: mat(goalie ? legPad : "#f2ece0", { roughness: 0.48 }),
-    catcher: mat(goalie ? pad : "#6b3a24", { roughness: 0.58 }),
-    catcherWeb: mat(goalie ? pad : "#d9c39a", { roughness: 0.72 }),
+    blocker: basicMat(goalie ? legPad : "#f2ece0"),
+    catcher: basicMat(goalie ? pad : "#6b3a24"),
+    catcherWeb: basicMat(goalie ? pad : "#d9c39a"),
     catcherMesh: new THREE.MeshBasicMaterial({
       color: catcherPocketColor(kit, goalie ? pad : "#6b3a24"),
       map: pocketNetTexture(),
@@ -1036,52 +1019,33 @@ function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
       side: THREE.DoubleSide,
       depthWrite: false,
     }),
-    pads: mat(legPad, {
-      roughness: 0.48,
-      envMapIntensity: 1.25,
-      emissive: legPad,
-      emissiveIntensity: 0.22,
-    }),
-    cage: mat(pad, {
-      roughness: 0.4,
-      metalness: 0.2,
-      emissive: pad,
-      emissiveIntensity: 0.22,
-    }),
-    mask: mat("#121212", { roughness: 0.42, metalness: 0.18 }),
+    pads: basicMat(legPad),
+    cage: basicMat(pad),
+    mask: basicMat("#121212"),
     numberMap,
   };
 }
 
+const kitMatsCache = new Map<string, KitMats>();
+
+/** Shared cloth and number for every skater in that kit. Ring copies stay per player. */
+function makeKitMats(kit: UniformKit, num: number, goalie = false): KitMats {
+  const key = `${kit.id}|${num}|${goalie ? 1 : 0}`;
+  let shared = kitMatsCache.get(key);
+  if (!shared) {
+    shared = buildKitMats(kit, num, goalie);
+    kitMatsCache.set(key, shared);
+  }
+  return {
+    ...shared,
+    ring: shared.ring.clone(),
+    ringFill: shared.ringFill.clone(),
+  };
+}
+
 function disposeKit(m: KitMats) {
-  m.helmet.dispose();
-  m.visor.dispose();
-  m.jersey.dispose();
-  m.yoke.dispose();
-  m.sleeves.dispose();
-  m.pants.dispose();
-  m.stripe.dispose();
-  m.sockBand.dispose();
-  m.sockBandLow.dispose();
-  m.armStripe?.dispose();
-  m.socks.dispose();
-  m.gloves.dispose();
-  m.skates.dispose();
-  m.blade.dispose();
-  m.stick.dispose();
-  m.tape.dispose();
-  m.number.dispose();
-  m.shadow.dispose();
   m.ring.dispose();
   m.ringFill.dispose();
-  m.blocker.dispose();
-  m.catcher.dispose();
-  m.catcherWeb.dispose();
-  m.catcherMesh.dispose();
-  m.pads.dispose();
-  m.cage.dispose();
-  m.mask.dispose();
-  m.numberMap.dispose();
 }
 
 function stickLayout(goalie: boolean) {
@@ -5592,7 +5556,7 @@ export function PlayerMesh({
       if (goalie) {
         const pulse = holding ? 1.08 + 0.12 * Math.abs(Math.sin(world.time * 7.4)) : 1;
         ring.current.scale.set(pulse / 1.14, 1, pulse / 1.14);
-        mats.ring.color.set("#f4f8ff");
+        mats.ring.color.set(homeKit === 5 && kit.id === 5 ? "#000000" : "#f4f8ff");
         mats.ring.opacity = holding ? 1 : 0.88;
         mats.ringFill.opacity = holding ? 0.55 : 0.3;
         if (holding) seatGoalieRing(g, ring.current, world.puck.x, world.puck.z);
@@ -5730,7 +5694,7 @@ export function PlayerMesh({
         <group name="torsoFrame" position={[0, -torsoPivot, 0]}>
         <group ref={torso} name="torso" position={[0, torsoShift, 0]}>
         <mesh geometry={torsoGeo} material={mats.jersey} position={[0, 1.116 - torsoShift, 0]} scale={[1, 0.75, 1]} castShadow />
-        <mesh geometry={numPlane} material={mats.number} position={[0, 1.24 - torsoDrop - torsoShift, -0.13]} rotation={[0, Math.PI, 0]} />
+        <BackNumber material={mats.number} position={[0, 1.24 - torsoDrop - torsoShift, -0.13]} />
 
         <group ref={shoulders} name="shoulders" position={[0, 1.45 - torsoDrop - torsoShift, 0]}>
         <group name="shoulderFrame" position={[0, -1.45, 0]}>
@@ -5952,17 +5916,20 @@ function ShoulderYoke({
   );
 }
 
-/** Kit 2 paints this layout with the pants cloth. Other kits use armStripe. */
+/** Kit id 1 paints this layout with the pants cloth at the shoulder. Kits 2, 4, 5, 7, and 8 wear the same cuff at the elbow. */
 function SleeveStripes({ kit, mats }: { kit: UniformKit; mats: KitMats }) {
   const material = kit.id === 1 ? mats.pants : mats.armStripe;
   if (!material) return null;
+  const low = kit.id === 2 || kit.id === 4 || kit.id === 5 || kit.id === 7 || kit.id === 8;
+  const bandY = low ? -0.2 : -0.08;
+  const wrapY = low ? -0.2475 : -0.0325;
   return (
     <>
-      <mesh geometry={armStripeGeo} material={material} position={[0, -0.08, 0.02]} />
-      <mesh geometry={armSideStripeGeo} material={material} position={[-0.065, -0.0325, 0.02]} />
-      <mesh geometry={armSideStripeGeo} material={material} position={[0.065, -0.0325, 0.02]} />
-      <mesh geometry={armEndStripeGeo} material={material} position={[0, -0.0325, -0.055]} />
-      <mesh geometry={armEndStripeGeo} material={material} position={[0, -0.0325, 0.095]} />
+      <mesh geometry={armStripeGeo} material={material} position={[0, bandY, 0.02]} />
+      <mesh geometry={armSideStripeGeo} material={material} position={[-0.065, wrapY, 0.02]} />
+      <mesh geometry={armSideStripeGeo} material={material} position={[0.065, wrapY, 0.02]} />
+      <mesh geometry={armEndStripeGeo} material={material} position={[0, wrapY, -0.055]} />
+      <mesh geometry={armEndStripeGeo} material={material} position={[0, wrapY, 0.095]} />
     </>
   );
 }
@@ -6197,7 +6164,7 @@ export function SeatedPlayer({
         <group name="torsoFrame" position={[0, -torsoPivot, 0]}>
         <group ref={torso} name="torso" position={[0, torsoShift, 0]}>
         <mesh geometry={torsoGeo} material={mats.jersey} position={[0, 0.456 - torsoShift, 0]} scale={[1, 0.75, 1]} castShadow />
-        <mesh geometry={numPlane} material={mats.number} position={[0, 0.58 - torsoDrop - torsoShift, -0.13]} rotation={[0, Math.PI, 0]} />
+        <BackNumber material={mats.number} position={[0, 0.58 - torsoDrop - torsoShift, -0.13]} />
 
         <group ref={shoulders} name="shoulders" position={[0, 0.8 - torsoDrop - torsoShift, 0.02]}>
         <group name="shoulderFrame" position={[0, -0.8, -0.02]}>

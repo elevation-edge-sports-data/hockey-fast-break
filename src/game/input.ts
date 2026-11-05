@@ -204,6 +204,16 @@ function track(tr: Face, pressed: boolean, now: number): void {
   }
 }
 
+/**
+ * The focused window. A gamepad is visible to every open window, so camera
+ * zoom, pan, and rotate must check this and leave the others alone.
+ * Tests run without a document and stay focused.
+ */
+export function windowHasInputFocus(): boolean {
+  if (typeof document === "undefined" || typeof document.hasFocus !== "function") return true;
+  return document.hasFocus();
+}
+
 export function attachInput(target: Window | HTMLElement): () => void {
   const onDown = (e: KeyboardEvent) => {
     const el = e.target as HTMLElement | null;

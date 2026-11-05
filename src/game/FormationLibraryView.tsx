@@ -28,9 +28,10 @@ import {
   type FormationFrame,
 } from "./formationLibrary";
 import { IceCross } from "./IceCross";
-import { attachInput, gamepadFaceDown, readActions } from "./input";
+import { attachInput, gamepadFaceDown, readActions, windowHasInputFocus } from "./input";
 import {
   MARK_STICK_GATE,
+  cycleMarkLock,
   iceBasisStep,
   orbitStick,
   nearestMark,
@@ -143,6 +144,20 @@ function settlePuckDrop(): void {
   world.puck.vy = 0;
 }
 
+/** Gamepad Y with the stick centered: puck, then each player, then the free X. */
+function cycleFormationLock(mark: IceMark): void {
+  mark.lock = cycleMarkLock(mark.lock, world.skaters.length);
+  mark.driven = false;
+  if (!mark.lock) return;
+  const anchor = anchorOf(mark.lock);
+  if (!anchor) {
+    mark.lock = null;
+    return;
+  }
+  mark.x = anchor.x;
+  mark.z = anchor.z;
+}
+
 function takeFormationPick(mark: IceMark, hit: RinkPick): void {
   if (hit.kind === "ice") {
     mark.x = hit.x;
@@ -245,6 +260,7 @@ function FormationMarkDriver({
 }) {
   const shown = useRef({ undo: -1, redo: -1 });
   const yMoved = useRef(false);
+  const yHeld = useRef(false);
   const puckDrag = useRef(false);
   useEffect(() => attachInput(window), []);
   const publish = () => {
@@ -258,13 +274,19 @@ function FormationMarkDriver({
     const dt = Math.min(rawDt, 0.1);
     const act = readActions();
     const typing = editingText();
+    const yDown = gamepadFaceDown("y");
+    if (!windowHasInputFocus()) {
+      if (yDown && Math.hypot(act.stickX, act.stickY) > MARK_STICK_GATE) yMoved.current = true;
+      if (!yDown) yMoved.current = false;
+      yHeld.current = yDown;
+      return;
+    }
     if (act.zoomIn || act.zoomOut) {
       seedFormationOrbit(lookOf(mark.current), orbit.current, adjusted);
       const o = orbit.current;
       if (act.zoomIn) o.radius = Math.max(RADIUS_MIN, o.radius - 18 * dt);
       if (act.zoomOut) o.radius = Math.min(RADIUS_MAX, o.radius + 18 * dt);
     }
-    const yDown = gamepadFaceDown("y");
     if (yDown) {
       if (Math.hypot(act.stickX, act.stickY) > MARK_STICK_GATE) yMoved.current = true;
       if (yMoved.current) {
@@ -273,9 +295,15 @@ function FormationMarkDriver({
         orbit.current.theta = turned.theta;
         orbit.current.phi = turned.phi;
       }
+    } else if (yHeld.current && !yMoved.current) {
+      closeFormGesture(hist.current);
+      cycleFormationLock(mark.current);
+      publish();
+      yMoved.current = false;
     } else {
       yMoved.current = false;
     }
+    yHeld.current = yDown;
     const cursor = mark.current;
     const skater = cursor.lock?.kind === "skater" ? world.skaters[cursor.lock.index] : undefined;
     const live = !yDown && Math.hypot(act.stickX, act.stickY) > MARK_STICK_GATE;

@@ -1,6 +1,8 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 // @ts-expect-error JS helper alongside the TS vite config
 import { saveFormationFile } from "./scripts/formation-save.mjs";
+// @ts-expect-error JS helper alongside the TS vite config
+import { deleteReplayFile, saveReplayFile } from "./scripts/replay-save.mjs";
 import { extname, isAbsolute, join, relative } from "node:path";
 import type { Plugin } from "vite";
 import { defineConfig } from "vite";
@@ -20,6 +22,11 @@ const ARCHIVE_TYPES: Record<string, string> = {
   ".svg": "image/svg+xml",
 };
 
+const SAVE_LIMITS: Record<string, number> = {
+  "/api/formations": 1_000_000,
+  "/api/replays": 32_000_000,
+};
+
 function formationsSavePlugin(): Plugin {
   return {
     name: "hfb-formations-save",
@@ -27,7 +34,35 @@ function formationsSavePlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const pathOnly = (req.url ?? "").split("?", 1)[0] ?? "";
-        if (pathOnly !== "/api/formations" || req.method !== "POST") {
+        if (pathOnly === "/api/replays" && req.method === "DELETE") {
+          const chunks: Buffer[] = [];
+          let tooBig = false;
+          req.on("data", (chunk: Buffer) => {
+            chunks.push(chunk);
+            if (chunks.reduce((n, part) => n + part.length, 0) > 64_000) tooBig = true;
+          });
+          req.on("end", () => {
+            if (tooBig) {
+              res.statusCode = 413;
+              res.end("too large");
+              return;
+            }
+            try {
+              const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { name?: unknown };
+              const name = deleteReplayFile(server.config.root, body.name);
+              res.statusCode = 200;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ name }));
+            } catch {
+              res.statusCode = 400;
+              res.setHeader("Content-Type", "text/plain");
+              res.end("bad replay");
+            }
+          });
+          return;
+        }
+        const limit = SAVE_LIMITS[pathOnly];
+        if (!limit || req.method !== "POST") {
           next();
           return;
         }
@@ -35,7 +70,7 @@ function formationsSavePlugin(): Plugin {
         let tooBig = false;
         req.on("data", (chunk: Buffer) => {
           chunks.push(chunk);
-          if (chunks.reduce((n, part) => n + part.length, 0) > 1_000_000) tooBig = true;
+          if (chunks.reduce((n, part) => n + part.length, 0) > limit) tooBig = true;
         });
         req.on("end", () => {
           if (tooBig) {
@@ -47,16 +82,20 @@ function formationsSavePlugin(): Plugin {
             const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
               name?: unknown;
               frame?: unknown;
+              frames?: unknown;
               from?: unknown;
             };
-            const name = saveFormationFile(server.config.root, body.name, body.frame, body.from);
+            const name =
+              pathOnly === "/api/replays"
+                ? saveReplayFile(server.config.root, body.name, body.frames, body.from)
+                : saveFormationFile(server.config.root, body.name, body.frame, body.from);
             res.statusCode = 200;
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ name }));
           } catch {
             res.statusCode = 400;
             res.setHeader("Content-Type", "text/plain");
-            res.end("bad formation");
+            res.end(pathOnly === "/api/replays" ? "bad replay" : "bad formation");
           }
         });
       });

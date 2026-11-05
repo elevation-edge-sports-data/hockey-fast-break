@@ -371,3 +371,26 @@ test("drill does not whistle a puck beyond the stands; practice replaces it", ()
   }
   assert.ok(back, "practice did not put a new puck on the stick");
 });
+
+test("X skips the crowd delay straight to the faceoff", () => {
+  liveSheet();
+  launch(0, JUMBO_Y, 14, 0, 0, -30);
+  assert.ok(untilCrowd() >= 0, "puck never reached the crowd");
+  assert.equal(world.whistle, "crowd");
+  const clock = world.periodClock;
+  const faceX = world.faceX;
+  const faceZ = world.faceZ;
+  setInjectedKeys([]);
+  stepSim(DT);
+  assert.equal(world.whistle, "crowd");
+  setInjectedKeys(["KeyF"]);
+  stepSim(DT);
+  setInjectedKeys([]);
+  assert.equal(world.whistle, null);
+  assert.equal(world.stoppage, false);
+  assert.equal(world.faceoff, true);
+  assert.equal(world.puck.x, faceX);
+  assert.equal(world.puck.z, faceZ);
+  assert.equal(world.periodClock, clock);
+  assert.ok(world.stoppageT < 0.5, `delay was not skipped, stoppageT ${world.stoppageT}`);
+});

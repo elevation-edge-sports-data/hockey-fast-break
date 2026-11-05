@@ -52,8 +52,14 @@ const {
   goalieButterflyPose,
   goaliePokeCheckPose,
   goaliePlaysPuck,
+  goaliePlayPuckPose,
   goalieShotSave,
   goalieZKind,
+  beginPauseReplay,
+  stopPauseReplay,
+  seekReplay,
+  markReplayRange,
+  exportReplayRange,
   ironDefensePose,
   ironWasWatched,
   planBlockerRebound,
@@ -65,6 +71,10 @@ const {
 } = sim;
 const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const { inferNamedPose } = poses;
+const formLib = await server.ssrLoadModule("/src/game/formationLibrary.ts");
+const { mountFormation } = formLib;
+const input = await server.ssrLoadModule("/src/game/input.ts");
+const { setInjectedKeys } = input;
 const { useGame } = store;
 const { FACEOFF_EZ_X, FACEOFF_R, GOAL_H, GOAL_LINE_X, GOAL_PIPE_R, GOAL_W } = rink;
 
@@ -490,8 +500,9 @@ function calmSkaters() {
   }
 }
 
-test("play pose is only the loose-puck handling, not a save", () => {
+test("play pose is a wind-up or release, not a loose puck or a save", () => {
   live();
+  world.homeAttack = 1;
   const away = goalie("away");
   const home = goalie("home");
   const mouth = GOAL_LINE_X;
@@ -504,7 +515,8 @@ test("play pose is only the loose-puck handling, not a save", () => {
   assert.equal(goaliePlaysPuck(away), false);
   stepSim(1 / 60);
   assert.notEqual(world.puck.owner, away.id);
-  assert.equal(goaliePlaysPuck(away), true);
+  assert.equal(goaliePlaysPuck(away), false);
+  assert.equal(goaliePlayPuckPose(away), null);
   assert.equal(goalieZKind(away), "butterfly");
 
   const shooter = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie");
@@ -523,7 +535,7 @@ test("play pose is only the loose-puck handling, not a save", () => {
   world.goalieSaveT = world.time;
   assert.equal(goaliePlaysPuck(away), false);
   world.goalieSaveT = world.time - 3;
-  assert.equal(goaliePlaysPuck(away), true);
+  assert.equal(goaliePlaysPuck(away), false);
   world.reboundN = 0;
 
   world.puck.owner = away.id;
@@ -531,7 +543,14 @@ test("play pose is only the loose-puck handling, not a save", () => {
   world.goalieSaveT = world.time;
   away.coverPose = 0;
   away.gloveFlash = 0;
+  away.windup = 0;
+  assert.equal(goaliePlaysPuck(away), false);
+  assert.equal(goaliePlayPuckPose(away), null);
+  away.windup = 0.35;
   assert.equal(goaliePlaysPuck(away), true);
+  assert.equal(goaliePlayPuckPose(away), "goaliePlayPuck1");
+  away.windup = 0;
+  assert.equal(goaliePlaysPuck(away), false);
   away.coverPose = 0.2;
   assert.equal(goaliePlaysPuck(away), false);
   away.coverPose = 0;
@@ -569,7 +588,8 @@ test("play pose is only the loose-puck handling, not a save", () => {
   world.puck.vx = 0;
   world.puck.vz = 0;
   world.puck.owner = null;
-  assert.equal(goaliePlaysPuck(home), true);
+  assert.equal(goaliePlaysPuck(home), false);
+  assert.equal(goaliePlayPuckPose(home), null);
   world.lastShooter = shooter.id;
   world.lastShoot = world.time;
   world.lastPass = -10;
@@ -582,7 +602,7 @@ test("play pose is only the loose-puck handling, not a save", () => {
   home.vz = 0;
   home.x = homeMouth + 2.5;
   world.puck.x = homeMouth + 4.4;
-  assert.equal(goaliePlaysPuck(home), true);
+  assert.equal(goaliePlaysPuck(home), false);
   home.x = homeMouth + 0.7;
   assert.equal(goaliePlaysPuck(home), false);
 
@@ -661,7 +681,159 @@ test("play pose is only the loose-puck handling, not a save", () => {
   world.lastShooter = null;
   parkExcept(away.id);
   stepSim(1 / 60);
-  assert.equal(goaliePlaysPuck(away), true);
+  assert.equal(goaliePlaysPuck(away), false);
+  assert.equal(goaliePlayPuckPose(away), null);
+});
+
+function plantCarrier(carrier, goalieSkater) {
+  const end = defendDir("home");
+  const mouth = end * GOAL_LINE_X;
+  for (const s of world.skaters) {
+    s.dive = 0;
+    s.tumble = 0;
+    s.celebrate = 0;
+    s.gloveFlash = 0;
+    s.coverPose = 0;
+    s.windup = 0;
+    s.follow = 0;
+    s.stun = 0;
+    s.struck = 0;
+    s.vx = 0;
+    s.vz = 0;
+  }
+  goalieSkater.x = mouth - end * 0.9;
+  goalieSkater.z = 0;
+  carrier.x = mouth - end * 8;
+  carrier.z = 5;
+  carrier.number = 8;
+  world.userId = carrier.id;
+  world.puck.owner = carrier.id;
+  world.puck.x = carrier.x + end * 0.4;
+  world.puck.z = carrier.z;
+  world.puck.y = 0.042;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  world.goalieShot = null;
+  world.replay = false;
+}
+
+test("frame 1348 keeps the goalie off play-puck, and the download shows that pose", () => {
+  useGame.setState({ playing: true, paused: false, offsides: false });
+  useGame.getState().setClockMode("game");
+  resetWorld();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  const homeG = goalie("home");
+  const rd = world.skaters.find((s) => s.side === "home" && s.kind === "defense" && s.number === 8);
+  assert.equal(homeG.number, 39);
+  assert.ok(rd, "home RD #8");
+  for (let i = 0; i < 40; i++) stepSim(1 / 60);
+  plantCarrier(rd, homeG);
+  stepSim(1 / 60);
+  assert.equal(world.puck.owner, rd.id);
+  const livePose = inferNamedPose(homeG, homeG.id);
+  assert.notEqual(livePose, "goaliePlayPuck1");
+  assert.notEqual(livePose, "goaliePlayPuck2");
+  assert.equal(goaliePlaysPuck(homeG), false);
+  setInjectedKeys([]);
+  useGame.getState().setPaused(true);
+  let release = null;
+  try {
+    assert.equal(beginPauseReplay(), true);
+    world.replayPlaying = false;
+    seekReplay(1);
+    markReplayRange();
+    seekReplay(0);
+    markReplayRange();
+    const range = exportReplayRange();
+    assert.ok(range && range.length > 1);
+    const frame = range[range.length - 1];
+    const row = frame.adjusted.players.find((p) => p.id === homeG.id);
+    assert.ok(row);
+    assert.equal(row.pose, livePose);
+    assert.notEqual(row.pose, "goaliePlayPuck1");
+    assert.notEqual(row.pose, "goaliePlayPuck2");
+    assert.equal(frame.adjusted.puck.owner, rd.id);
+    release = mountFormation(frame.adjusted);
+    const shown = world.skaters.find((s) => s.id === homeG.id);
+    assert.ok(shown);
+    assert.equal(inferNamedPose(shown, shown.id), livePose);
+  } finally {
+    if (release) release();
+    if (world.replay) stopPauseReplay();
+    setInjectedKeys([]);
+    useGame.getState().setPaused(false);
+  }
+});
+
+test("a downloaded goalie windup keeps the play-puck pose", () => {
+  useGame.setState({ playing: true, paused: false, offsides: false });
+  useGame.getState().setClockMode("game");
+  resetWorld();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  const g = goalie("home");
+  world.userId = g.id;
+  for (let i = 0; i < 40; i++) stepSim(1 / 60);
+  g.x = 0;
+  g.z = 0;
+  g.vx = 0;
+  g.vz = 0;
+  g.dive = 0;
+  g.coverPose = 0;
+  g.gloveFlash = 0;
+  g.windup = 0;
+  world.coverT = 1;
+  world.puck.owner = g.id;
+  world.puck.x = g.x;
+  world.puck.z = g.z;
+  world.puck.y = 0.042;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.faceoff = false;
+  world.stoppage = false;
+  world.whistle = null;
+  world.goalieShot = null;
+  setInjectedKeys(["KeyE"]);
+  stepSim(1 / 60);
+  const livePose = inferNamedPose(g, g.id);
+  assert.equal(world.puck.owner, g.id);
+  assert.equal(livePose, "goaliePlayPuck1");
+  setInjectedKeys([]);
+  useGame.getState().setPaused(true);
+  let release = null;
+  try {
+    assert.equal(beginPauseReplay(), true);
+    world.replayPlaying = false;
+    seekReplay(1);
+    markReplayRange();
+    seekReplay(0);
+    markReplayRange();
+    const range = exportReplayRange();
+    const frame = range[range.length - 1];
+    const row = frame.adjusted.players.find((p) => p.id === g.id);
+    assert.equal(row.pose, "goaliePlayPuck1");
+    release = mountFormation(frame.adjusted);
+    const shown = world.skaters.find((s) => s.id === g.id);
+    assert.equal(inferNamedPose(shown, shown.id), "goaliePlayPuck1");
+    assert.equal(goaliePlaysPuck(shown), false);
+    assert.equal(goaliePlayPuckPose(shown), null);
+  } finally {
+    if (release) release();
+    if (world.replay) stopPauseReplay();
+    setInjectedKeys([]);
+    useGame.getState().setPaused(false);
+  }
 });
 
 const PUCK_Y = 0.042;

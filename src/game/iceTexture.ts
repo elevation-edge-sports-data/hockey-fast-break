@@ -30,6 +30,8 @@ import { JUMBO_HH, JUMBO_HL, JUMBO_HW } from "./crowd";
 import centerIceUrl from "../../logo-center-ice.png";
 import scoreboardLogoUrl from "../../logo-scoreboard.png";
 
+export { createNumberTexture } from "./jerseyDigits";
+
 const scoreboardLogo = new Image();
 scoreboardLogo.src = scoreboardLogoUrl;
 const centerIceLogo = new Image();
@@ -433,33 +435,6 @@ export function createFaceoffDotTexture(): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
-  return tex;
-}
-
-export function createNumberTexture(
-  num: number,
-  fill: string,
-  outline: string,
-): THREE.CanvasTexture {
-  const c = document.createElement("canvas");
-  c.width = 256;
-  c.height = 256;
-  const g = c.getContext("2d")!;
-  g.clearRect(0, 0, 256, 256);
-  g.font = "700 170px 'Barlow Condensed', sans-serif";
-  g.textAlign = "center";
-  g.textBaseline = "middle";
-  g.lineWidth = 14;
-  g.strokeStyle = outline;
-  g.fillStyle = fill;
-  const t = String(num);
-  g.strokeText(t, 128, 140);
-  g.fillText(t, 128, 140);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.generateMipmaps = false;
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
   return tex;
 }
 

@@ -19,12 +19,11 @@ globalThis.localStorage = {
     return mem.size;
   },
 };
-if (typeof globalThis.navigator?.getGamepads !== "function") {
-  Object.defineProperty(globalThis.navigator, "getGamepads", {
-    configurable: true,
-    value: () => [],
-  });
-}
+let pads = [];
+Object.defineProperty(globalThis.navigator, "getGamepads", {
+  configurable: true,
+  value: () => pads,
+});
 if (typeof globalThis.window === "undefined") globalThis.window = globalThis;
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -57,6 +56,7 @@ function frames(n) {
 }
 
 function sheet(mode = "game") {
+  pads = [];
   setInjectedKeys([]);
   const ui = useGame.getState();
   ui.setInstantReplay(true);
@@ -308,4 +308,69 @@ test("drill, practice, and the off switch do not arm a clip", () => {
   frames(130);
   assert.equal(world.replay, false);
   assert.equal(world.whistle, "goal");
+});
+
+function settled() {
+  const ui = useGame.getState();
+  return {
+    replay: world.replay,
+    kind: world.replayKind,
+    paused: ui.paused,
+    faceoff: world.faceoff,
+    whistle: world.whistle,
+    home: ui.homeScore,
+    away: ui.awayScore,
+    faceX: world.faceX,
+    faceZ: world.faceZ,
+    stoppage: world.stoppage,
+    modes: instantReplayModes().length,
+  };
+}
+
+function pressR3() {
+  setInjectedKeys([]);
+  pads = [];
+  stepSim(DT);
+  const buttons = Array.from({ length: 17 }, () => ({ pressed: false, touched: false, value: 0 }));
+  buttons[11] = { pressed: true, touched: true, value: 1 };
+  pads = [
+    {
+      id: "test-standard",
+      index: 0,
+      connected: true,
+      mapping: "standard",
+      timestamp: 1,
+      axes: [0, 0, 0, 0],
+      buttons,
+    },
+  ];
+  stepSim(DT);
+  pads = [];
+  setInjectedKeys([]);
+}
+
+test("right stick during instant replay skips it and pauses, same as X then the stick", () => {
+  sheet("game");
+  fillBuffer();
+  score();
+  assert.equal(world.replay, false);
+  edge("KeyF");
+  assert.equal(world.faceoff, true);
+  assert.equal(useGame.getState().paused, false);
+  pressR3();
+  const viaX = settled();
+  assert.equal(viaX.paused, true);
+  assert.equal(viaX.replay, false);
+  assert.equal(viaX.faceoff, true);
+  assert.equal(viaX.whistle, null);
+  assert.equal(viaX.modes, 0);
+
+  sheet("game");
+  fillBuffer();
+  score();
+  frames(121);
+  assert.equal(world.replayKind, "goal");
+  assert.equal(useGame.getState().paused, false);
+  pressR3();
+  assert.deepEqual(settled(), viaX);
 });
