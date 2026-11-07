@@ -29,3 +29,13 @@ export function saveFormationFile(root, rawName, frame, rawFrom) {
   }
   return name;
 }
+
+/** Unlink one formation file. A missing file is already removed. Success means the file is gone. A Vite restart is required for the glob to drop the file completely. */
+export function deleteFormationFile(root, rawName) {
+  const name = formationFileName(rawName);
+  if (!name) throw new Error("bad name");
+  const file = join(root, "formations", name);
+  if (existsSync(file)) unlinkSync(file);
+  if (existsSync(file)) throw new Error("file still on disk");
+  return name;
+}

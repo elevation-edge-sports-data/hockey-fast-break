@@ -56,7 +56,11 @@ export function writeReplayLibrary(clips: ReplayClip[]): string | null {
   }
 }
 
-/** Names removed from the right panel. Kept so a stale dev glob does not bring them back. */
+/**
+ * Names whose files were unlinked. import.meta.glob is eager, so a Vite
+ * restart is required for the glob to drop the file completely. Until then
+ * this list hides the stale module.
+ */
 export function readRetiredReplays(): string[] {
   try {
     const raw = localStorage.getItem(RETIRED_KEY);
@@ -80,7 +84,8 @@ export function writeRetiredReplays(names: readonly string[]): void {
 /**
  * Left list is unsaved loads. Right list is replays/ files, plus a file
  * saved earlier in this session. A shared name does not hide the load.
- * Retired names drop only the repo copy that was renamed away.
+ * Retired names drop the repo copy after the file is unlinked. A Vite
+ * restart is required for the glob to drop the file completely.
  */
 export function partitionReplayLibrary(
   local: readonly ReplayClip[],

@@ -22,11 +22,12 @@ export function saveReplayFile(root, rawName, frames, rawFrom) {
   return name;
 }
 
-/** Delete one replay file. A missing file is already removed. */
+/** Unlink one replay file. A missing file is already removed. Success means the file is gone. A Vite restart is required for the glob to drop the file completely. */
 export function deleteReplayFile(root, rawName) {
   const name = formationFileName(rawName);
   if (!name) throw new Error("bad name");
   const file = join(root, "replays", name);
   if (existsSync(file)) unlinkSync(file);
+  if (existsSync(file)) throw new Error("file still on disk");
   return name;
 }

@@ -1664,7 +1664,7 @@ export function startCpuDrillWatchFromUrl(): string | null {
   cpuDrillSpotName = spot.name;
   setCpuDrillProbe(true);
   setCpuDrillSpot(spot.x, spot.z);
-  resetWorld();
+  resetWorld({ keepReplay: true });
   const meters = Math.abs(GOAL_LINE_X - spot.x).toFixed(1);
   return `CPU drill · ${spot.name} · ${meters} m`;
 }
@@ -1696,7 +1696,7 @@ export function startCpuScrimmageWatchFromUrl(): string | null {
   ui.setPaused(false);
   ui.setPlaying(true);
   cpuScrimmageWatch = true;
-  resetWorld();
+  resetWorld({ keepReplay: true });
   return `CPU scrimmage · 0v6 · ${raw} targets`;
 }
 
@@ -2706,6 +2706,7 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
     ui.setPeriodOver(false);
     ui.setPeriodClock(openingClock);
     if (!opts?.keepReplay) clearReplayBuf();
+    else clearReplaySession();
     world.ppRelease = null;
     world.ppChaos = false;
     ui.setLiveHome(ui.homeLineup);
@@ -3443,6 +3444,12 @@ function holdFaceoffGap(forReplay = false): void {
   }
 }
 
+/**
+ * Gap past the two radii for a goalie pair.
+ * 0.28 stopped the resolver at 1.28, so a skater could sit at ~1.6, inside the pads.
+ */
+const GOALIE_SEPARATE_PAD = 1;
+
 function separateSkaters(): void {
   bowlUserChecks();
   const arr = world.skaters;
@@ -3468,9 +3475,12 @@ function separateSkaters(): void {
         const celebB = world.whistle === "goal" && B.celebrate > 0.05 && B.kind !== "goalie";
         const userA = A.id === world.userId;
         const userB = B.id === world.userId;
-        let pad = A.kind === "goalie" || B.kind === "goalie" ? 0.28 : 0.2;
-        let wA = A.kind === "goalie" ? (A.struck > 0.2 ? 0.62 : 0.08) : A.struck > 0.2 ? 0.28 : 1;
-        let wB = B.kind === "goalie" ? (B.struck > 0.2 ? 0.62 : 0.08) : B.struck > 0.2 ? 0.28 : 1;
+        const goalieA = A.kind === "goalie";
+        const goalieB = B.kind === "goalie";
+        const goaliePair = goalieA !== goalieB;
+        let pad = goalieA || goalieB ? GOALIE_SEPARATE_PAD : 0.2;
+        let wA = goalieA ? (A.struck > 0.2 ? 0.62 : 0.08) : A.struck > 0.2 ? 0.28 : 1;
+        let wB = goalieB ? (B.struck > 0.2 ? 0.62 : 0.08) : B.struck > 0.2 ? 0.28 : 1;
         if (celebA && celebB) {
           if (userA !== userB) {
             pad = -0.2;
@@ -3485,18 +3495,25 @@ function separateSkaters(): void {
         const nx = dx / dist;
         const nz = dz / dist;
         const pen = min - dist;
+        let rv = (B.vx - A.vx) * nx + (B.vz - A.vz) * nz;
+        // Unstruck goalies stay at 0.08 until a skater is actually running into them.
+        if (goaliePair && rv < -2.2) {
+          const bump = Math.min(0.62, 0.24 + (-rv - 2.2) * 0.045);
+          if (goalieA && A.struck <= 0.2) wA = Math.max(wA, bump);
+          if (goalieB && B.struck <= 0.2) wB = Math.max(wB, bump);
+        }
         const sum = wA + wB;
         A.x -= nx * pen * (wA / sum);
         A.z -= nz * pen * (wA / sum);
         B.x += nx * pen * (wB / sum);
         B.z += nz * pen * (wB / sum);
-        const rv = (B.vx - A.vx) * nx + (B.vz - A.vz) * nz;
         if (rv < 0) {
           let jimp = rv * 0.78;
           const aFly =
             userCheckSkaters.has(A.id) && A.struck > 0.35 && A.vx * A.vx + A.vz * A.vz > 20.25;
           const bFly =
             userCheckSkaters.has(B.id) && B.struck > 0.35 && B.vx * B.vx + B.vz * B.vz > 20.25;
+          if (goaliePair && aFly === bFly && pen > 0.2) jimp *= 1.4;
           if (aFly !== bFly) jimp *= 0.15;
           A.vx += nx * jimp * (wA / sum) * 2;
           A.vz += nz * jimp * (wA / sum) * 2;
@@ -5356,6 +5373,46 @@ function userOzBoardPass(): 1 | -1 | 0 {
   const zLine = Math.abs(world.puck.z) >= Math.abs(world.lastPassZ) ? world.puck.z : world.lastPassZ;
   if (Math.abs(zLine) < RINK_W / 2 - 7.5) return 0;
   return zLine >= 0 ? 1 : -1;
+}
+
+/**
+ * Home rim around the attacking end, onto the other wall.
+ * A straight up-the-wall pass stays on pointBoardReceive.
+ * The sign is the wall the puck is heading for.
+ */
+function ozFarRimSide(): 1 | -1 | 0 {
+  if (world.puck.owner !== null || world.faceoff || world.stoppage) return 0;
+  if (world.lastPasser === null) return 0;
+  const passer = world.skaters[world.lastPasser];
+  if (!passer || passer.side !== "home" || passer.kind !== "winger") return 0;
+  if (world.time - world.lastPass > 2.2 || world.lastShoot >= world.lastPass) return 0;
+  if (world.goalieSaveT >= world.lastPass || world.lastHitTime >= world.lastPass) return 0;
+  const attack = attackDir("home");
+  const released = world.lastPassX * attack;
+  const now = world.puck.x * attack;
+  if (released < BLUE_X - 1.2 && now < BLUE_X - 1.2) return 0;
+  const puck = world.puck;
+  // A pass driving back into the zone, mostly along x, is not a rim.
+  if (puck.vx * attack > 4 && Math.abs(puck.vx) > Math.abs(puck.vz) * 1.15) return 0;
+  const releaseSide: 1 | -1 | 0 =
+    Math.abs(world.lastPassZ) > 1.15 ? (world.lastPassZ > 0 ? 1 : -1) : 0;
+  const puckSide: 1 | -1 | 0 = Math.abs(puck.z) > 1.15 ? (puck.z > 0 ? 1 : -1) : 0;
+  const travelSide: 1 | -1 | 0 = Math.abs(puck.vz) > 2 ? (puck.vz > 0 ? 1 : -1) : 0;
+  const onEnd = Math.abs(puck.x) >= RINK_L / 2 - 3.6 && Math.abs(puck.vz) > Math.abs(puck.vx);
+  if (onEnd) {
+    const heading = travelSide || puckSide;
+    if (releaseSide !== 0 && heading !== 0 && heading !== releaseSide) return heading;
+    return 0;
+  }
+  if (
+    releaseSide !== 0 &&
+    puckSide !== 0 &&
+    puckSide !== releaseSide &&
+    Math.abs(puck.z) >= RINK_W / 2 - 4.8
+  ) {
+    return puckSide;
+  }
+  return 0;
 }
 
 /** Point on the pass he can skate onto. Coast uses the puck's ice drag. */
@@ -7769,11 +7826,13 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
     }
   }
   const boardSide = openEnd === 0 && !wrapDeep ? userOzBoardPass() : 0;
+  const rimSide = openEnd === 0 && !wrapDeep ? ozFarRimSide() : 0;
   if (boardSide !== 0 && s.side === "home" && s.id !== world.userId && s.kind !== "goalie") {
     const attack = attackDir("home");
     const wall = boardSide * (RINK_W / 2 - 1.7);
     if (s.kind === "defense") {
-      const receive = pointBoardReceive(s, boardSide);
+      // A rim belongs to the far-side lane, not the half-sign meet.
+      const receive = rimSide === 0 ? pointBoardReceive(s, boardSide) : null;
       if (receive) {
         c.tx = receive.tx;
         c.tz = receive.tz;
@@ -8043,6 +8102,23 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
   ) {
     c.tz = clampDefensePost(s, c.tz);
   }
+  // Far-side point on a rim: glass first, then just inside the blue.
+  // Edited frame 255 is 1.14 m inside the stripe and 0.54 m off the glass.
+  // After the pass chase, so a named receive does not drag him down the end wall.
+  if (
+    rimSide !== 0 &&
+    s.side === "home" &&
+    s.kind === "defense" &&
+    s.id !== world.userId &&
+    defenseLaneSign(s) === rimSide
+  ) {
+    const attack = attackDir("home");
+    c.tx = attack * (BLUE_X + BLUE_LINE_W * 0.5 + 1.15);
+    c.tz = rimSide * (RINK_W / 2 - 0.54);
+    pointReceive = true;
+    loosePassChase = false;
+    matePuckChase = false;
+  }
   const dx = c.tx - s.x;
   const dz = c.tz - s.z;
   const dist = Math.hypot(dx, dz) || 1;
@@ -8268,7 +8344,7 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
         ? 0.08
         : openEnd !== 0 || retrieving || stickChase
         ? 0.12
-        : passToMe || matePuckChase || loosePassChase
+        : passToMe || matePuckChase || loosePassChase || pointReceive
           ? 0.06
           : rushJoin
             ? 0.1
@@ -14900,6 +14976,8 @@ function recallHomeGoalie(): void {
 
 function nearestHomeSkater(exceptId: number): Skater | null {
   const puck = world.puck;
+  const sideD = clearSideDefender("home", puck);
+  if (sideD && sideD.id !== exceptId) return sideD;
   let best: Skater | null = null;
   let bestD = Infinity;
   for (const s of world.skaters) {
@@ -14924,8 +15002,78 @@ function passAxes(puck: Puck): { ax: number; az: number; spd: number } {
 }
 
 /**
+ * Loose puck coming toward our net from the far side of the rink.
+ * An opposing goalie clear is this. A puck already deep in our zone is not.
+ */
+function puckComingHome(side: "home" | "away", puck: Puck): boolean {
+  if (puck.owner !== null) return false;
+  const defend = defendDir(side);
+  const spd = Math.hypot(puck.vx, puck.vz);
+  if (spd < 2.4 || puck.vx * defend < 1.8) return false;
+  if (puck.x * defend > BLUE_X + 10) return false;
+  if (
+    world.lastShooter !== null &&
+    world.lastShoot >= world.lastPass &&
+    world.time - world.lastShoot < 0.9
+  ) {
+    const sh = world.skaters[world.lastShooter];
+    if (sh && sh.side === side) return false;
+  }
+  return true;
+}
+
+/** Boards side the incoming puck is on, or 0 when the flight stays in the middle. */
+function incomingSideSign(puck: Puck): number {
+  const spd = Math.hypot(puck.vx, puck.vz);
+  const az = spd >= 0.8 ? puck.vz / spd : 0;
+  const look = spd >= 0.8 ? Math.min(14, Math.max(5, spd * 0.3)) : 0;
+  const zAt = puck.z + az * look;
+  const z = Math.abs(zAt) >= Math.abs(puck.z) ? zAt : puck.z;
+  if (Math.abs(z) < 2.2) return 0;
+  return Math.sign(z);
+}
+
+/** Still able to meet the clear: on the flight, not already left behind it. */
+function defenderOnClear(s: Skater, puck: Puck): boolean {
+  const dx = s.x - puck.x;
+  const dz = s.z - puck.z;
+  const d = Math.hypot(dx, dz);
+  const { ax, az, spd } = passAxes(puck);
+  if (spd < 0.8) return d < 14;
+  const along = dx * ax + dz * az;
+  const perp = Math.hypot(dx - ax * along, dz - az * along);
+  if (perp > 8) return false;
+  if (along < -8 && d > 9) return false;
+  return along < 32 && d < 36;
+}
+
+/**
+ * Defenseman whose lane matches the side this puck is coming in on.
+ * Null when that defender is not the player who can take the clear.
+ */
+function clearSideDefender(side: "home" | "away", puck: Puck): Skater | null {
+  if (!puckComingHome(side, puck)) return null;
+  const sign = incomingSideSign(puck);
+  if (sign === 0) return null;
+  let best: Skater | null = null;
+  let bestD = Infinity;
+  for (const s of world.skaters) {
+    if (s.side !== side || s.kind !== "defense" || defenseLaneSign(s) !== sign) continue;
+    if (s.struck > 0.35 || s.tumble !== 0) continue;
+    if (!defenderOnClear(s, puck)) continue;
+    const d = Math.hypot(s.x - puck.x, s.z - puck.z);
+    if (d < bestD) {
+      bestD = d;
+      best = s;
+    }
+  }
+  return best;
+}
+
+/**
  * Chance to play the puck where it is now, or on its current velocity.
  * The spot the pass was aimed at when it was released is not part of this.
+ * A clear coming back toward our end adds the defenseman on that side of the puck.
  */
 function loosePlayScore(s: Skater, puck: Puck): number {
   const { ax, az, spd } = passAxes(puck);
@@ -14945,6 +15093,11 @@ function loosePlayScore(s: Skater, puck: Puck): number {
     }
   }
   if (s.struck > 0.35 || s.tumble !== 0) score -= 16;
+  const sideD = clearSideDefender(s.side, puck);
+  if (sideD) {
+    if (s.id === sideD.id) score += 15;
+    else if (s.kind === "defense") score -= 9;
+  }
   return score;
 }
 
@@ -14958,7 +15111,8 @@ function canPlayLoose(s: Skater, puck: Puck): boolean {
   if (spd < 0.8) return false;
   const along = dx * ax + dz * az;
   const perp = Math.hypot(dx - ax * along, dz - az * along);
-  return along > 0.3 && along < 18 && perp < 3.4;
+  if (along > 0.3 && along < 18 && perp < 3.4) return true;
+  return clearSideDefender(s.side, puck)?.id === s.id;
 }
 
 function rankLoosePlay(mates: Skater[], puck: Puck): { s: Skater; score: number }[] {
@@ -15026,6 +15180,7 @@ function pickDefender(
   let ix = rush.x + nx * lead + rush.vx * 0.2;
   let iz = rush.z + nz * lead * 0.45 + rush.vz * 0.2;
   if ((netX - ix) * defend < 0.8) ix = netX - defend * 0.8;
+  const sideD = clearSideDefender(user.side, world.puck);
   let best = mates[0]!;
   let bestScore = -Infinity;
   for (const s of mates) {
@@ -15040,6 +15195,10 @@ function pickDefender(
     if (goalSide < -1) score -= 11;
     if (lat < 2.8 && goalSide > 0) score += 2;
     if (s.kind === "defense" && rush.x * defend > -BLUE_X) score += 1.5;
+    if (sideD) {
+      if (s.id === sideD.id) score += 18;
+      else if (s.kind === "defense") score -= 12;
+    }
     score -= Math.max(0, dPuck - 11) * 0.5;
     const closing = ((rush.x - s.x) * s.vx + (rush.z - s.z) * s.vz) / dPuck;
     if (closing > 0.4) score += Math.min(2.2, closing * 0.35);
@@ -15103,6 +15262,11 @@ function changePlayer(): void {
   const rush = defensiveRush(user);
   if (rush) {
     world.userId = pickDefender(user, mates, rush).id;
+    return;
+  }
+  const sideD = clearSideDefender(user.side, puck);
+  if (sideD && sideD.id !== user.id) {
+    world.userId = sideD.id;
     return;
   }
   let best = mates[0]!;
@@ -22021,7 +22185,7 @@ export function previewPausedMode(m: PlayMode): void {
   const ui = useGame.getState();
   if (!(ui.playing && ui.paused)) {
     ui.setClockMode(m);
-    resetWorld();
+    resetWorld({ keepReplay: true });
     return;
   }
   writePauseDraft({ ...runningDraft(), clockMode: m });
@@ -22032,7 +22196,7 @@ export function previewPausedTargets(n: DrillTargets): void {
   if (!(ui.playing && ui.paused)) {
     drillPromote = false;
     ui.setDrillTargets(n);
-    if (useGame.getState().clockMode === "drill") resetWorld();
+    if (useGame.getState().clockMode === "drill") resetWorld({ keepReplay: true });
     return;
   }
   const v: DrillTargets = n === 16 ? 16 : n === 12 ? 12 : n === 8 ? 8 : 4;
@@ -22045,7 +22209,7 @@ export function previewPausedScrimmage(side: "home" | "away", n: DrillTargets): 
   if (!(ui.playing && ui.paused)) {
     if (side === "home") ui.setScrimmageHomeTargets(v);
     else ui.setScrimmageAwayTargets(v);
-    if (useGame.getState().clockMode === "scrimmage") resetWorld();
+    if (useGame.getState().clockMode === "scrimmage") resetWorld({ keepReplay: true });
     return;
   }
   writePauseDraft({
@@ -22110,7 +22274,7 @@ export function resumePausedGame(): void {
 
 export function resetPausedGame(): void {
   clearPauseDraft();
-  resetWorld();
+  resetWorld({ keepReplay: true });
   useGame.getState().setPaused(false);
 }
 
@@ -22130,7 +22294,7 @@ export function startPausedNewGame(): void {
     if (draft.shootoutRounds !== ui.shootoutRounds) ui.setShootoutRounds(draft.shootoutRounds);
     if (draft.clockMode !== ui.clockMode) ui.setClockMode(draft.clockMode);
   }
-  resetWorld();
+  resetWorld({ keepReplay: true });
   useGame.getState().setPaused(false);
 }
 
@@ -22204,7 +22368,7 @@ function stepPause(dt: number, act: Actions): boolean {
     if (ui.camAdjust) ui.setCamAdjust(false);
     if (!world.camPick && !world.replay) tickFreeCam(dt, act);
     if (act.aEdge || act.aTap) {
-      resetWorld();
+      resetWorld({ keepReplay: true });
       ui.setPlaying(true);
       world.faceoffA = true;
     }
@@ -22224,7 +22388,7 @@ function stepPause(dt: number, act: Actions): boolean {
       if (world.shootout?.phase === "done") parkShootoutBench();
       if (act.aEdge || act.aTap) {
         applyArmedCpuKitCycle();
-        resetWorld();
+        resetWorld({ keepReplay: true });
         world.faceoffA = true;
       }
       return true;
@@ -22232,7 +22396,7 @@ function stepPause(dt: number, act: Actions): boolean {
     if (act.aEdge || act.aTap) {
       dropWingClaims();
       applyArmedCpuKitCycle();
-      resetWorld();
+      resetWorld({ keepReplay: true });
       world.faceoffA = true;
       return true;
     }
@@ -22565,6 +22729,7 @@ let replayTrackPuck = true;
 let gameplayReplayAngle: { theta: number; phi: number; radius: number } | null = null;
 let replayPanning = false;
 let replayPct = 1;
+let replayShownFrame = 0;
 const replayPctListeners = new Set<() => void>();
 /** Export marks only. They do not trim playback or the scrubber. */
 type ReplayRangeMark = { frame: number; born: number };
@@ -22635,9 +22800,8 @@ function markPuckDrop(): void {
   // A win calls this after clearing the faceoff, so it must not move that floor.
 }
 
-function clearReplayBuf(): void {
-  replayN = 0;
-  replayW = 0;
+/** Drop the pause-replay session. The rolling footage buffer stays. */
+function clearReplaySession(): void {
   replayPlay = [];
   clearReplayRangeMarks();
   pauseHold = null;
@@ -22645,6 +22809,13 @@ function clearReplayBuf(): void {
   jumboPlay = [];
   jumboT = 0;
   jumboOn = false;
+}
+
+function clearReplayBuf(): void {
+  replayN = 0;
+  replayW = 0;
+  clearReplaySession();
+  noteReplayFootage();
 }
 
 function snapOneRef(r: Referee): ReplayRef {
@@ -22946,7 +23117,10 @@ function recordReplay(force = false): void {
     hud: snapHud(),
   };
   replayW = (replayW + 1) % REPLAY_CAP;
-  if (replayN < REPLAY_CAP) replayN++;
+  if (replayN < REPLAY_CAP) {
+    replayN++;
+    if (replayN === 12) noteReplayFootage();
+  }
   pushInstantTail(replayBuf[(replayW + REPLAY_CAP - 1) % REPLAY_CAP]!);
 }
 
@@ -23138,6 +23312,16 @@ function replaySpan(): number {
 
 export function replayFootagePct(): number {
   return replayPct;
+}
+
+/** Frame index the pause-replay scrubber is showing. 0 is the first stored frame. */
+export function replayFrameNow(): number {
+  return replayShownFrame;
+}
+
+function replayPlayIndex(): number {
+  if (!replayPlay.length) return 0;
+  return Math.min(replayPlay.length - 1, Math.max(0, Math.floor(world.replayT * 60)));
 }
 
 /** Jump the pause replay to a fraction of the footage. 0 is the first frame, 1 is the last. */
@@ -23383,8 +23567,10 @@ function publishReplayPct(): void {
   const span = replaySpan();
   const next = span <= 1e-8 ? 1 : Math.max(0, Math.min(1, world.replayT / span));
   const q = Math.round(next * 1000) / 1000;
-  if (q === replayPct) return;
+  const frame = replayPlayIndex();
+  if (q === replayPct && frame === replayShownFrame) return;
   replayPct = q;
+  replayShownFrame = frame;
   for (const fn of replayPctListeners) fn();
 }
 
@@ -23408,6 +23594,7 @@ function endReplay(): void {
   }
   replayN = 0;
   replayW = 0;
+  noteReplayFootage();
   pauseHold = null;
   resetWorld({ keepScore: true });
   restoreGoalBoards();
@@ -23416,6 +23603,28 @@ function endReplay(): void {
 
 export function replayHasFootage(): boolean {
   return replayN >= 12;
+}
+
+/** Frames stored in the rolling buffer, including footage from earlier games. */
+export function replayBufferFrames(): number {
+  return replayN;
+}
+
+const replayFootageListeners = new Set<() => void>();
+let replayFootageReady = false;
+
+function noteReplayFootage(): void {
+  const ready = replayN >= 12;
+  if (ready === replayFootageReady) return;
+  replayFootageReady = ready;
+  for (const fn of replayFootageListeners) fn();
+}
+
+export function subscribeReplayFootage(listener: () => void): () => void {
+  replayFootageListeners.add(listener);
+  return () => {
+    replayFootageListeners.delete(listener);
+  };
 }
 
 export function beginJumboReplay(): void {
@@ -25959,7 +26168,7 @@ function stepMatchEnd(dt: number): void {
     return;
   }
   matchEndHold = Math.max(0, matchEndHold - clockDt(dt));
-  if (matchEndHold <= 0 && !useGame.getState().paused) resetWorld();
+  if (matchEndHold <= 0 && !useGame.getState().paused) resetWorld({ keepReplay: true });
 }
 
 const SHOOTOUT_APPROACH_S = 0.85;

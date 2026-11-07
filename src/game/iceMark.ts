@@ -59,7 +59,29 @@ export function basisFromCameraElements(e: ArrayLike<number>): { rx: number; rz:
  * One stick step on the ice, in the camera basis.
  * Full deflection of stick-up with fx 1 and fz 0 is world +X.
  * Stick-right with rx 0 and rz 1 is world +Z.
- * Speed is `radius * 0.9` metres per second, before the basis is applied.
+ * A diagonal is the same metres per second as a cardinal. A half stick is half speed.
+ */
+export function iceBasisMove(
+  dt: number,
+  metersPerSecond: number,
+  ix: number,
+  iy: number,
+  basis: { rx: number; rz: number; fx: number; fz: number },
+): { dx: number; dz: number } | null {
+  if (!(dt > 0) || !(metersPerSecond > 0)) return null;
+  const mag = Math.hypot(ix, iy);
+  if (mag < 1e-8) return null;
+  const x = mag > 1 ? ix / mag : ix;
+  const y = mag > 1 ? iy / mag : iy;
+  const dx = basis.rx * x + basis.fx * y;
+  const dz = basis.rz * x + basis.fz * y;
+  if (!Number.isFinite(dx) || !Number.isFinite(dz)) return null;
+  const scale = metersPerSecond * dt;
+  return { dx: dx * scale, dz: dz * scale };
+}
+
+/**
+ * Free ice X step. Speed is `radius * 0.9` metres per second, before the basis is applied.
  */
 export function iceBasisStep(
   dt: number,
@@ -68,16 +90,8 @@ export function iceBasisStep(
   iy: number,
   basis: { rx: number; rz: number; fx: number; fz: number },
 ): { dx: number; dz: number } | null {
-  if (!(dt > 0) || !(radius > 0)) return null;
-  const mag = Math.hypot(ix, iy);
-  if (mag < 1e-8) return null;
-  const x = mag > 1 ? ix / mag : ix;
-  const y = mag > 1 ? iy / mag : iy;
-  const dx = basis.rx * x + basis.fx * y;
-  const dz = basis.rz * x + basis.fz * y;
-  if (!Number.isFinite(dx) || !Number.isFinite(dz)) return null;
-  const scale = markMetersPerSecond(radius) * dt;
-  return { dx: dx * scale, dz: dz * scale };
+  if (!(radius > 0)) return null;
+  return iceBasisMove(dt, markMetersPerSecond(radius), ix, iy, basis);
 }
 
 /** Shadow center. Falls back to the skater root before the mesh has posed. */

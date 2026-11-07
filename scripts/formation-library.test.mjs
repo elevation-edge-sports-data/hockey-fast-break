@@ -48,6 +48,13 @@ const {
   writeAdjustedPositions,
   formationSideOf,
   partitionFormationLibrary,
+  libraryRemoveFile,
+  libraryStateAfterDelete,
+  repoJsonName,
+  retiredNamesForFile,
+  nextAfterLeftRemove,
+  readRetiredFormations,
+  writeRetiredFormations,
   applyReplayPose,
   freshFormHist,
   openFormGesture,
@@ -58,10 +65,17 @@ const {
   formYawToward,
   formLocalOffset,
   formWorldOffset,
+  LOCK_SLIDE_MPS,
+  lockedReplayIndex,
+  restoreFormationFrame,
 } = lib;
+const { formationDownloadBody, formationDownloadName } = await server.ssrLoadModule(
+  "/src/game/formationDownload.ts",
+);
 const replayLib = await server.ssrLoadModule("/src/game/replayLibrary.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
-const { readReplayLibrary, writeReplayLibrary, partitionReplayLibrary, replayClipFromFile } = replayLib;
+const { readReplayLibrary, writeReplayLibrary, partitionReplayLibrary, replayClipFromFile } =
+  replayLib;
 const { gameSpeedRate } = store;
 const mark = await server.ssrLoadModule("/src/game/iceMark.ts");
 const { world } = sim;
@@ -137,7 +151,11 @@ test("a frame opens on the classic angle and an adjusted orbit stays put", () =>
 test("import stores each frame and the rink shows the adjusted side", () => {
   mem.clear();
   let n = 0;
-  const entries = entriesFromFile("replay-0-2.json", JSON.stringify([frame, { ...frame, frame: 20, time: 1 }]), () => `id-${n++}`);
+  const entries = entriesFromFile(
+    "replay-0-2.json",
+    JSON.stringify([frame, { ...frame, frame: 20, time: 1 }]),
+    () => `id-${n++}`,
+  );
   assert.equal(entries.length, 2);
   assert.equal(entries[0].name, "replay-0-2.json · 12");
   assert.equal(entries[1].name, "replay-0-2.json · 20");
@@ -179,8 +197,22 @@ test("import stores each frame and the rink shows the adjusted side", () => {
 
 test("a recorded side, kind, and jersey are shown, and a bad one is rejected", () => {
   const tagged = structuredClone(frame);
-  tagged.adjusted.players[0] = { ...tagged.adjusted.players[0], x: 0, z: 0, side: "away", kind: "defense", number: 7 };
-  tagged.adjusted.players[1] = { ...tagged.adjusted.players[1], x: 1, z: 1, side: "home", kind: "goalie", number: 41 };
+  tagged.adjusted.players[0] = {
+    ...tagged.adjusted.players[0],
+    x: 0,
+    z: 0,
+    side: "away",
+    kind: "defense",
+    number: 7,
+  };
+  tagged.adjusted.players[1] = {
+    ...tagged.adjusted.players[1],
+    x: 1,
+    z: 1,
+    side: "home",
+    kind: "goalie",
+    number: 41,
+  };
   const parsed = parseFormationJson(JSON.stringify(tagged));
   assert.equal(parsed[0].adjusted.players[0].side, "away");
   assert.equal(parsed[0].adjusted.players[0].kind, "defense");
@@ -252,7 +284,13 @@ test("a recorded pose is shown, and an older frame without one still parses", ()
     const landed = sampleReplay([parsed[0], next], 1);
     assert.equal(landed.players[0].pose, "goalieMid");
     applyReplayPose(landed.players, landed.puck);
-    assert.equal(inferNamedPose(world.skaters.find((s) => s.id === goalie.id), goalie.id), "goalieMid");
+    assert.equal(
+      inferNamedPose(
+        world.skaters.find((s) => s.id === goalie.id),
+        goalie.id,
+      ),
+      "goalieMid",
+    );
   } finally {
     release();
   }
@@ -319,11 +357,22 @@ test("the ice X uses the pause-replay zoom speed and the shadow center", () => {
   const root = mark.rootForShadow(5, 1, 0.35, -0.2, 0, 0);
   assert.ok(Math.abs(root.x - 4.65) < 1e-9);
   assert.ok(Math.abs(root.z - 1.2) < 1e-9);
-  const hit = mark.nearestMark(0.2, 0.1, [{ x: 0, z: 0 }, { x: 3, z: 0 }], { x: 2, z: 2 });
+  const hit = mark.nearestMark(
+    0.2,
+    0.1,
+    [
+      { x: 0, z: 0 },
+      { x: 3, z: 0 },
+    ],
+    { x: 2, z: 2 },
+  );
   assert.deepEqual(hit, { kind: "skater", index: 0 });
   assert.equal(mark.nearestMark(3, 3, [{ x: 0, z: 0 }], { x: 0, z: 0 }), null);
 
-  const view = readFileSync(join(repo, "src/game/FormationLibraryView.tsx"), "utf8");
+  const view = [
+    readFileSync(join(repo, "src/game/FormationLibraryView.tsx"), "utf8"),
+    readFileSync(join(repo, "src/game/FormationEdit.tsx"), "utf8"),
+  ].join("\n");
   const replay = readFileSync(join(repo, "src/game/ReplayViewerView.tsx"), "utf8");
   assert.match(view, /iceBasisStep/);
   assert.match(view, /hit\.kind === "ice"/);
@@ -350,7 +399,10 @@ test("the ice X uses the pause-replay zoom speed and the shadow center", () => {
   assert.doesNotMatch(replay, /cursorRef\.current \+= act\.stickX/);
   assert.equal(mark.cycleMarkLock(null, 2).kind, "puck");
   assert.deepEqual(mark.cycleMarkLock({ kind: "puck" }, 2), { kind: "skater", index: 0 });
-  assert.deepEqual(mark.cycleMarkLock({ kind: "skater", index: 0 }, 2), { kind: "skater", index: 1 });
+  assert.deepEqual(mark.cycleMarkLock({ kind: "skater", index: 0 }, 2), {
+    kind: "skater",
+    index: 1,
+  });
   assert.equal(mark.cycleMarkLock({ kind: "skater", index: 1 }, 2), null);
   assert.equal(mark.cycleMarkLock({ kind: "puck" }, 0), null);
   const turned = mark.orbitStick(1, 0.8, 1, 0.2, 1);
@@ -402,8 +454,14 @@ test("an import stays on the left until it is saved, and removing it leaves the 
   const imported = { id: "import-1", name: "slot.json", frame };
   const onDisk = { id: "bundled:formations/slot.json:0", name: "slot.json", frame };
   const open = partitionFormationLibrary([imported], [onDisk]);
-  assert.deepEqual(open.imported.map((entry) => entry.id), ["import-1"]);
-  assert.deepEqual(open.repo.map((entry) => entry.id), ["bundled:formations/slot.json:0"]);
+  assert.deepEqual(
+    open.imported.map((entry) => entry.id),
+    ["import-1"],
+  );
+  assert.deepEqual(
+    open.repo.map((entry) => entry.id),
+    ["bundled:formations/slot.json:0"],
+  );
 
   const written = { id: "bundled:formations/slot.json:0", name: "slot.json", frame };
   const saved = partitionFormationLibrary([], [onDisk], [written]);
@@ -415,6 +473,102 @@ test("an import stays on the left until it is saved, and removing it leaves the 
   assert.equal(removed.imported.length, 0);
   assert.equal(removed.repo.length, 1);
   assert.equal(removed.repo[0].id, onDisk.id);
+});
+
+test("remove unlinks a repo file from either panel and leaves a never-saved import", () => {
+  const onDisk = { id: "bundled:formations/slot.json:0", name: "slot.json", frame };
+  const other = { id: "bundled:../../formations/range.json:1", name: "range.json · 12", frame };
+  const otherFrame = {
+    id: "bundled:../../formations/range.json:2",
+    name: "range.json · 13",
+    frame,
+  };
+  const imported = { id: "import-1", name: "slot.json", frame };
+  const moved = { id: "moved-1", name: "old.json", frame };
+  const rows = [onDisk, other, otherFrame, imported, moved];
+  assert.equal(repoJsonName(other.id, other.name), "range.json");
+  assert.equal(repoJsonName("import-2", "notes"), "notes.json");
+  assert.equal(libraryRemoveFile(onDisk, rows, []), "slot.json");
+  assert.equal(libraryRemoveFile(other, rows, []), "range.json");
+  assert.equal(libraryRemoveFile(imported, rows, []), null);
+  assert.equal(libraryRemoveFile(moved, rows, ["old.json"]), "old.json");
+  assert.deepEqual(
+    lib.retiredRepoFiles(
+      ["slot.json", "range.json · 12"],
+      [onDisk, other, otherFrame, imported],
+    ),
+    ["slot.json", "range.json"],
+  );
+  assert.deepEqual(lib.retiredRepoFiles(["replay-183-301.json"], [imported]), []);
+
+  const dropped = libraryStateAfterDelete([], [onDisk], [], rows, onDisk.id, "slot.json");
+  assert.equal(dropped.saved.length, 0);
+  assert.ok(dropped.retired.includes("slot.json"));
+  const hidden = partitionFormationLibrary(
+    [imported],
+    [onDisk, other, otherFrame],
+    dropped.saved,
+    dropped.retired,
+  );
+  assert.deepEqual(
+    hidden.repo.map((entry) => entry.id),
+    [other.id, otherFrame.id],
+  );
+  assert.deepEqual(
+    hidden.imported.map((entry) => entry.id),
+    ["import-1"],
+  );
+
+  const rangeRetired = retiredNamesForFile(rows, [], "range.json");
+  assert.ok(rangeRetired.includes("range.json"));
+  assert.ok(rangeRetired.includes("range.json · 12"));
+  assert.ok(rangeRetired.includes("range.json · 13"));
+  const rangeGone = partitionFormationLibrary([], [other, otherFrame], [], rangeRetired);
+  assert.equal(rangeGone.repo.length, 0);
+
+  const kept = libraryStateAfterDelete(
+    [imported, moved],
+    [],
+    ["old.json"],
+    rows,
+    moved.id,
+    "old.json",
+  );
+  assert.deepEqual(
+    kept.local.map((entry) => entry.id),
+    ["import-1"],
+  );
+  writeRetiredFormations(kept.retired);
+  assert.ok(readRetiredFormations().includes("old.json"));
+  writeRetiredFormations([]);
+
+  const left = [{ id: "a" }, { id: "b" }, { id: "c" }];
+  const right = [{ id: "r1" }, { id: "r2" }];
+  assert.equal(nextAfterLeftRemove(left, right, () => 0).id, "a");
+  assert.equal(nextAfterLeftRemove(left, right, () => 0.99).id, "c");
+  assert.equal(nextAfterLeftRemove([], right, () => 0).id, "r1");
+  assert.equal(nextAfterLeftRemove([], right, () => 0.5).id, "r2");
+  assert.equal(
+    nextAfterLeftRemove([], [], () => 0.2),
+    null,
+  );
+  const seen = new Set();
+  for (let i = 0; i < 80; i++) seen.add(nextAfterLeftRemove(left, right).id);
+  assert.ok(seen.has("a") && seen.has("b") && seen.has("c"));
+  assert.equal(
+    [...seen].every((id) => id === "a" || id === "b" || id === "c"),
+    true,
+  );
+
+  const view = readFileSync(join(repo, "src/game/FormationLibraryView.tsx"), "utf8");
+  assert.ok(view.indexOf("Import frame") < view.indexOf('className="formation-side"'));
+  assert.match(view, /formation-top-center/);
+  assert.match(view, /nextAfterLeftRemove/);
+  assert.match(view, /deleteRepoJson\("formations"/);
+  assert.equal((view.match(/void remove\(chosen\.id\)/g) ?? []).length, 2);
+  assert.doesNotMatch(view, /moveRepoToLeft/);
+  assert.match(view, /imported\.length > 0 \?/);
+  assert.match(view, /repo\.length > 0 \?/);
 });
 
 test("undo and redo restore a slide and a turn", () => {
@@ -488,19 +642,45 @@ test("replay playback uses the in-game game-speed clock and the formation save l
   assert.match(replay, /Load replay/);
   assert.doesNotMatch(replay, /Open replay/);
   assert.doesNotMatch(replay, /\{clip\.name\}/);
+  assert.doesNotMatch(replay, /playing \? "Pause" : "Play"/);
+  assert.doesNotMatch(replay, /Saved \$\{/);
+  assert.doesNotMatch(replay, /Removed \$\{/);
+  assert.match(replay, /deleteRepoJson\("replays"/);
+  assert.equal((replay.match(/void remove\(chosen\.id\)/g) ?? []).length, 2);
+  assert.doesNotMatch(replay, /moveRepoToLeft/);
+  const helper = readFileSync(join(repo, "src/game/formationLibrary.ts"), "utf8");
+  assert.match(helper, /method: "DELETE"/);
+  assert.match(helper, /Vite restart is required for the glob to drop the file completely/);
+  assert.match(replay, /aria-label="Play\/pause"/);
+  assert.match(replay, /Fast rewind/);
+  assert.match(replay, /formation-top-center/);
+  assert.ok(replay.indexOf("Load replay") < replay.indexOf('className="formation-side"'));
+  assert.match(replay, /imported\.length > 0 \?/);
+  assert.match(replay, /repo\.length > 0 \?/);
   assert.match(replay, /aria-label="Loaded replay name"/);
   assert.match(replay, /aria-label="Replay file name"/);
   assert.match(replay, /\/api\/replays/);
   assert.match(replay, />\s*Rename\s*</);
   assert.match(replay, /formation-repo/);
-  assert.match(replay, /void removeRepo\(chosen\.id\)/);
-  assert.match(replay, /method: "DELETE"/);
-  assert.match(overlay, /\{playing && !paused \? null : \(\s*<div className="uni-banner">/);
+  assert.match(overlay, /className="play-top"/);
+  assert.match(overlay, /Elevation Edge Sports Data/);
+  assert.match(overlay, /Hockey Fast Break \(V4\)/);
+  assert.match(
+    overlay,
+    /\{playing && !paused \? null : hudReady \? \(\s*<>\s*<span className="play-gap" aria-hidden="true" \/>\s*<FormationKits \/>/,
+  );
+  assert.match(overlay, /className=\{`play-lineups\$\{lineupsFit \? "" : " is-hidden"\}`\}/);
+  assert.doesNotMatch(overlay, /className="uni-banner"/);
   assert.doesNotMatch(overlay, /\(playing && !paused\) \|\| replay \? null/);
   assert.match(
     css,
-    /\.formation-lib \{\s*display: grid;\s*grid-template-columns: 280px minmax\(0, 1fr\) 280px;\s*grid-template-rows: auto minmax\(0, 1fr\);\s*grid-template-areas:\s*"top top top"\s*"side stage repo";/,
+    /\.formation-lib \{\s*display: grid;\s*grid-template-columns: min\(280px, 25%\) minmax\(50%, 1fr\) min\(280px, 25%\);\s*grid-template-rows: auto minmax\(0, 1fr\);\s*grid-template-areas:\s*"top top top"\s*"side stage repo";/,
   );
+  assert.match(
+    css,
+    /@container \(max-width: 220px\) \{\s*\.formation-save,\s*\.formation-version \{\s*flex-direction: column;/,
+  );
+  assert.match(css, /\.formation-top-center \{\s*justify-self: center;/);
   assert.doesNotMatch(css, /grid-template-areas:\s*"top top"\s*"side stage"/);
 });
 
@@ -518,4 +698,68 @@ test("playback writes lerped spots onto the mounted roster and marks the control
   assert.equal(world.userId, 0);
   release();
   world.userId = prev;
+});
+
+test("locked-frame download keeps original and adjusted, matching the in-game replay", () => {
+  assert.equal(LOCK_SLIDE_MPS, 4);
+  const simSrc = readFileSync(join(repo, "src/game/sim.ts"), "utf8");
+  assert.match(simSrc, /const REPLAY_EDIT_SPEED = 4/);
+  const slide = mark.iceBasisMove(1, LOCK_SLIDE_MPS, 0, 1, { rx: 0, rz: 1, fx: 1, fz: 0 });
+  assert.equal(slide.dx, 4);
+  assert.equal(slide.dz, 0);
+  assert.equal(lockedReplayIndex(4.8, 10), 4);
+  assert.equal(lockedReplayIndex(-2, 10), 0);
+  assert.equal(lockedReplayIndex(40, 3), 2);
+
+  const shot = structuredClone(frame);
+  shot.frame = 1107;
+  shot.userId = 1;
+  const body = formationDownloadBody(shot);
+  assert.equal(body, JSON.stringify(shot, null, 2) + "\n");
+  assert.equal(formationDownloadName(shot.frame), "replay-frame-1107.json");
+  const parsed = JSON.parse(body);
+  assert.equal(parsed.original.players[0].x, shot.original.players[0].x);
+  assert.equal(parsed.adjusted.players[0].x, shot.adjusted.players[0].x);
+  assert.notEqual(parsed.original.players[0].x, parsed.adjusted.players[0].x);
+
+  const live = structuredClone(shot);
+  const base = structuredClone(shot);
+  const release = mountFormation(live.adjusted);
+  const prev = world.userId;
+  world.skaters[0].x += 2;
+  writeAdjustedPositions(live, "adjusted");
+  assert.equal(
+    live.adjusted.players.find((p) => p.id === world.skaters[0].id).x,
+    base.adjusted.players[0].x + 2,
+  );
+  assert.equal(live.original.players[0].x, base.original.players[0].x);
+  const saved = JSON.parse(formationDownloadBody(live));
+  assert.equal(saved.original.players[0].x, base.original.players[0].x);
+  assert.equal(saved.adjusted.players[0].x, base.adjusted.players[0].x + 2);
+  assert.equal(saved.userId, 1);
+  restoreFormationFrame(live, base);
+  assert.equal(live.adjusted.players[0].x, base.adjusted.players[0].x);
+  assert.equal(live.original.players[0].x, base.original.players[0].x);
+  release();
+  world.userId = prev;
+
+  const edit = readFileSync(join(repo, "src/game/FormationEdit.tsx"), "utf8");
+  const library = readFileSync(join(repo, "src/game/FormationLibraryView.tsx"), "utf8");
+  const replay = readFileSync(join(repo, "src/game/ReplayViewerView.tsx"), "utf8");
+  const overlay = readFileSync(join(repo, "src/game/Overlay.tsx"), "utf8");
+  assert.match(edit, /iceBasisMove\(dt, LOCK_SLIDE_MPS/);
+  assert.match(edit, /iceBasisStep\(\s*dt,\s*viewRadius\.current/);
+  assert.match(edit, /writeAdjustedPositions\(frame, viewRef\.current\)/);
+  assert.match(library, /Download formation/);
+  assert.match(library, /downloadFormationFrame\(chosen\.frame\)/);
+  assert.match(library, /<FormationMarkDriver/);
+  assert.match(replay, /Edit formation/);
+  assert.match(replay, /"Revert"/);
+  assert.match(replay, /Download formation/);
+  assert.match(replay, /downloadFormationFrame\(frame\)/);
+  assert.match(replay, /<FormationMarkDriver/);
+  assert.match(replay, /restoreFormationFrame/);
+  assert.match(replay, /lockedReplayIndex/);
+  assert.match(overlay, /downloadFormationFrame\(data\)/);
+  assert.match(overlay, /Download formation/);
 });

@@ -4,8 +4,9 @@
  * after the puck has gone past them.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
@@ -296,4 +297,158 @@ test("an opponent rush still switches to the skater who can cut the lane", () =>
   world.lastShoot = -10;
   pressSwitch();
   assert.equal(world.userId, rd.id);
+});
+
+const clearReplay = JSON.parse(
+  readFileSync(join(repo, "dev/reference/replay-1594-1755.json"), "utf8"),
+);
+
+function replayFrame(frame) {
+  const row = clearReplay.find((f) => f.frame === frame);
+  assert.ok(row, `frame ${frame}`);
+  return row;
+}
+
+/** Place one clear frame and the puck velocity into the next frame. */
+function placeClearFrame(frame) {
+  fresh();
+  const row = replayFrame(frame);
+  const next = replayFrame(frame + 1);
+  const dt = next.time - row.time || 1 / 60;
+  for (const p of row.original.players) {
+    const s = world.skaters[p.id];
+    assert.ok(s, `skater ${p.id}`);
+    park(s, p.x, p.z);
+    s.yaw = p.yaw;
+    const q = next.original.players.find((o) => o.id === p.id);
+    s.vx = q ? (q.x - p.x) / dt : 0;
+    s.vz = q ? (q.z - p.z) / dt : 0;
+  }
+  const puck = row.original.puck;
+  const puckNext = next.original.puck;
+  world.puck.owner = null;
+  world.puck.x = puck.x;
+  world.puck.z = puck.z;
+  world.puck.y = 0.04;
+  world.puck.vx = (puckNext.x - puck.x) / dt;
+  world.puck.vz = (puckNext.z - puck.z) / dt;
+  world.puck.vy = 0;
+  world.userId = 4;
+  world.time = row.time;
+  world.lastPass = replayFrame(1596).time;
+  world.lastShoot = -10;
+  world.lastPassTo = null;
+  world.lastPasser = 6;
+  world.lastShooter = null;
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.faceoffA = false;
+  world.stoppage = false;
+  world.whistle = null;
+}
+
+test("an opposing goalie clear on the right switches to the home RD", () => {
+  const rd = () => world.skaters.find((s) => s.side === "home" && s.number === 8);
+  for (const frame of [1596, 1598, 1608, 1654, 1683, 1710, 1734]) {
+    placeClearFrame(frame);
+    const right = rd();
+    assert.ok(right);
+    assert.notEqual(world.userId, right.id);
+    pressSwitch();
+    assert.equal(world.puck.owner, null, `frame ${frame} picked the puck up`);
+    assert.equal(world.userId, right.id, `frame ${frame} switched to ${world.userId}`);
+  }
+});
+
+test("a clear up the left switches to the home LD, not the nearer forward or the RD", () => {
+  fresh();
+  const [ld, rd] = homeDefs();
+  const near = world.skaters.find(
+    (s) => s.side === "home" && s.kind === "winger" && s.id !== world.userId,
+  );
+  assert.ok(ld && rd && near);
+  park(user(), -20, -2);
+  world.puck.owner = null;
+  world.puck.x = -24;
+  world.puck.z = 0.3;
+  world.puck.y = 0.04;
+  world.puck.vx = 32;
+  world.puck.vz = 18;
+  world.puck.vy = 0;
+  world.time = 10;
+  world.lastPass = world.time;
+  world.lastPassTo = near.id;
+  world.lastShoot = -10;
+  world.lastShooter = null;
+  park(near, -18, 3);
+  park(ld, -6, 8);
+  park(rd, -8, -6);
+  let slot = 0;
+  for (const s of world.skaters) {
+    if (s.id === user().id || s.id === near.id || s.id === ld.id || s.id === rd.id) continue;
+    slot += 1;
+    park(s, 22, -8 + slot);
+  }
+  pressSwitch();
+  assert.equal(world.userId, ld.id);
+  assert.notEqual(world.userId, near.id);
+  assert.notEqual(world.userId, rd.id);
+});
+
+test("a goalie clear still prefers the RD when the pass window names another skater", () => {
+  placeClearFrame(1600);
+  const rd = world.skaters.find((s) => s.side === "home" && s.number === 8);
+  const named = world.skaters.find((s) => s.id === 5);
+  assert.ok(rd && named);
+  world.lastPassTo = named.id;
+  pressSwitch();
+  assert.equal(world.userId, rd.id);
+  assert.notEqual(world.userId, named.id);
+});
+
+test("a goalie length shot, with no live pass, still switches to the side defenseman", () => {
+  placeClearFrame(1600);
+  const rd = world.skaters.find((s) => s.side === "home" && s.number === 8);
+  const awayG = world.skaters.find((s) => s.side === "away" && s.kind === "goalie");
+  assert.ok(rd && awayG);
+  world.lastPass = -10;
+  world.lastPassTo = null;
+  world.lastShoot = world.time;
+  world.lastShooter = awayG.id;
+  pressSwitch();
+  assert.equal(world.userId, rd.id);
+});
+
+test("a slower clear that is not a rush still prefers the side defenseman over the nearest forward", () => {
+  fresh();
+  const [ld, rd] = homeDefs();
+  const near = world.skaters.find(
+    (s) => s.side === "home" && s.kind === "winger" && s.id !== world.userId,
+  );
+  assert.ok(ld && rd && near);
+  park(user(), -22, 1);
+  world.puck.owner = null;
+  world.puck.x = -18;
+  world.puck.z = -3;
+  world.puck.y = 0.04;
+  world.puck.vx = 2.5;
+  world.puck.vz = -1.2;
+  world.puck.vy = 0;
+  world.lastPass = -10;
+  world.lastPassTo = null;
+  world.lastShoot = -10;
+  world.lastShooter = null;
+  park(near, -16.2, -2.2);
+  park(ld, -8, 7);
+  park(rd, -6, -8.5);
+  let slot = 0;
+  for (const s of world.skaters) {
+    if (s.id === user().id || s.id === near.id || s.id === ld.id || s.id === rd.id) continue;
+    slot += 1;
+    park(s, 20, -10 + slot);
+  }
+  pressSwitch();
+  assert.equal(world.userId, rd.id);
+  assert.notEqual(world.userId, near.id);
+  assert.notEqual(world.userId, ld.id);
 });

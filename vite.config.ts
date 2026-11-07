@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 // @ts-expect-error JS helper alongside the TS vite config
-import { saveFormationFile } from "./scripts/formation-save.mjs";
+import { deleteFormationFile, saveFormationFile } from "./scripts/formation-save.mjs";
 // @ts-expect-error JS helper alongside the TS vite config
 import { deleteReplayFile, saveReplayFile } from "./scripts/replay-save.mjs";
 import { extname, isAbsolute, join, relative } from "node:path";
@@ -34,7 +34,11 @@ function formationsSavePlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const pathOnly = (req.url ?? "").split("?", 1)[0] ?? "";
-        if (pathOnly === "/api/replays" && req.method === "DELETE") {
+        // DELETE unlinks the repo file. The eager glob still lists it until a Vite restart.
+        if (
+          (pathOnly === "/api/replays" || pathOnly === "/api/formations") &&
+          req.method === "DELETE"
+        ) {
           const chunks: Buffer[] = [];
           let tooBig = false;
           req.on("data", (chunk: Buffer) => {
@@ -49,14 +53,17 @@ function formationsSavePlugin(): Plugin {
             }
             try {
               const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { name?: unknown };
-              const name = deleteReplayFile(server.config.root, body.name);
+              const name =
+                pathOnly === "/api/replays"
+                  ? deleteReplayFile(server.config.root, body.name)
+                  : deleteFormationFile(server.config.root, body.name);
               res.statusCode = 200;
               res.setHeader("Content-Type", "application/json");
               res.end(JSON.stringify({ name }));
             } catch {
               res.statusCode = 400;
               res.setHeader("Content-Type", "text/plain");
-              res.end("bad replay");
+              res.end(pathOnly === "/api/replays" ? "bad replay" : "bad formation");
             }
           });
           return;

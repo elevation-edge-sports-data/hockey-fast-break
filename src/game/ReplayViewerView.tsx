@@ -1,13 +1,35 @@
 import { Canvas, useFrame } from "@react-three/fiber";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import * as THREE from "three";
-import { FormationKits } from "./FormationLibraryView";
+import { applyFormEdit, FormationMarkDriver, takeFormationPick } from "./FormationEdit";
+import { FormationKits } from "./FormationKits";
+import { downloadFormationFrame } from "./formationDownload";
 import {
   applyReplayPose,
   controlledSkaterIndex,
+  formUndoDepth,
+  deleteRepoJson,
+  freshFormHist,
+  libraryRemoveFile,
+  libraryStateAfterDelete,
+  retiredRepoFiles,
+  lockedReplayIndex,
   mountFormation,
+  redoFormEdit,
+  repoJsonName,
+  restoreFormationFrame,
   sampleReplay,
+  undoFormEdit,
+  type FormHist,
   type FormationFrame,
+  type FormationView,
 } from "./formationLibrary";
 import { IceCross } from "./IceCross";
 import { attachInput, gamepadFaceDown, readActions, windowHasInputFocus } from "./input";
@@ -25,7 +47,8 @@ import { PlayerMesh, PuckMesh } from "./PlayerMesh";
 import { inferNamedPose } from "./poseOverrideInfer";
 import { setPoseInfer } from "./poseOverrides";
 import { Rink } from "./Rink.tsx";
-import { RinkOrbitCamera, seedFormationOrbit, type RinkPick } from "./RinkOrbitCamera";
+import { claimReplayFreestyle, REPLAY_CAMS } from "./replayCameras";
+import { RinkOrbitCamera, type RinkPick } from "./RinkOrbitCamera";
 import {
   bundledReplayEntries,
   partitionReplayLibrary,
@@ -37,7 +60,7 @@ import {
   type ReplayClip,
 } from "./replayLibrary";
 import { world } from "./sim";
-import { gameSpeedRate, useGame } from "./store";
+import { gameSpeedRate, useGame, type CamMode } from "./store";
 
 setPoseInfer(inferNamedPose);
 
@@ -82,7 +105,15 @@ function snapMark(mark: IceMark): void {
   mark.z = at.z;
 }
 
-/** Gamepad Y with the stick centered: puck, then each player, then the free X. */
+/**
+ * A replay opens locked on the puck in every camera mode.
+ * A later pan, ice click, or Y tap can leave that lock.
+ */
+function openReplayMark(x: number, z: number): IceMark {
+  return { x, z, lock: { kind: "puck" }, driven: false };
+}
+
+/** Gamepad Y with the stick centered: next player, then the free X, then the puck again. */
 function cycleViewerLock(mark: IceMark): void {
   mark.lock = cycleMarkLock(mark.lock, world.skaters.length);
   mark.driven = false;
@@ -140,6 +171,10 @@ function ReplayDriver({
   sliderRef,
   shuttleRef,
   togglePlayRef,
+  camModeRef,
+  setCamMode,
+  eyeRef,
+  lockedRef,
 }: {
   frames: readonly FormationFrame[];
   cursorRef: MutableRefObject<number>;
@@ -155,19 +190,29 @@ function ReplayDriver({
   sliderRef: MutableRefObject<HTMLElement | null>;
   shuttleRef: MutableRefObject<number>;
   togglePlayRef: MutableRefObject<() => void>;
+  camModeRef: MutableRefObject<CamMode>;
+  setCamMode: (mode: CamMode) => void;
+  eyeRef: MutableRefObject<{ x: number; y: number; z: number } | null>;
+  lockedRef: MutableRefObject<boolean>;
 }) {
   const framesRef = useRef(frames);
+  const setCamModeRef = useRef(setCamMode);
   const yMoved = useRef(false);
   const yHeld = useRef(false);
   /** True while the gesture that drove the X onto a body is still held. */
   const approachLock = useRef(false);
   framesRef.current = frames;
+  setCamModeRef.current = setCamMode;
 
   useEffect(() => attachInput(window), []);
 
   useFrame((_, rawDt) => {
-    const dt = Math.min(rawDt, 0.1);
     const clip = framesRef.current;
+    if (lockedRef.current) {
+      paintBar(fillRef.current, labelRef.current, sliderRef.current, cursorRef.current, clip);
+      return;
+    }
+    const dt = Math.min(rawDt, 0.1);
     const last = Math.max(0, clip.length - 1);
     const act = readActions();
     const typing = editingText();
@@ -212,8 +257,21 @@ function ReplayDriver({
       if (!yDown) yMoved.current = false;
       yHeld.current = yDown;
     } else {
+      const armOrbit = () => {
+        const next = claimReplayFreestyle({
+          mode: camModeRef.current,
+          adjusted,
+          orbit: orbit.current,
+          look: lookOf(mark.current),
+          eye: eyeRef.current,
+        });
+        if (next !== camModeRef.current) {
+          camModeRef.current = next;
+          setCamModeRef.current(next);
+        }
+      };
       if (!typing && (act.zoomIn || act.zoomOut)) {
-        seedFormationOrbit(lookOf(mark.current), orbit.current, adjusted);
+        armOrbit();
         const o = orbit.current;
         if (act.zoomIn) o.radius = Math.max(RADIUS_MIN, o.radius - 18 * dt);
         if (act.zoomOut) o.radius = Math.min(RADIUS_MAX, o.radius + 18 * dt);
@@ -221,8 +279,14 @@ function ReplayDriver({
       if (yDown) {
         if (Math.hypot(act.stickX, act.stickY) > MARK_STICK_GATE) yMoved.current = true;
         if (yMoved.current) {
-          seedFormationOrbit(lookOf(mark.current), orbit.current, adjusted);
-          const turned = orbitStick(orbit.current.theta, orbit.current.phi, act.stickX, act.stickY, dt);
+          armOrbit();
+          const turned = orbitStick(
+            orbit.current.theta,
+            orbit.current.phi,
+            act.stickX,
+            act.stickY,
+            dt,
+          );
           orbit.current.theta = turned.theta;
           orbit.current.phi = turned.phi;
         }
@@ -292,6 +356,14 @@ function ReplayStage({
   sliderRef,
   shuttleRef,
   togglePlayRef,
+  camModeRef,
+  setCamMode,
+  adjusted,
+  locked,
+  lockedRef,
+  frameRef,
+  hist,
+  onDepth,
 }: {
   frames: readonly FormationFrame[];
   cursorRef: MutableRefObject<number>;
@@ -303,14 +375,25 @@ function ReplayStage({
   sliderRef: MutableRefObject<HTMLElement | null>;
   shuttleRef: MutableRefObject<number>;
   togglePlayRef: MutableRefObject<() => void>;
+  camModeRef: MutableRefObject<CamMode>;
+  setCamMode: (mode: CamMode) => void;
+  adjusted: MutableRefObject<boolean>;
+  locked: boolean;
+  lockedRef: MutableRefObject<boolean>;
+  frameRef: MutableRefObject<FormationFrame | null>;
+  hist: MutableRefObject<FormHist>;
+  onDepth: (undo: number, redo: number) => void;
 }) {
   const homeKit = useGame((s) => s.homeKit);
   const awayKit = useGame((s) => s.awayKit);
   const [rev, setRev] = useState(0);
   const orbit = useRef({ theta: 0, phi: 0.97, radius: 16 });
-  const adjusted = useRef(false);
   const viewRadius = useRef(16);
   const basis = useRef({ rx: 0, rz: 1, fx: 1, fz: 0 });
+  const eyeRef = useRef<{ x: number; y: number; z: number } | null>(null);
+  const editView = useRef<FormationView>("adjusted");
+  const onDepthRef = useRef(onDepth);
+  onDepthRef.current = onDepth;
   useLayoutEffect(() => {
     const first = frames[0];
     if (!first) return;
@@ -319,7 +402,7 @@ function ReplayStage({
     const sample = sampleReplay(frames, cursorRef.current);
     applyReplayPose(sample.players, sample.puck);
     world.userId = controlledSkaterIndex(sample, sample.players);
-    mark.current = { x: sample.puck.x, z: sample.puck.z, lock: null, driven: false };
+    mark.current = openReplayMark(sample.puck.x, sample.puck.z);
     setRev((n) => n + 1);
     return () => {
       release();
@@ -329,6 +412,10 @@ function ReplayStage({
 
   const onPick = (hit: RinkPick) => {
     const cursor = mark.current;
+    if (lockedRef.current) {
+      takeFormationPick(cursor, hit);
+      return;
+    }
     if (hit.kind === "ice") {
       cursor.lock = null;
       cursor.x = hit.x;
@@ -372,7 +459,38 @@ function ReplayStage({
         sliderRef={sliderRef}
         shuttleRef={shuttleRef}
         togglePlayRef={togglePlayRef}
+        camModeRef={camModeRef}
+        setCamMode={setCamMode}
+        eyeRef={eyeRef}
+        lockedRef={lockedRef}
       />
+      {locked ? (
+        <FormationMarkDriver
+          mark={mark}
+          frameRef={frameRef}
+          hist={hist}
+          viewRef={editView}
+          onDepth={(undo, redo) => onDepthRef.current(undo, redo)}
+          orbit={orbit}
+          adjusted={adjusted}
+          viewRadius={viewRadius}
+          basis={basis}
+          activeRef={lockedRef}
+          armOrbit={() => {
+            const next = claimReplayFreestyle({
+              mode: camModeRef.current,
+              adjusted,
+              orbit: orbit.current,
+              look: lookOf(mark.current),
+              eye: eyeRef.current,
+            });
+            if (next !== camModeRef.current) {
+              camModeRef.current = next;
+              setCamMode(next);
+            }
+          }}
+        />
+      ) : null}
       {world.skaters.map((s, i) => (
         <PlayerMesh
           key={`${rev}-${i}-${s.id}-${s.side === "home" ? homeKit : awayKit}`}
@@ -401,15 +519,29 @@ function ReplayStage({
         viewRadius={viewRadius}
         basis={basis}
         onPick={onPick}
+        camModeRef={camModeRef}
+        onFreestyle={() => setCamMode("freestyle")}
+        eyeRef={eyeRef}
+        mark={mark}
       />
       <IceCross mark={mark} />
     </>
   );
 }
 
-function TransportIcon({ name }: { name: "fast-rewind" | "slow-rewind" | "play" | "pause" | "slow-forward" | "fast-forward" }) {
+function TransportIcon({
+  name,
+}: {
+  name: "fast-rewind" | "slow-rewind" | "play" | "pause" | "slow-forward" | "fast-forward";
+}) {
   return (
-    <svg className="replay-transport-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+    <svg
+      className="replay-transport-icon"
+      viewBox="0 0 24 24"
+      width="22"
+      height="22"
+      aria-hidden="true"
+    >
       {name === "fast-rewind" ? (
         <>
           <polygon points="11 4 3 12 11 20" />
@@ -492,7 +624,11 @@ function ShuttleButton({
   );
 }
 
-function libraryEntries(saved: ReplayClip[] = [], retired: string[] = [], memory: ReplayClip[] = []): ReplayClip[] {
+function libraryEntries(
+  saved: ReplayClip[] = [],
+  retired: string[] = [],
+  memory: ReplayClip[] = [],
+): ReplayClip[] {
   const { imported, repo } = partitionReplayLibrary(memory, bundledReplayEntries(), saved, retired);
   return [...repo, ...imported];
 }
@@ -511,7 +647,11 @@ function ReplayList({
     <ul className="formation-list">
       {rows.map((entry) => (
         <li key={entry.id}>
-          <button type="button" className={entry.id === selected ? "is-on" : ""} onClick={() => onChoose(entry.id)}>
+          <button
+            type="button"
+            className={entry.id === selected ? "is-on" : ""}
+            onClick={() => onChoose(entry.id)}
+          >
             <b>{entry.name}</b>
           </button>
         </li>
@@ -528,12 +668,19 @@ export function ReplayViewerView() {
   const [importName, setImportName] = useState("");
   const [repoName, setRepoName] = useState("");
   const [playing, setPlaying] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [depth, setDepth] = useState({ undo: 0, redo: 0 });
   const [selected, setSelected] = useState<string | null>(
     () => libraryEntries([], readRetiredReplays(), readReplayLibrary())[0]?.id ?? null,
   );
   const playingRef = useRef(false);
+  const lockedRef = useRef(false);
+  const frameRef = useRef<FormationFrame | null>(null);
+  const lockBase = useRef<FormationFrame | null>(null);
+  const hist = useRef<FormHist>(freshFormHist());
+  const editRef = useRef({ undo: () => {}, redo: () => {} });
   const cursorRef = useRef(0);
-  const markRef = useRef<IceMark>({ x: 0, z: 0, lock: null, driven: false });
+  const markRef = useRef<IceMark>(openReplayMark(0, 0));
   const fileRef = useRef<HTMLInputElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
   const labelRef = useRef<HTMLSpanElement>(null);
@@ -541,14 +688,102 @@ export function ReplayViewerView() {
   const trackRef = useRef<HTMLDivElement>(null);
   const shuttleRef = useRef(0);
   const [shuttle, setShuttle] = useState(0);
+  const [camMode, setCamMode] = useState<CamMode>("classic");
+  const camModeRef = useRef<CamMode>("classic");
+  const camModeProp = useRef<CamMode>("classic");
+  const adjustedRef = useRef(false);
+  const clipSeen = useRef<string | null>(null);
   const togglePlayRef = useRef<() => void>(() => {});
+  if (camModeProp.current !== camMode) {
+    camModeProp.current = camMode;
+    camModeRef.current = camMode;
+  }
+  const pickCam = (id: CamMode) => {
+    adjustedRef.current = false;
+    camModeRef.current = id;
+    setCamMode(id);
+  };
   const entries = useMemo(() => libraryEntries(saved, retired, memory), [saved, retired, memory]);
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
   const chosen = entries.find((entry) => entry.id === selected) ?? null;
+  if (clipSeen.current !== selected) {
+    clipSeen.current = selected;
+    adjustedRef.current = false;
+    const puck = chosen?.frames[0]?.adjusted.puck;
+    if (puck) markRef.current = openReplayMark(puck.x, puck.z);
+  }
   const imported = entries.filter((entry) => !entry.id.startsWith("bundled:"));
   const repo = entries.filter((entry) => entry.id.startsWith("bundled:"));
   playingRef.current = playing;
+
+  const onDepth = (undo: number, redo: number) => {
+    setDepth((prev) => (prev.undo === undo && prev.redo === redo ? prev : { undo, redo }));
+  };
+  editRef.current = {
+    undo() {
+      const frame = frameRef.current;
+      if (!frame || !lockedRef.current) return;
+      const g = undoFormEdit(hist.current);
+      if (g) applyFormEdit(frame, "adjusted", g, false);
+      onDepth(formUndoDepth(hist.current), hist.current.redo.length);
+    },
+    redo() {
+      const frame = frameRef.current;
+      if (!frame || !lockedRef.current) return;
+      const g = redoFormEdit(hist.current);
+      if (g) applyFormEdit(frame, "adjusted", g, true);
+      onDepth(formUndoDepth(hist.current), hist.current.redo.length);
+    },
+  };
+
+  const releaseLock = (revert: boolean) => {
+    const frame = frameRef.current;
+    const base = lockBase.current;
+    const was = lockedRef.current;
+    lockedRef.current = false;
+    if (was && revert && frame && base) {
+      restoreFormationFrame(frame, base);
+      applyReplayPose(frame.adjusted.players, frame.adjusted.puck);
+      world.userId = controlledSkaterIndex(frame, frame.adjusted.players);
+      snapMark(markRef.current);
+    }
+    frameRef.current = null;
+    lockBase.current = null;
+    hist.current = freshFormHist();
+    if (was) {
+      setDepth({ undo: 0, redo: 0 });
+      setLocked(false);
+    }
+  };
+
+  const beginLock = () => {
+    const clip = entriesRef.current.find((item) => item.id === selected);
+    if (!clip?.frames.length) return;
+    const index = lockedReplayIndex(cursorRef.current, clip.frames.length);
+    const frame = clip.frames[index];
+    if (!frame) return;
+    cursorRef.current = index;
+    playingRef.current = false;
+    setPlaying(false);
+    shuttleRef.current = 0;
+    setShuttle(0);
+    lockBase.current = structuredClone(frame);
+    frameRef.current = frame;
+    hist.current = freshFormHist();
+    applyReplayPose(frame.adjusted.players, frame.adjusted.puck);
+    world.userId = controlledSkaterIndex(frame, frame.adjusted.players);
+    snapMark(markRef.current);
+    lockedRef.current = true;
+    setDepth({ undo: 0, redo: 0 });
+    setLocked(true);
+    paintBar(fillRef.current, labelRef.current, sliderRef.current, index, clip.frames);
+  };
+
+  const toggleLock = () => {
+    if (lockedRef.current) releaseLock(true);
+    else beginLock();
+  };
 
   useEffect(() => {
     const entry = entriesRef.current.find((item) => item.id === selected);
@@ -569,19 +804,21 @@ export function ReplayViewerView() {
     shuttleRef.current = 0;
     setShuttle(0);
     const puck = frames[0]?.adjusted.puck;
-    if (puck) markRef.current = { x: puck.x, z: puck.z, lock: null, driven: false };
+    if (puck) markRef.current = openReplayMark(puck.x, puck.z);
   };
 
   const choose = (id: string) => {
     if (id === selected) return;
     const entry = entriesRef.current.find((item) => item.id === id);
     if (!entry) return;
+    if (lockedRef.current) releaseLock(true);
     armClip(entry.frames);
     setSelected(id);
     setNotice(null);
   };
 
   const togglePlay = () => {
+    if (lockedRef.current) return;
     shuttleRef.current = 0;
     setShuttle(0);
     if (!chosen) return;
@@ -593,7 +830,7 @@ export function ReplayViewerView() {
   togglePlayRef.current = togglePlay;
 
   const pressShuttle = (rate: number) => {
-    if (!chosen) return;
+    if (!chosen || lockedRef.current) return;
     shuttleRef.current = rate;
     setShuttle(rate);
     if (playingRef.current) {
@@ -618,6 +855,7 @@ export function ReplayViewerView() {
     const nextMemory = [...memory, parsed];
     setMemory(nextMemory);
     setNotice(writeReplayLibrary(nextMemory));
+    if (lockedRef.current) releaseLock(true);
     armClip(parsed.frames);
     setSelected(parsed.id);
   };
@@ -627,60 +865,67 @@ export function ReplayViewerView() {
     writeRetiredReplays(names);
   };
 
-  const remove = (id: string) => {
-    if (id.startsWith("bundled:")) return;
-    const nextMemory = memory.filter((clip) => clip.id !== id);
-    setMemory(nextMemory);
-    setNotice(writeReplayLibrary(nextMemory));
-    if (selected !== id) return;
-    const next = libraryEntries(saved, retired, nextMemory);
-    const fallback = next[0];
-    if (!fallback) {
-      playingRef.current = false;
-      setPlaying(false);
-      shuttleRef.current = 0;
-      setShuttle(0);
-      setSelected(null);
-      return;
-    }
-    armClip(fallback.frames);
-    setSelected(fallback.id);
-  };
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const files = retiredRepoFiles(readRetiredReplays(), bundledReplayEntries());
+    if (!files.length) return;
+    let cancel = false;
+    void (async () => {
+      for (const file of files) {
+        const deleted = await deleteRepoJson("replays", file);
+        if (cancel) return;
+        if (!deleted) {
+          setNotice("Could not remove that replay.");
+          return;
+        }
+      }
+    })();
+    return () => {
+      cancel = true;
+    };
+  }, []);
 
-  const removeRepo = async (id: string) => {
-    const clip = entriesRef.current.find((item) => item.id === id);
-    if (!clip || !clip.id.startsWith("bundled:")) return;
-    let res: Response;
-    try {
-      res = await fetch("/api/replays", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: clip.name }),
-      });
-    } catch {
-      setNotice("Could not remove that replay.");
-      return;
+  const remove = async (id: string) => {
+    const rows = entriesRef.current;
+    const entry = rows.find((item) => item.id === id);
+    if (!entry) return;
+    const file = libraryRemoveFile(entry, rows, retired);
+    let deleted: string | null = null;
+    if (file) {
+      deleted = await deleteRepoJson("replays", file);
+      if (!deleted) {
+        setNotice("Could not remove that replay.");
+        return;
+      }
     }
-    if (!res.ok) {
-      setNotice("Could not remove that replay.");
-      return;
+    const next = deleted
+      ? libraryStateAfterDelete(memory, saved, retired, rows, id, deleted)
+      : { local: memory.filter((clip) => clip.id !== id), saved, retired };
+    if (entry.id.startsWith("bundled:")) setNotice(null);
+    else {
+      setMemory(next.local);
+      setNotice(writeReplayLibrary(next.local));
     }
-    const nextSaved = saved.filter((item) => item.name !== clip.name);
-    const nextRetired = retired.includes(clip.name) ? retired : [...retired, clip.name];
-    setSaved(nextSaved);
-    keepRetired(nextRetired);
-    const removedName = clip.name;
-    setNotice(`Removed ${removedName}`);
-    if (selected !== id) return;
-    const next = libraryEntries(nextSaved, nextRetired, memory);
-    const fallback = next[0];
+    if (deleted) {
+      setSaved(next.saved);
+      // File is gone. Keep the retired entry so the stale glob cannot bring it back.
+      if (next.retired.join("\0") !== retired.join("\0")) keepRetired(next.retired);
+    }
+    const selectedEntry = rows.find((item) => item.id === selected) ?? null;
+    const selectedFile = selectedEntry ? repoJsonName(selectedEntry.id, selectedEntry.name) : null;
+    const dropsSelected =
+      selected === id ||
+      (deleted !== null && !!selectedEntry?.id.startsWith("bundled:") && selectedFile === deleted);
+    if (!dropsSelected) return;
+    if (lockedRef.current) releaseLock(true);
+    const listed = libraryEntries(next.saved, next.retired, next.local);
+    const fallback = listed[0];
     if (!fallback) {
       playingRef.current = false;
       setPlaying(false);
       shuttleRef.current = 0;
       setShuttle(0);
       setSelected(null);
-      setRepoName("");
       return;
     }
     armClip(fallback.frames);
@@ -723,16 +968,26 @@ export function ReplayViewerView() {
       setMemory(nextMemory);
       writeReplayLibrary(nextMemory);
     }
-    const previous = chosen.id.startsWith("bundled:") && chosen.name !== entry.name ? chosen.name : null;
+    const previous =
+      chosen.id.startsWith("bundled:") && chosen.name !== entry.name ? chosen.name : null;
     let nextRetired = retired.filter((name) => name !== entry.name);
-    if (previous && previous !== entry.name && !nextRetired.includes(previous)) nextRetired = [...nextRetired, previous];
+    if (previous && previous !== entry.name && !nextRetired.includes(previous))
+      nextRetired = [...nextRetired, previous];
     if (nextRetired.join("\0") !== retired.join("\0")) keepRetired(nextRetired);
-    const nextSaved = [entry, ...saved.filter((item) => item.name !== entry.name && item.name !== previous)];
+    const nextSaved = [
+      entry,
+      ...saved.filter((item) => item.name !== entry.name && item.name !== previous),
+    ];
     setSaved(nextSaved);
     setSelected(entry.id);
     setRepoName(body.name.replace(/\.json$/i, ""));
     setImportName("");
-    setNotice(`Saved ${body.name}`);
+    setNotice(null);
+    if (lockedRef.current && frameRef.current) {
+      lockBase.current = structuredClone(frameRef.current);
+      hist.current = freshFormHist();
+      setDepth({ undo: 0, redo: 0 });
+    }
   };
 
   const stopForSeek = () => {
@@ -754,93 +1009,204 @@ export function ReplayViewerView() {
       }}
     >
       <header className="formation-top">
-        <FormationKits />
+        <div className="formation-top-start">
+          <FormationKits />
+          <div className="cam-row replay-cams" role="group" aria-label="Camera">
+            {REPLAY_CAMS.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className={camMode === c.id ? "is-on" : ""}
+                title={c.blurb}
+                aria-pressed={camMode === c.id}
+                disabled={!chosen}
+                onClick={() => pickCam(c.id)}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="formation-top-center">
+          <button type="button" className="btn-primary" onClick={() => fileRef.current?.click()}>
+            Load replay
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={(e) => {
+              void loadFile(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+          {chosen ? (
+            <>
+              <button
+                type="button"
+                className={locked ? "btn-primary" : "btn-ghost"}
+                aria-pressed={locked}
+                onKeyDown={(e) => {
+                  if (e.code === "Space") e.preventDefault();
+                }}
+                onClick={toggleLock}
+              >
+                {locked ? "Revert" : "Edit formation"}
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                disabled={!locked || !frameRef.current}
+                onKeyDown={(e) => {
+                  if (e.code === "Space") e.preventDefault();
+                }}
+                onClick={() => {
+                  const frame = frameRef.current;
+                  if (frame && lockedRef.current) downloadFormationFrame(frame);
+                }}
+              >
+                Download formation
+              </button>
+            </>
+          ) : null}
+        </div>
         <div className="replay-transport" role="group" aria-label="Playback">
-          <ShuttleButton label="Fast rewind" icon="fast-rewind" rate={-3.4} on={shuttle === -3.4} disabled={!chosen} onPress={pressShuttle} onRelease={releaseShuttle} />
-          <ShuttleButton label="Slow rewind" icon="slow-rewind" rate={-0.28} on={shuttle === -0.28} disabled={!chosen} onPress={pressShuttle} onRelease={releaseShuttle} />
+          <ShuttleButton
+            label="Fast rewind"
+            icon="fast-rewind"
+            rate={-3.4}
+            on={shuttle === -3.4}
+            disabled={!chosen || locked}
+            onPress={pressShuttle}
+            onRelease={releaseShuttle}
+          />
+          <ShuttleButton
+            label="Slow rewind"
+            icon="slow-rewind"
+            rate={-0.28}
+            on={shuttle === -0.28}
+            disabled={!chosen || locked}
+            onPress={pressShuttle}
+            onRelease={releaseShuttle}
+          />
           <button
             type="button"
             className="btn-ghost"
-            disabled={!chosen}
+            disabled={!chosen || locked}
             aria-pressed={playing}
             aria-label="Play/pause"
             onClick={togglePlay}
           >
             <TransportIcon name={playing && shuttle === 0 ? "pause" : "play"} />
           </button>
-          <ShuttleButton label="Slow forward" icon="slow-forward" rate={0.28} on={shuttle === 0.28} disabled={!chosen} onPress={pressShuttle} onRelease={releaseShuttle} />
-          <ShuttleButton label="Fast forward" icon="fast-forward" rate={3.4} on={shuttle === 3.4} disabled={!chosen} onPress={pressShuttle} onRelease={releaseShuttle} />
+          <ShuttleButton
+            label="Slow forward"
+            icon="slow-forward"
+            rate={0.28}
+            on={shuttle === 0.28}
+            disabled={!chosen || locked}
+            onPress={pressShuttle}
+            onRelease={releaseShuttle}
+          />
+          <ShuttleButton
+            label="Fast forward"
+            icon="fast-forward"
+            rate={3.4}
+            on={shuttle === 3.4}
+            disabled={!chosen || locked}
+            onPress={pressShuttle}
+            onRelease={releaseShuttle}
+          />
         </div>
       </header>
       <aside className="formation-side">
         <p className="eyebrow">Replay</p>
         <h1>Replay</h1>
-        <button type="button" className="btn-primary" onClick={() => fileRef.current?.click()}>
-          Load replay
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="application/json,.json"
-          hidden
-          onChange={(e) => {
-            void loadFile(e.target.files?.[0]);
-            e.target.value = "";
-          }}
-        />
-        <button
-          type="button"
-          className="btn-ghost"
-          disabled={!chosen}
-          aria-pressed={playing}
-          onClick={togglePlay}
-        >
-          {playing ? "Pause" : "Play"}
-        </button>
-        <div className="formation-save">
-          <input
-            aria-label="Loaded replay name"
-            value={importName}
-            placeholder="Name"
-            disabled={!chosen || chosen.id.startsWith("bundled:")}
-            onChange={(e) => setImportName(e.target.value)}
-          />
-          <button type="button" className="btn-ghost" disabled={!chosen || chosen.id.startsWith("bundled:") || !importName.trim()} onClick={() => void saveCurrent(importName)}>
-            Save
-          </button>
-          <button
-            type="button"
-            className="btn-ghost"
-            disabled={!chosen || chosen.id.startsWith("bundled:")}
-            onClick={() => chosen && remove(chosen.id)}
-          >
-            Remove
-          </button>
-        </div>
+        {locked ? (
+          <div className="replay-edit">
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={depth.undo === 0}
+              onKeyDown={(e) => {
+                if (e.code === "Space") e.preventDefault();
+              }}
+              onClick={() => editRef.current.undo()}
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={depth.redo === 0}
+              onKeyDown={(e) => {
+                if (e.code === "Space") e.preventDefault();
+              }}
+              onClick={() => editRef.current.redo()}
+            >
+              Redo
+            </button>
+          </div>
+        ) : null}
+        {imported.length > 0 ? (
+          <div className="formation-save">
+            <input
+              aria-label="Loaded replay name"
+              value={importName}
+              placeholder="Name"
+              disabled={!chosen || chosen.id.startsWith("bundled:")}
+              onChange={(e) => setImportName(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={!chosen || chosen.id.startsWith("bundled:") || !importName.trim()}
+              onClick={() => void saveCurrent(importName)}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={!chosen || chosen.id.startsWith("bundled:")}
+              onClick={() => chosen && void remove(chosen.id)}
+            >
+              Remove
+            </button>
+          </div>
+        ) : null}
         {notice ? <p className="formation-note">{notice}</p> : null}
         <ReplayList rows={imported} selected={selected} onChoose={choose} />
       </aside>
       <aside className="formation-side formation-repo">
-        <div className="formation-save">
-          <input
-            aria-label="Replay file name"
-            value={repoName}
-            placeholder="Name"
-            disabled={!chosen || !chosen.id.startsWith("bundled:")}
-            onChange={(e) => setRepoName(e.target.value)}
-          />
-          <button type="button" className="btn-ghost" disabled={!chosen || !chosen.id.startsWith("bundled:") || !repoName.trim()} onClick={() => void saveCurrent(repoName)}>
-            Rename
-          </button>
-          <button
-            type="button"
-            className="btn-ghost"
-            disabled={!chosen || !repo.some((entry) => entry.id === chosen.id)}
-            onClick={() => chosen && void removeRepo(chosen.id)}
-          >
-            Remove
-          </button>
-        </div>
+        {repo.length > 0 ? (
+          <div className="formation-save">
+            <input
+              aria-label="Replay file name"
+              value={repoName}
+              placeholder="Name"
+              disabled={!chosen || !chosen.id.startsWith("bundled:")}
+              onChange={(e) => setRepoName(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={!chosen || !chosen.id.startsWith("bundled:") || !repoName.trim()}
+              onClick={() => void saveCurrent(repoName)}
+            >
+              Rename
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={!chosen || !repo.some((entry) => entry.id === chosen.id)}
+              onClick={() => chosen && void remove(chosen.id)}
+            >
+              Remove
+            </button>
+          </div>
+        ) : null}
         <ReplayList rows={repo} selected={selected} onChoose={choose} />
       </aside>
       <div className="formation-stage">
@@ -851,7 +1217,11 @@ export function ReplayViewerView() {
               className="rink-canvas"
               shadows={false}
               dpr={[1, 1.25]}
-              gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 0.88 }}
+              gl={{
+                antialias: true,
+                toneMapping: THREE.ACESFilmicToneMapping,
+                toneMappingExposure: 0.88,
+              }}
               camera={{ position: [13.2, 9.4, 0], fov: 50, near: 0.15, far: 220 }}
             >
               <ReplayStage
@@ -865,27 +1235,37 @@ export function ReplayViewerView() {
                 sliderRef={sliderRef}
                 shuttleRef={shuttleRef}
                 togglePlayRef={togglePlayRef}
+                camModeRef={camModeRef}
+                setCamMode={setCamMode}
+                adjusted={adjustedRef}
+                locked={locked}
+                lockedRef={lockedRef}
+                frameRef={frameRef}
+                hist={hist}
+                onDepth={onDepth}
               />
             </Canvas>
             <div
               ref={sliderRef}
-              className="replay-bar madden-replay"
+              className={`replay-bar madden-replay${locked ? " is-locked" : ""}`}
               role="slider"
               aria-label="Replay position"
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={0}
+              aria-disabled={locked}
             >
               <div
                 ref={trackRef}
                 className="madden-replay-track"
                 onPointerDown={(e) => {
-                  if (e.button !== 0) return;
+                  if (lockedRef.current || e.button !== 0) return;
                   stopForSeek();
                   (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
                   cursorRef.current = seekClient(e.clientX, e.currentTarget, last);
                 }}
                 onPointerMove={(e) => {
+                  if (lockedRef.current) return;
                   if (!(e.currentTarget as HTMLDivElement).hasPointerCapture(e.pointerId)) return;
                   cursorRef.current = seekClient(e.clientX, e.currentTarget, last);
                 }}

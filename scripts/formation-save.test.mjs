@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { formationFileName, saveFormationFile } from "./formation-save.mjs";
+import { fileURLToPath } from "node:url";
+import { deleteFormationFile, formationFileName, saveFormationFile } from "./formation-save.mjs";
 import { deleteReplayFile, saveReplayFile } from "./replay-save.mjs";
+
+const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 
 test("formation file names stay inside formations/", () => {
   assert.equal(formationFileName("power play"), "power play.json");
@@ -57,4 +60,26 @@ test("save writes a replay array under replays/ and rename removes the old file"
   assert.equal(existsSync(join(root, "replays", "renamed.json")), false);
   assert.equal(deleteReplayFile(root, "renamed"), "renamed.json");
   assert.throws(() => deleteReplayFile(root, ".."));
+});
+
+test("delete removes a formation file and treats a missing file as already removed", () => {
+  const root = mkdtempSync(join(tmpdir(), "hfb-formations-"));
+  saveFormationFile(root, "slot.json", { frame: 3, time: 1.5 });
+  assert.equal(deleteFormationFile(root, "slot.json"), "slot.json");
+  assert.equal(existsSync(join(root, "formations", "slot.json")), false);
+  assert.equal(deleteFormationFile(root, "slot"), "slot.json");
+  assert.equal(deleteFormationFile(root, "../secret"), "secret.json");
+  assert.throws(() => deleteFormationFile(root, ".."));
+  assert.throws(() => deleteFormationFile(root, ""));
+  const vite = readFileSync(join(repo, "vite.config.ts"), "utf8");
+  assert.match(vite, /deleteFormationFile\(server\.config\.root, body\.name\)/);
+  assert.match(vite, /pathOnly === "\/api\/formations"/);
+  assert.match(vite, /req\.method === "DELETE"/);
+  assert.match(vite, /deleteReplayFile\(server\.config\.root, body\.name\)/);
+  const formationSave = readFileSync(join(repo, "scripts/formation-save.mjs"), "utf8");
+  const replaySave = readFileSync(join(repo, "scripts/replay-save.mjs"), "utf8");
+  assert.match(formationSave, /file still on disk/);
+  assert.match(replaySave, /file still on disk/);
+  assert.match(formationSave, /Vite\s+restart is required for the glob to drop the file completely/);
+  assert.match(replaySave, /Vite\s+restart is required for the glob to drop the file completely/);
 });

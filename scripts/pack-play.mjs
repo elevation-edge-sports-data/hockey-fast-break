@@ -49,7 +49,7 @@ ${css}
 .lab-versions button:hover,.lab-versions a:hover,.lab-versions button[aria-expanded="true"],.lab-versions [aria-current="page"]{border-color:#7eb8d4;color:#7eb8d4}
 .lab-versions [aria-current="page"]{cursor:default}
 .hud .lab-versions{display:none!important}
-.hud{padding-top:max(48px,calc(42px + env(safe-area-inset-top,0px)))!important}
+.hud{padding-top:0!important}
   </style>
 </head>
 <body>

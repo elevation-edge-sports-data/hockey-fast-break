@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Maximize2, Minimize2, Pause, Play, RotateCcw } from "lucide-react";
+import { downloadFormationFrame } from "./formationDownload";
 import { setTouchBurst, setTouchFace, setTouchLt, setTouchMove, setTouchStart } from "./input";
 import {
   applyLiveLineup,
@@ -15,7 +16,9 @@ import {
   pickReplayLock,
   replayHasFootage,
   replayFootagePct,
+  replayFrameNow,
   subscribeReplayPct,
+  subscribeReplayFootage,
   seekReplay,
   replayFrameLocked,
   subscribeReplayEdit,
@@ -74,36 +77,8 @@ import {
   type ShootoutRounds,
   type ShootoutResult,
 } from "./store";
-import { kitById, kitWornColors, UNIFORMS, type UniformKit } from "./uniforms";
-
-function Swatch({
-  id,
-  selected,
-  disabled,
-  onPick,
-}: {
-  id: number;
-  selected: boolean;
-  disabled: boolean;
-  onPick: (id: number) => void;
-}) {
-  const u = UNIFORMS[id]!;
-  const worn = kitWornColors(u);
-  return (
-    <button
-      type="button"
-      aria-label={`Kit ${id + 1}`}
-      aria-pressed={selected}
-      disabled={disabled}
-      onClick={() => onPick(id)}
-      className={`uni-swatch${selected ? " is-on" : ""}`}
-    >
-      <span style={{ background: worn.helmet }} />
-      <span style={{ background: worn.jersey }} />
-      <span style={{ background: worn.pants }} />
-    </button>
-  );
-}
+import { FormationKits } from "./FormationKits";
+import { kitById, kitWornColors, type UniformKit } from "./uniforms";
 
 function StickPad() {
   const wrap = useRef<HTMLDivElement>(null);
@@ -417,6 +392,14 @@ function useReplayPct() {
   return useSyncExternalStore(subscribeReplayPct, replayFootagePct, replayFootagePct);
 }
 
+function useReplayFrame() {
+  return useSyncExternalStore(subscribeReplayPct, replayFrameNow, replayFrameNow);
+}
+
+function useReplayFootage() {
+  return useSyncExternalStore(subscribeReplayFootage, replayHasFootage, replayHasFootage);
+}
+
 function useReplayBoard() {
   return useSyncExternalStore(subscribeReplayBoard, replayBoardNow, replayBoardNow);
 }
@@ -445,13 +428,7 @@ function useReplayRedoDepth() {
 function downloadReplayFrame(): void {
   const data = exportReplayFrame();
   if (!data) return;
-  const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `replay-frame-${data.frame}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
+  downloadFormationFrame(data);
 }
 
 function downloadReplayRange(): void {
@@ -473,13 +450,13 @@ function useReplayRangeMarks() {
 
 function ReplayBar() {
   const replay = useGame((s) => s.replay);
-  const paused = useGame((s) => s.paused);
   const pct = useReplayPct();
+  const frame = useReplayFrame();
   const locked = useReplayFrameLock();
   const marks = useReplayRangeMarks();
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef(false);
-  if (!replay || !paused) return null;
+  if (!replay) return null;
   const shown = Math.round(Math.max(0, Math.min(1, pct)) * 100);
   const seekAt = (clientX: number) => {
     const el = track.current;
@@ -495,12 +472,13 @@ function ReplayBar() {
   };
   return (
     <div
-      className={`madden-replay${locked ? " is-locked" : ""}`}
+      className={`replay-bar madden-replay${locked ? " is-locked" : ""}`}
       role="slider"
       aria-label="Replay position"
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={shown}
+      aria-valuetext={`frame ${frame}`}
       aria-disabled={locked}
     >
       <div
@@ -530,7 +508,7 @@ function ReplayBar() {
           ))}
         </div>
       </div>
-      <span className="madden-replay-pct">{shown}%</span>
+      <span className="madden-replay-pct">{frame}</span>
     </div>
   );
 }
@@ -865,6 +843,7 @@ function MainMenus() {
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
   const replay = useGame((s) => s.replay);
+  const replayReady = useReplayFootage();
   const toggle = (id: MenuId) => setMenu((cur) => (cur === id ? null : id));
   const blurb =
     controlProfile === "wings"
@@ -877,7 +856,7 @@ function MainMenus() {
       stopPauseReplay();
       return;
     }
-    if (!playing || !replayHasFootage()) return;
+    if (!playing || !replayReady) return;
     if (!paused) pauseGame();
     beginPauseReplay();
   };
@@ -1058,7 +1037,7 @@ function MainMenus() {
         <button
           type="button"
           className={replay ? "is-on" : ""}
-          disabled={!replay && (!playing || !replayHasFootage())}
+          disabled={!replay && (!playing || !replayReady)}
           onClick={startReplay}
         >
           Replay
@@ -1474,6 +1453,7 @@ export function Overlay() {
   const whistle = useGame((s) => s.whistle);
   const delayedOffside = useGame((s) => s.delayedOffside);
   const replay = useGame((s) => s.replay);
+  const replayReady = useReplayFootage();
   const frameLocked = useReplayFrameLock();
   const rangeMarks = useReplayRangeMarks();
   const undoDepth = useReplayUndoDepth();
@@ -1507,31 +1487,38 @@ export function Overlay() {
       ? periodEndCopy(periodBreak, homeScore, awayScore, clockMode)
       : null;
   const setPlaying = useGame((s) => s.setPlaying);
+  const [hudReady, setHudReady] = useState(false);
   const [cpuDrillNote, setCpuDrillNote] = useState<string | null>(null);
+  const [lineupsFit, setLineupsFit] = useState(true);
+  const topRef = useRef<HTMLDivElement>(null);
+  const lineupWidthRef = useRef(0);
+  useEffect(() => setHudReady(true), []);
+  useLayoutEffect(() => {
+    const top = topRef.current;
+    if (!top) return;
+    const fit = () => {
+      const title = top.querySelector<HTMLElement>(".play-top-title");
+      const kits = top.querySelector<HTMLElement>(".formation-kits");
+      const lineups = top.querySelector<HTMLElement>(".play-lineups");
+      if (!title || !kits || !lineups) return;
+      if (lineups.offsetWidth > 0) lineupWidthRef.current = lineups.offsetWidth;
+      const need = title.offsetWidth + kits.offsetWidth + lineupWidthRef.current;
+      const showLineups = lineupWidthRef.current > 0 && top.clientWidth + 1 >= need;
+      setLineupsFit((prev) => (prev === showLineups ? prev : showLineups));
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(top);
+    for (const sel of [".play-top-title", ".formation-kits", ".play-lineups"]) {
+      const el = top.querySelector(sel);
+      if (el) ro.observe(el);
+    }
+    return () => ro.disconnect();
+  }, [playing, paused, hudReady]);
   useEffect(() => {
     const note = startCpuDrillWatchFromUrl() ?? startCpuScrimmageWatchFromUrl();
     if (note) setCpuDrillNote(note);
   }, []);
-  const setHomeKit = useGame((s) => s.setHomeKit);
-  const setAwayKit = useGame((s) => s.setAwayKit);
-  const pickHomeKit = (id: number) => {
-    if (id === awayKit) {
-      const prev = homeKit;
-      setHomeKit(id);
-      setAwayKit(prev);
-      return;
-    }
-    setHomeKit(id);
-  };
-  const pickAwayKit = (id: number) => {
-    if (id === homeKit) {
-      const prev = awayKit;
-      setHomeKit(prev);
-      setAwayKit(id);
-      return;
-    }
-    setAwayKit(id);
-  };
   const setHomeLineup = useGame((s) => s.setHomeLineup);
   const setAwayLineup = useGame((s) => s.setAwayLineup);
 
@@ -1545,7 +1532,7 @@ export function Overlay() {
     (l: Lineup) => {
       setHomeLineup(l);
       if (useGame.getState().playing) applyLiveLineup("home");
-      else resetWorld();
+      else resetWorld({ keepReplay: true });
     },
     [setHomeLineup],
   );
@@ -1553,7 +1540,7 @@ export function Overlay() {
     (l: Lineup) => {
       setAwayLineup(l);
       if (useGame.getState().playing) applyLiveLineup("away");
-      else resetWorld();
+      else resetWorld({ keepReplay: true });
     },
     [setAwayLineup],
   );
@@ -1561,7 +1548,7 @@ export function Overlay() {
   const skate = useCallback(() => {
     const ui = useGame.getState();
     if (ui.playing && (ui.periodOver || world.periodOver)) applyArmedCpuKitCycle();
-    resetWorld();
+    resetWorld({ keepReplay: true });
     setPlaying(true);
   }, [setPlaying]);
 
@@ -1583,57 +1570,39 @@ export function Overlay() {
 
   return (
     <div className={playing ? "hud" : "hud is-title"}>
-      <div className="hud-top-stack">
-        {playing && !paused ? null : (
-        <div className="uni-banner">
-          <div className="uni-cluster">
-            <div className="uni-side">
-              <div className="uni-side-head">
-                <span>
-                  You
-                  <AimCompass />
-                </span>
-              </div>
-              <div className="uni-row">
-                {UNIFORMS.map((u) => (
-                  <Swatch
-                    key={u.id}
-                    id={u.id}
-                    selected={homeKit === u.id}
-                    disabled={false}
-                    onPick={pickHomeKit}
-                  />
-                ))}
-              </div>
-            </div>
-            <LineupStrip lineup={playing ? liveHome : homeLineup} onChange={applyHome} disabled={false} />
-          </div>
-          <div className="uni-cluster is-cpu">
-            <div className="uni-side">
-              <div className="uni-side-head">
-                <span>CPU</span>
-              </div>
-              <div className="uni-row">
-                {UNIFORMS.map((u) => (
-                  <Swatch
-                    key={u.id}
-                    id={u.id}
-                    selected={awayKit === u.id}
-                    disabled={false}
-                    onPick={pickAwayKit}
-                  />
-                ))}
-              </div>
-            </div>
-            <LineupStrip lineup={playing ? liveAway : awayLineup} onChange={applyAway} disabled={false} />
-          </div>
+      <div className="play-top" ref={topRef}>
+        <span className={`play-gap${(playing && !paused) || !hudReady ? " is-fixed" : ""}`} aria-hidden="true" />
+        <div className="play-top-title">
+          <p className="eyebrow">Elevation Edge Sports Data</p>
+          <h1>Hockey Fast Break (V4)</h1>
         </div>
-        )}
-
+        {playing && !paused ? null : hudReady ? (
+          <>
+            <span className="play-gap" aria-hidden="true" />
+            <FormationKits />
+            <span className={`play-gap play-gap-lineup${lineupsFit ? "" : " is-hidden"}`} aria-hidden="true" />
+            <div className={`play-lineups${lineupsFit ? "" : " is-hidden"}`}>
+              <div className="play-lineup">
+                <div className="play-lineup-head">
+                  <span className="formation-kit-tag">YOU</span>
+                  <AimCompass />
+                </div>
+                <LineupStrip lineup={playing ? liveHome : homeLineup} onChange={applyHome} disabled={false} />
+              </div>
+              <div className="play-lineup">
+                <div className="play-lineup-head">
+                  <span className="formation-kit-tag">CPU</span>
+                </div>
+                <LineupStrip lineup={playing ? liveAway : awayLineup} onChange={applyAway} disabled={false} />
+              </div>
+            </div>
+            <span className={`play-gap play-gap-lineup${lineupsFit ? "" : " is-hidden"}`} aria-hidden="true" />
+          </>
+        ) : null}
+      </div>
+      <div className="hud-top-stack">
         <header className="hud-top">
           <div>
-            <p className="eyebrow">Elevation Edge · v4</p>
-            <h1>Hockey Fast Break</h1>
             <AbilitySliders />
           </div>
           <div className="hud-score-cluster">
@@ -1761,7 +1730,6 @@ export function Overlay() {
             <p>
               <b>Replay</b>
             </p>
-            <ReplayBar />
             <div className="btn-row cam-adjust-btns">
               <button
                 type="button"
@@ -1857,7 +1825,7 @@ export function Overlay() {
                 type="button"
                 className="btn-ghost"
                 onClick={() => beginPauseReplay()}
-                disabled={!replayHasFootage()}
+                disabled={!replayReady}
               >
                 Replay
               </button>
@@ -1936,7 +1904,7 @@ export function Overlay() {
                   resetPausedGame();
                   return;
                 }
-                resetWorld();
+                resetWorld({ keepReplay: true });
                 if (!playing) setPlaying(true);
               }}
             >
@@ -2100,6 +2068,7 @@ export function Overlay() {
           )}
         </div>
       ) : null}
+      {replay ? <ReplayBar /> : null}
     </div>
   );
 }

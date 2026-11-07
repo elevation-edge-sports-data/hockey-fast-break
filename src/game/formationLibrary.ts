@@ -257,6 +257,33 @@ export function writeFormationLibrary(entries: FormationEntry[]): string | null 
   }
 }
 
+const RETIRED_KEY = "hfb-formation-retired";
+
+/**
+ * Names whose files were unlinked. import.meta.glob is eager, so a Vite
+ * restart is required for the glob to drop the file completely. Until then
+ * this list hides the stale module.
+ */
+export function readRetiredFormations(): string[] {
+  try {
+    const raw = localStorage.getItem(RETIRED_KEY);
+    if (!raw) return [];
+    const data: unknown = JSON.parse(raw);
+    if (!Array.isArray(data)) return [];
+    return data.filter((item) => typeof item === "string");
+  } catch {
+    return [];
+  }
+}
+
+export function writeRetiredFormations(names: readonly string[]): void {
+  try {
+    localStorage.setItem(RETIRED_KEY, JSON.stringify(names));
+  } catch {
+    /* The list still updates for this session. */
+  }
+}
+
 const bundledModules = import.meta.glob("../../formations/*.json", { eager: true });
 
 function moduleJson(mod: unknown): unknown {
@@ -267,7 +294,8 @@ function moduleJson(mod: unknown): unknown {
 /**
  * Left list is unsaved imports. Right list is formations/ files, plus a file
  * saved earlier in this session. A shared name does not hide the import.
- * Retired names drop only the repo copy that was renamed away.
+ * Retired names drop the repo copy after the file is unlinked. A Vite
+ * restart is required for the glob to drop the file completely.
  */
 export function partitionFormationLibrary(
   local: readonly FormationEntry[],
@@ -283,6 +311,139 @@ export function partitionFormationLibrary(
   ];
   const imported = local.filter((entry) => !entry.id.startsWith("bundled:"));
   return { imported, repo };
+}
+
+function asJsonBasename(raw: string): string | null {
+  const base = raw.trim();
+  if (!base || base === "." || base === "..") return null;
+  return base.toLowerCase().endsWith(".json") ? base : `${base}.json`;
+}
+
+function bundledBasename(id: string): string | null {
+  const rest = id.slice("bundled:".length);
+  const cut = rest.lastIndexOf(":");
+  const path = (cut >= 0 ? rest.slice(0, cut) : rest).replace(/\\/g, "/");
+  return asJsonBasename(path.split("/").pop() ?? "");
+}
+
+function displayBasename(name: string): string | null {
+  const trimmed = name.trim().replace(/\\/g, "/").split("/").pop()?.trim() ?? "";
+  const marked = trimmed.match(/^(.*\.json) · \d+$/i);
+  return asJsonBasename(marked?.[1] ?? trimmed);
+}
+
+/** Json basename for a library row. A multi-frame label keeps the file before " · ". */
+export function repoJsonName(id: string, name: string): string | null {
+  if (id.startsWith("bundled:")) return bundledBasename(id);
+  return displayBasename(name);
+}
+
+/**
+ * Repo files the eager glob still lists after a remove. The retired list hides
+ * them, and each one still has to be unlinked. A Vite restart is required for
+ * the glob to drop the file completely.
+ */
+export function retiredRepoFiles(
+  retired: readonly string[],
+  bundled: readonly { id: string; name: string }[],
+): string[] {
+  const files = new Set<string>();
+  for (const row of bundled) {
+    if (!row.id.startsWith("bundled:")) continue;
+    const file = repoJsonName(row.id, row.name);
+    if (file && (retired.includes(file) || retired.includes(row.name))) files.add(file);
+  }
+  return [...files];
+}
+
+/**
+ * Repo json this Remove should unlink.
+ * A right-panel row owns its file. A left-panel row owns it only after that
+ * name has left the right list, so a same-named import does not delete a file
+ * the right panel still shows. Null means the row was never written.
+ */
+export function libraryRemoveFile(
+  entry: { id: string; name: string },
+  rows: readonly { id: string; name: string }[],
+  retired: readonly string[],
+): string | null {
+  const file = repoJsonName(entry.id, entry.name);
+  if (!file) return null;
+  if (entry.id.startsWith("bundled:")) return file;
+  const listed = rows.some(
+    (row) =>
+      row.id !== entry.id &&
+      row.id.startsWith("bundled:") &&
+      repoJsonName(row.id, row.name) === file,
+  );
+  if (listed) return null;
+  if (retired.includes(file) || retired.includes(entry.name)) return file;
+  return null;
+}
+
+/** Hide every right-panel row of a file after it has been unlinked. */
+export function retiredNamesForFile(
+  rows: readonly { id: string; name: string }[],
+  retired: readonly string[],
+  file: string,
+): string[] {
+  const names = new Set(retired);
+  names.add(file);
+  for (const row of rows) {
+    if (!row.id.startsWith("bundled:")) continue;
+    if (repoJsonName(row.id, row.name) === file) names.add(row.name);
+  }
+  return [...names];
+}
+
+/**
+ * Drop the removed row after the file is unlinked and keep its retired-list entry.
+ * A Vite restart is required for the glob to drop the file completely.
+ */
+export function libraryStateAfterDelete<T extends { id: string; name: string }>(
+  local: readonly T[],
+  saved: readonly T[],
+  retired: readonly string[],
+  rows: readonly { id: string; name: string }[],
+  removedId: string,
+  file: string,
+): { local: T[]; saved: T[]; retired: string[] } {
+  return {
+    local: local.filter((item) => item.id !== removedId),
+    saved: saved.filter((item) => repoJsonName(item.id, item.name) !== file),
+    retired: retiredNamesForFile(rows, retired, file),
+  };
+}
+
+/** Dev server unlinks the json. A missing file still succeeds. */
+export async function deleteRepoJson(
+  folder: "formations" | "replays",
+  name: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/${folder}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { name?: unknown };
+    return typeof body.name === "string" && body.name ? body.name : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Next frame after a left-panel remove: a remaining left row, or a right row when the left side is empty. */
+export function nextAfterLeftRemove<T>(
+  left: readonly T[],
+  right: readonly T[],
+  random: () => number = Math.random,
+): T | null {
+  const pool = left.length ? left : right;
+  if (!pool.length) return null;
+  const i = Math.min(pool.length - 1, Math.floor(random() * pool.length));
+  return pool[i] ?? null;
 }
 
 /** JSON files checked in under formations/. */
@@ -419,6 +580,22 @@ export function mountFormation(side: FormationSide): () => void {
     world.replayPlaying = replayPlaying;
     world.replayT = replayT;
   };
+}
+
+/** Selected player or puck while a frame is locked. Same 4 m/s as the in-game replay slide. */
+export const LOCK_SLIDE_MPS = 4;
+
+/** Whole frame the scrubber is on. A fractional cursor locks the earlier frame. */
+export function lockedReplayIndex(cursor: number, frameCount: number): number {
+  const last = Math.max(0, frameCount - 1);
+  if (!Number.isFinite(cursor)) return 0;
+  return Math.min(last, Math.max(0, Math.floor(cursor)));
+}
+
+/** Put a locked frame back to the snapshot taken when editing started. */
+export function restoreFormationFrame(target: FormationFrame, source: FormationFrame): void {
+  target.original = structuredClone(source.original);
+  target.adjusted = structuredClone(source.adjusted);
 }
 
 /** The side on screen. Adjusted is the default. A missing side falls back to the other. */
