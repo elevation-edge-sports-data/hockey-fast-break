@@ -24,6 +24,7 @@ import {
   iceBasisStep,
   nearestMark,
   orbitStick,
+  putIceMark,
   shadowXZ,
   type IceMark,
   type MarkLock,
@@ -58,6 +59,19 @@ function sameLock(a: MarkLock | null, b: MarkLock | null): boolean {
   if (!a || !b) return false;
   if (a.kind === "puck" && b.kind === "puck") return true;
   return a.kind === "skater" && b.kind === "skater" && a.index === b.index;
+}
+
+function copyLock(lock: MarkLock | null): MarkLock | null {
+  if (!lock) return null;
+  return lock.kind === "puck" ? { kind: "puck" } : { kind: "skater", index: lock.index };
+}
+
+/** The open undo step has to name the body the lock points at now. */
+function gestureMatchesLock(g: FormEdit | null, lock: MarkLock): boolean {
+  if (!g) return true;
+  if (lock.kind === "puck") return g.kind === "puck";
+  if (g.kind !== "skater") return false;
+  return world.skaters[lock.index]?.id === g.id;
 }
 
 function liveShadows(): { players: { x: number; z: number }[]; puck: { x: number; z: number } } {
@@ -135,8 +149,7 @@ function cycleFormationLock(mark: IceMark): void {
     mark.lock = null;
     return;
   }
-  mark.x = anchor.x;
-  mark.z = anchor.z;
+  putIceMark(mark, anchor.x, anchor.z);
 }
 
 /** Keep the ice X on the selected shadow or puck while the camera looks at it. */
@@ -144,14 +157,12 @@ export function followFormationMark(mark: IceMark): void {
   if (!mark.lock) return;
   const anchor = anchorOf(mark.lock);
   if (!anchor) return;
-  mark.x = anchor.x;
-  mark.z = anchor.z;
+  putIceMark(mark, anchor.x, anchor.z);
 }
 
 export function takeFormationPick(mark: IceMark, hit: RinkPick): void {
   if (hit.kind === "ice") {
-    mark.x = hit.x;
-    mark.z = hit.z;
+    putIceMark(mark, hit.x, hit.z);
     mark.lock = null;
     mark.driven = false;
     return;
@@ -163,8 +174,7 @@ export function takeFormationPick(mark: IceMark, hit: RinkPick): void {
     mark.lock = null;
     return;
   }
-  mark.x = anchor.x;
-  mark.z = anchor.z;
+  putIceMark(mark, anchor.x, anchor.z);
 }
 
 export function applyFormEdit(frame: FormationFrame, view: FormationView, g: FormEdit, toEnd: boolean): void {
@@ -263,6 +273,8 @@ export function FormationMarkDriver({
   const yMoved = useRef(false);
   const yHeld = useRef(false);
   const puckDrag = useRef(false);
+  /** Lock the current gesture was opened for. A Y cycle replaces it before the next slide. */
+  const boundLock = useRef<MarkLock | null>(null);
   const armOrbitRef = useRef(armOrbit);
   armOrbitRef.current = armOrbit;
   useEffect(() => attachInput(window), []);
@@ -316,53 +328,61 @@ export function FormationMarkDriver({
     }
     yHeld.current = yDown;
     const cursor = mark.current;
-    const skater = cursor.lock?.kind === "skater" ? world.skaters[cursor.lock.index] : undefined;
+    if (!sameLock(boundLock.current, cursor.lock)) {
+      closeFormGesture(hist.current);
+      puckDrag.current = false;
+      boundLock.current = copyLock(cursor.lock);
+    }
+    const lock = cursor.lock;
+    const skater = lock?.kind === "skater" ? world.skaters[lock.index] : undefined;
     const live = !yDown && Math.hypot(act.stickX, act.stickY) > MARK_STICK_GATE;
     const stickTurn = !!skater && act.aDown && live;
     const arrowTurn = !!skater && !typing && act.keyA && !stickTurn && (act.arrowX !== 0 || act.arrowY !== 0);
     const ix = (typing || arrowTurn ? 0 : act.arrowX) + (!stickTurn && live ? act.stickX : 0);
     const iy = (typing || arrowTurn ? 0 : act.arrowY) + (!stickTurn && live ? act.stickY : 0);
-    const step = cursor.lock
+    const step = lock
       ? iceBasisMove(dt, LOCK_SLIDE_MPS, ix, iy, basis.current)
       : iceBasisStep(dt, viewRadius.current, ix, iy, basis.current);
-    if ((step || stickTurn || arrowTurn) && cursor.lock) {
-      const anchor = anchorOf(cursor.lock);
+    if ((step || stickTurn || arrowTurn) && lock) {
+      const anchor = anchorOf(lock);
       if (!anchor) {
         cursor.lock = null;
+        boundLock.current = null;
       } else {
-        beginBody(hist.current, cursor.lock);
-        const oldYaw = skater?.yaw;
-        if (skater && stickTurn) {
+        const body = lock.kind === "skater" ? world.skaters[lock.index] : undefined;
+        if (!gestureMatchesLock(hist.current.gesture, lock)) closeFormGesture(hist.current);
+        beginBody(hist.current, lock);
+        const oldYaw = body?.yaw;
+        if (body && stickTurn) {
           const dx = basis.current.rx * act.stickX + basis.current.fx * act.stickY;
           const dz = basis.current.rz * act.stickX + basis.current.fz * act.stickY;
-          skater.yaw = formYawSnap(dx, dz);
-        } else if (skater && arrowTurn) {
+          body.yaw = formYawSnap(dx, dz);
+        } else if (body && arrowTurn) {
           const dx = basis.current.rx * act.arrowX + basis.current.fx * act.arrowY;
           const dz = basis.current.rz * act.arrowX + basis.current.fz * act.arrowY;
-          skater.yaw = formYawToward(skater.yaw, dx, dz, dt);
+          body.yaw = formYawToward(body.yaw, dx, dz, dt);
         }
         if (step) {
-          cursor.x = anchor.x + step.dx;
-          cursor.z = anchor.z + step.dz;
-          if (cursor.lock.kind === "puck") {
+          putIceMark(cursor, anchor.x + step.dx, anchor.z + step.dz);
+          if (lock.kind === "puck") {
             world.puck.owner = null;
             world.puck.x += step.dx;
             world.puck.z += step.dz;
             puckDrag.current = true;
-          } else if (skater) {
-            shiftSkater(skater, step.dx, step.dz);
-            carryPuck(skater.id, step.dx, step.dz);
+          } else if (body) {
+            shiftSkater(body, step.dx, step.dz);
+            carryPuck(body.id, step.dx, step.dz);
           }
         }
-        if (skater && oldYaw !== undefined) spinCarriedPuck(skater, oldYaw);
+        if (body && oldYaw !== undefined) spinCarriedPuck(body, oldYaw);
         cursor.driven = false;
-        if (cursor.lock.kind === "puck") {
+        if (lock.kind === "puck") {
           syncFormGesture(hist.current, { x: world.puck.x, z: world.puck.z, owner: world.puck.owner });
-        } else if (skater) {
+        } else if (body) {
           syncFormGesture(hist.current, {
-            x: skater.x,
-            z: skater.z,
-            yaw: skater.yaw,
+            x: body.x,
+            z: body.z,
+            yaw: body.yaw,
             px: world.puck.x,
             pz: world.puck.z,
           });
@@ -385,18 +405,14 @@ export function FormationMarkDriver({
     if (step) {
       const spots = liveShadows();
       const before = nearestMark(cursor.x, cursor.z, spots.players, spots.puck);
-      cursor.x += step.dx;
-      cursor.z += step.dz;
+      putIceMark(cursor, cursor.x + step.dx, cursor.z + step.dz);
       const after = nearestMark(cursor.x, cursor.z, spots.players, spots.puck);
       if (!after) cursor.driven = true;
       if (after && cursor.driven && !sameLock(before, after)) {
         cursor.lock = after;
         cursor.driven = false;
         const anchor = anchorOf(after);
-        if (anchor) {
-          cursor.x = anchor.x;
-          cursor.z = anchor.z;
-        }
+        if (anchor) putIceMark(cursor, anchor.x, anchor.z);
       }
       return;
     }
@@ -406,10 +422,7 @@ export function FormationMarkDriver({
       if (hit) {
         cursor.lock = hit;
         const anchor = anchorOf(hit);
-        if (anchor) {
-          cursor.x = anchor.x;
-          cursor.z = anchor.z;
-        }
+        if (anchor) putIceMark(cursor, anchor.x, anchor.z);
       }
     }
     cursor.driven = false;
@@ -419,8 +432,7 @@ export function FormationMarkDriver({
       cursor.lock = null;
       return;
     }
-    cursor.x = anchor.x;
-    cursor.z = anchor.z;
+    putIceMark(cursor, anchor.x, anchor.z);
   });
   return null;
 }

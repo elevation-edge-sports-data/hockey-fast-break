@@ -53,6 +53,10 @@ const {
   repoJsonName,
   retiredNamesForFile,
   nextAfterLeftRemove,
+  copiesForRightRemove,
+  editedFormationName,
+  formationSaveName,
+  isEditedFormationName,
   readRetiredFormations,
   writeRetiredFormations,
   applyReplayPose,
@@ -78,6 +82,8 @@ const { readReplayLibrary, writeReplayLibrary, partitionReplayLibrary, replayCli
   replayLib;
 const { gameSpeedRate } = store;
 const mark = await server.ssrLoadModule("/src/game/iceMark.ts");
+const rinkGeom = await server.ssrLoadModule("/src/game/rink.ts");
+const iceGrid = await server.ssrLoadModule("/src/game/iceGrid.ts");
 const { world } = sim;
 const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const { inferNamedPose } = poses;
@@ -412,6 +418,100 @@ test("the ice X uses the pause-replay zoom speed and the shadow center", () => {
   assert.equal(mark.orbitStick(0, 1.4, 0, -1, 1).phi, 1.45);
 });
 
+test("the ice X clamp stays on the ice, including the rounded corners", () => {
+  const { RINK_L, RINK_W, CORNER_R } = rinkGeom;
+  const halfL = RINK_L / 2;
+  const halfW = RINK_W / 2;
+  const inside = mark.clampIceMark(1.25, -2.5);
+  assert.equal(inside.x, 1.25);
+  assert.equal(inside.z, -2.5);
+  const end = mark.clampIceMark(halfL + 40, 1);
+  assert.equal(end.x, halfL);
+  assert.equal(end.z, 1);
+  const side = mark.clampIceMark(-3, -(halfW + 10));
+  assert.equal(side.x, -3);
+  assert.equal(side.z, -halfW);
+  const corner = mark.clampIceMark(halfL, halfW);
+  const innerL = halfL - CORNER_R;
+  const innerW = halfW - CORNER_R;
+  const dx = Math.abs(corner.x) - innerL;
+  const dz = Math.abs(corner.z) - innerW;
+  assert.ok(dx * dx + dz * dz <= CORNER_R * CORNER_R + 1e-8);
+  assert.ok(Math.abs(corner.x) < halfL);
+  assert.ok(Math.abs(corner.z) < halfW);
+  const spot = { x: 99, z: -99 };
+  mark.putIceMark(spot, spot.x, spot.z);
+  assert.ok(Math.abs(spot.x) <= halfL);
+  assert.ok(Math.abs(spot.z) <= halfW);
+  const edit = readFileSync(join(repo, "src/game/FormationEdit.tsx"), "utf8");
+  const replay = readFileSync(join(repo, "src/game/ReplayViewerView.tsx"), "utf8");
+  const simSrc = readFileSync(join(repo, "src/game/sim.ts"), "utf8");
+  assert.match(edit, /putIceMark/);
+  assert.match(replay, /putIceMark/);
+  assert.match(simSrc, /clampReplayMark\(\)/);
+});
+
+test("formation gridlines are a 5 m lattice inside the rink", () => {
+  const grid = iceGrid;
+  const { resolveRink } = rinkGeom;
+  assert.equal(grid.ICE_GRID_STEP, 5);
+  const lines = grid.iceGridSegments();
+  const vertical = lines.filter(([x0, , x1]) => x0 === x1);
+  const horizontal = lines.filter(([, z0, , z1]) => z0 === z1);
+  const xs = new Set(vertical.map(([x]) => x));
+  const zs = new Set(horizontal.map(([, z]) => z));
+  assert.ok(xs.has(0) && xs.has(5) && xs.has(-10) && xs.has(30));
+  assert.equal(xs.has(35), false);
+  assert.ok(zs.has(0) && zs.has(5) && zs.has(-10));
+  assert.equal(zs.has(15), false);
+  const mid = vertical.find(([x]) => x === 0);
+  const end = vertical.find(([x]) => x === 30);
+  assert.ok(mid && end);
+  assert.ok(Math.abs(mid[3] - mid[1]) > Math.abs(end[3] - end[1]) + 1);
+  for (const [x0, z0, x1, z1] of lines) {
+    for (const [x, z] of [
+      [x0, z0],
+      [x1, z1],
+    ]) {
+      const ice = resolveRink(x, z, 0);
+      const drift = Math.hypot(ice.x - x, ice.z - z);
+      assert.ok(drift < 1e-3, `${x},${z} left the ice by ${drift}`);
+    }
+  }
+
+  const previous = globalThis.sessionStorage;
+  const bag = new Map();
+  globalThis.sessionStorage = {
+    getItem: (k) => (bag.has(k) ? bag.get(k) : null),
+    setItem: (k, v) => bag.set(k, String(v)),
+    removeItem: (k) => bag.delete(k),
+    clear: () => bag.clear(),
+    key: (i) => [...bag.keys()][i] ?? null,
+    get length() {
+      return bag.size;
+    },
+  };
+  try {
+    assert.equal(grid.readFormationGrid(), false);
+    grid.writeFormationGrid(true);
+    assert.equal(grid.readFormationGrid(), true);
+    grid.writeFormationGrid(false);
+    assert.equal(grid.readFormationGrid(), false);
+  } finally {
+    if (previous === undefined) delete globalThis.sessionStorage;
+    else globalThis.sessionStorage = previous;
+  }
+
+  const view = readFileSync(join(repo, "src/game/FormationLibraryView.tsx"), "utf8");
+  const kits = view.indexOf("<FormationKits />");
+  const button = view.indexOf("Gridlines");
+  const center = view.indexOf('className="formation-top-center"');
+  assert.ok(kits !== -1 && button > kits && center > button);
+  assert.match(view, /formation-grid-toggle/);
+  assert.match(view, /writeFormationGrid/);
+  assert.match(view, /\{grid \? <IceGrid \/> : null\}/);
+});
+
 test("moving a selected player stores the root that keeps the shadow on the mark", () => {
   const saved = structuredClone(frame);
   const release = mountFormation(saved.adjusted);
@@ -567,6 +667,28 @@ test("remove unlinks a repo file from either panel and leaves a never-saved impo
   assert.match(view, /deleteRepoJson\("formations"/);
   assert.equal((view.match(/void remove\(chosen\.id\)/g) ?? []).length, 2);
   assert.doesNotMatch(view, /moveRepoToLeft/);
+  assert.match(view, /copiesForRightRemove/);
+  assert.doesNotMatch(view, /Download formation/);
+  const parked = copiesForRightRemove(onDisk, rows, () => "import-copy");
+  assert.equal(parked.length, 1);
+  assert.equal(parked[0].id, "import-copy");
+  assert.equal(parked[0].name, "slot.json");
+  assert.notEqual(parked[0].frame, onDisk.frame);
+  assert.equal(parked[0].frame.adjusted.puck.x, frame.adjusted.puck.x);
+  let n = 0;
+  const rangeCopies = copiesForRightRemove(other, rows, () => `range-copy-${n++}`);
+  assert.deepEqual(
+    rangeCopies.map((item) => item.name),
+    ["range.json · 12", "range.json · 13"],
+  );
+  assert.equal(copiesForRightRemove(imported, rows, () => "nope").length, 0);
+  assert.equal(editedFormationName("slot.json"), "slot.json (edited)");
+  assert.equal(editedFormationName("slot.json (edited)"), "slot.json (edited)");
+  assert.equal(isEditedFormationName("slot.json (edited)"), true);
+  assert.equal(formationSaveName("slot.json (edited)", "slot.json (edited)"), "slot");
+  assert.equal(formationSaveName("range.json · 12 (edited)", "range.json · 12 (edited)"), "range");
+  assert.equal(formationSaveName("slot.json (edited)", "other"), "other");
+  assert.equal(formationSaveName("slot.json", "slot"), "slot");
   assert.match(view, /imported\.length > 0 \?/);
   assert.match(view, /repo\.length > 0 \?/);
 });
@@ -750,8 +872,8 @@ test("locked-frame download keeps original and adjusted, matching the in-game re
   assert.match(edit, /iceBasisMove\(dt, LOCK_SLIDE_MPS/);
   assert.match(edit, /iceBasisStep\(\s*dt,\s*viewRadius\.current/);
   assert.match(edit, /writeAdjustedPositions\(frame, viewRef\.current\)/);
-  assert.match(library, /Download formation/);
-  assert.match(library, /downloadFormationFrame\(chosen\.frame\)/);
+  assert.doesNotMatch(library, /Download formation/);
+  assert.doesNotMatch(library, /downloadFormationFrame/);
   assert.match(library, /<FormationMarkDriver/);
   assert.match(replay, /Edit formation/);
   assert.match(replay, /"Revert"/);

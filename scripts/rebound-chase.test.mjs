@@ -188,3 +188,40 @@ test("a shot still aimed into the net does not pull the point", () => {
   for (let i = 0; i < 16; i++) stepSim(1 / 60);
   assert.ok(dist(rd) > d0 - 1.2, `RD crashed a shot on net (closed ${(d0 - dist(rd)).toFixed(2)})`);
 });
+
+test("the on-side away defenseman claims a loose puck coming back", () => {
+  fresh();
+  const defs = byKind("away", "defense");
+  const wings = byKind("away", "winger");
+  const ld = defs[0];
+  const rd = defs[1];
+  assert.ok(ld && rd && ld.z * rd.z < 0, "pair is split");
+  const ldSign = Math.sign(ld.z);
+  world.userId = byKind("home", "winger")[1].id;
+  for (const s of world.skaters) {
+    if (s.side === "home" && s.kind !== "goalie") place(s, 20, (s.id - 4) * 2.2);
+  }
+  place(wings[1], 1.5, 0.3);
+  wings[1].stun = 1.4;
+  wings[1].struck = 0.9;
+  place(wings[0], -2.4, -ldSign * 6.4);
+  place(wings[2], -2.2, ldSign * 6.6);
+  place(ld, -3.1, ldSign * 3.2);
+  place(rd, -3.5, -ldSign * 3.3);
+  loosePuck(2.6, ldSign * 1.6, -9.2, ldSign * 0.7);
+  world.lastShoot = world.time;
+  world.lastPass = world.time;
+  const d0 = dist(ld);
+  let minSep = Infinity;
+  for (let i = 0; i < 90; i++) {
+    stepSim(1 / 60);
+    minSep = Math.min(minSep, Math.hypot(ld.x - rd.x, ld.z - rd.z));
+  }
+  assert.ok(
+    world.puck.owner === ld.id || dist(ld) < d0 - 1.8,
+    `LD did not claim it (now ${dist(ld).toFixed(2)}, was ${d0.toFixed(2)}, owner ${world.puck.owner})`,
+  );
+  assert.ok(rd.z * -ldSign > 1, `RD left his side (z ${rd.z.toFixed(2)})`);
+  assert.ok(ld.z * ldSign > 0.4, `LD crossed the puck side (z ${ld.z.toFixed(2)})`);
+  assert.ok(minSep > 2.2, `pair closed to ${minSep.toFixed(2)}`);
+});

@@ -148,3 +148,113 @@ test("a faceoff pass back keeps the left defenseman on his side, then he chases 
   assert.ok(rdMax < POST + 0.35, `RD crossed the far post (z ${rdMax.toFixed(2)})`);
   assert.ok(ld.z > rd.z, `defensemen swapped sides (LD ${ld.z.toFixed(2)}, RD ${rd.z.toFixed(2)})`);
 });
+
+function awayDefs() {
+  return world.skaters
+    .filter((s) => s.side === "away" && s.kind === "defense")
+    .sort((a, b) => a.id - b.id);
+}
+
+test("away defensemen keep a gap and their faceoff sides through the draw", () => {
+  fresh();
+  for (let i = 0; i < 120 && world.faceoffPhase !== "live"; i++) step(1);
+  assert.equal(world.faceoffPhase, "live");
+  const [ld, rd] = awayDefs();
+  assert.ok(ld && rd);
+  const ldSign = Math.sign(ld.z);
+  const rdSign = Math.sign(rd.z);
+  assert.ok(ldSign !== 0 && rdSign === -ldSign, `faceoff sides ${ld.z.toFixed(2)} ${rd.z.toFixed(2)}`);
+  let minSep = Infinity;
+  const realRandom = Math.random;
+  Math.random = () => 0.97;
+  try {
+    for (let i = 0; i < 150; i++) {
+      step(1);
+      minSep = Math.min(minSep, Math.hypot(ld.x - rd.x, ld.z - rd.z));
+      assert.ok(ld.z * ldSign > 0.8, `LD left his side (z ${ld.z.toFixed(2)})`);
+      assert.ok(rd.z * rdSign > 0.8, `RD left his side (z ${rd.z.toFixed(2)})`);
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+  assert.ok(minSep > 2.2, `away D closed to ${minSep.toFixed(2)}`);
+});
+
+test("a same-team defense pair cannot occupy one spot", () => {
+  fresh();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  const [a, b] = awayDefs();
+  assert.ok(a && b);
+  for (const s of world.skaters) {
+    if (s.id === a.id || s.id === b.id) continue;
+    s.x = 22;
+    s.z = -12 + s.id;
+    s.vx = 0;
+    s.vz = 0;
+    s.stun = 3;
+  }
+  a.x = 0;
+  a.z = 0;
+  b.x = 0.25;
+  b.z = 0;
+  a.vx = 0;
+  a.vz = 0;
+  b.vx = 0;
+  b.vz = 0;
+  a.stun = 3;
+  b.stun = 3;
+  world.puck.owner = null;
+  world.puck.x = 24;
+  world.puck.z = 10;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  step(1);
+  const sep = Math.hypot(a.x - b.x, a.z - b.z);
+  assert.ok(sep >= 2.3, `defense gap ${sep.toFixed(3)}`);
+});
+
+test("a loose puck on one side does not swap the away defense pair", () => {
+  fresh();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  const [ld, rd] = awayDefs();
+  assert.ok(ld && rd);
+  const ldSign = Math.sign(ld.z) || -1;
+  const rdSign = Math.sign(rd.z) || 1;
+  ld.x = -4.5;
+  ld.z = ldSign * 3.2;
+  rd.x = -4.5;
+  rd.z = rdSign * 3.2;
+  ld.vx = rd.vx = 0;
+  ld.vz = rd.vz = 0;
+  ld.stun = rd.stun = 0;
+  for (const s of world.skaters) {
+    if (s.id === ld.id || s.id === rd.id || s.kind === "goalie") continue;
+    s.x = 20;
+    s.z = -11 + s.id;
+    s.vx = 0;
+    s.vz = 0;
+    s.stun = 5;
+  }
+  const puck = world.puck;
+  puck.owner = null;
+  puck.x = 2.2;
+  puck.z = ldSign * 1.4;
+  puck.y = 0.05;
+  puck.vx = ldSign * 4;
+  puck.vz = ldSign * 1.6;
+  puck.vy = 0;
+  let minSep = Infinity;
+  for (let i = 0; i < 100; i++) {
+    puck.owner = null;
+    step(1);
+    minSep = Math.min(minSep, Math.hypot(ld.x - rd.x, ld.z - rd.z));
+  }
+  assert.ok(ld.z * ldSign > 1.2, `LD left the puck side (z ${ld.z.toFixed(2)})`);
+  assert.ok(rd.z * rdSign > 1.2, `RD crossed onto the puck (z ${rd.z.toFixed(2)})`);
+  assert.ok(minSep > 2.2, `away D closed to ${minSep.toFixed(2)}`);
+});

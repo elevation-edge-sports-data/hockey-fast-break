@@ -8,11 +8,14 @@ import {
   lookOf,
   takeFormationPick,
 } from "./FormationEdit";
-import { downloadFormationFrame } from "./formationDownload";
 import {
+  copiesForRightRemove,
+  editedFormationName,
   formUndoDepth,
+  formationSaveName,
   formationSideOf,
   freshFormHist,
+  isEditedFormationName,
   mountFormation,
   type FormationView,
   redoFormEdit,
@@ -34,7 +37,7 @@ import {
   type FormationFrame,
 } from "./formationLibrary";
 import { IceCross } from "./IceCross";
-import { type IceMark } from "./iceMark";
+import { iceMarkAt, type IceMark } from "./iceMark";
 import { PlayerMesh, PuckMesh } from "./PlayerMesh";
 import { setPoseInfer } from "./poseOverrides";
 import { inferNamedPose } from "./poseOverrideInfer";
@@ -42,6 +45,8 @@ import { Rink } from "./Rink.tsx";
 import { RinkOrbitCamera } from "./RinkOrbitCamera";
 import { world } from "./sim";
 import { FormationKits } from "./FormationKits";
+import { IceGrid } from "./FormationIceGrid";
+import { readFormationGrid, writeFormationGrid } from "./iceGrid";
 import { useGame } from "./store";
 
 setPoseInfer(inferNamedPose);
@@ -52,12 +57,14 @@ function FormationStage({
   hist,
   onDepth,
   editRef,
+  grid,
 }: {
   frame: FormationFrame;
   view: FormationView;
   hist: MutableRefObject<FormHist>;
   onDepth: (undo: number, redo: number) => void;
   editRef: MutableRefObject<{ undo: () => void; redo: () => void }>;
+  grid: boolean;
 }) {
   const homeKit = useGame((s) => s.homeKit);
   const awayKit = useGame((s) => s.awayKit);
@@ -69,7 +76,7 @@ function FormationStage({
   const onDepthRef = useRef(onDepth);
   onDepthRef.current = onDepth;
   const shown = formationSideOf(frame, view);
-  const mark = useRef<IceMark>({ x: shown.puck.x, z: shown.puck.z, lock: null, driven: false });
+  const mark = useRef<IceMark>(iceMarkAt(shown.puck.x, shown.puck.z));
   const orbit = useRef({ theta: 0, phi: 0.97, radius: 16 });
   const adjusted = useRef(false);
   const viewRadius = useRef(16);
@@ -90,7 +97,7 @@ function FormationStage({
   useLayoutEffect(() => {
     const side = formationSideOf(frame, view);
     const release = mountFormation(side);
-    mark.current = { x: side.puck.x, z: side.puck.z, lock: null, driven: false };
+    mark.current = iceMarkAt(side.puck.x, side.puck.z);
     hist.current = freshFormHist();
     onDepthRef.current(0, 0);
     setRev((n) => n + 1);
@@ -104,6 +111,7 @@ function FormationStage({
       <ambientLight intensity={0.4} />
       <directionalLight position={[18, 32, 10]} intensity={1.5} />
       <Rink />
+      {grid ? <IceGrid /> : null}
       <FormationMarkDriver
         mark={mark}
         frameRef={frameRef}
@@ -234,17 +242,87 @@ export function FormationLibraryView() {
   const [repoName, setRepoName] = useState("");
   const [depth, setDepth] = useState({ undo: 0, redo: 0 });
   const [view, setView] = useState<FormationView>("adjusted");
+  const [gridOn, setGridOn] = useState(() => readFormationGrid());
   const fileRef = useRef<HTMLInputElement>(null);
   const hist = useRef(freshFormHist());
   const editRef = useRef({ undo: () => {}, redo: () => {} });
-  const onDepth = (undo: number, redo: number) => {
-    setDepth((prev) => (prev.undo === undo && prev.redo === redo ? prev : { undo, redo }));
-  };
+  const pristineRef = useRef<FormationFrame | null>(null);
+  const pristineId = useRef<string | null>(null);
+  const forkedRef = useRef<string | null>(null);
+  const savedRef = useRef(saved);
+  const retiredRef = useRef(retired);
+  savedRef.current = saved;
+  retiredRef.current = retired;
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
   const chosen = entries.find((entry) => entry.id === selected) ?? null;
   const imported = entries.filter((entry) => !entry.id.startsWith("bundled:"));
   const repo = entries.filter((entry) => entry.id.startsWith("bundled:"));
+
+  const rememberEdit = (undo: number, redo: number) => {
+    const entry = entriesRef.current.find((item) => item.id === selected);
+    if (!entry || (undo === 0 && redo === 0)) return;
+    if (isEditedFormationName(entry.name)) {
+      if (!entry.id.startsWith("bundled:")) {
+        writeFormationLibrary(
+          readFormationLibrary().map((item) => (item.id === entry.id ? { ...item, frame: entry.frame } : item)),
+        );
+      }
+      return;
+    }
+    if (forkedRef.current === entry.id) return;
+    const pristine = pristineRef.current;
+    if (!pristine || pristineId.current !== entry.id) return;
+    forkedRef.current = entry.id;
+    const copy: FormationEntry = {
+      id: `edited-${crypto.randomUUID()}`,
+      name: editedFormationName(entry.name),
+      frame: entry.frame,
+    };
+    let local = readFormationLibrary();
+    if (!entry.id.startsWith("bundled:")) {
+      local = local.map((item) =>
+        item.id === entry.id ? { ...item, frame: structuredClone(pristine) } : item,
+      );
+    }
+    const err = writeFormationLibrary([...local.filter((item) => item.id !== copy.id), copy]);
+    if (err) {
+      forkedRef.current = null;
+      setNotice(err);
+      return;
+    }
+    let nextSaved = savedRef.current;
+    if (nextSaved.some((item) => item.id === entry.id || item.frame === entry.frame)) {
+      nextSaved = nextSaved.map((item) =>
+        item.id === entry.id || item.frame === entry.frame
+          ? { ...item, frame: structuredClone(pristine) }
+          : item,
+      );
+      setSaved(nextSaved);
+    }
+    const listed = libraryEntries(nextSaved, retiredRef.current).map((item) =>
+      item.id === copy.id ? { ...item, frame: entry.frame } : item,
+    );
+    setEntries(listed);
+    setSelected(copy.id);
+    setNotice(null);
+  };
+  const onDepth = (undo: number, redo: number) => {
+    rememberEdit(undo, redo);
+    setDepth((prev) => (prev.undo === undo && prev.redo === redo ? prev : { undo, redo }));
+  };
+
+  useLayoutEffect(() => {
+    if (!chosen) {
+      pristineRef.current = null;
+      pristineId.current = null;
+      return;
+    }
+    if (pristineId.current === chosen.id) return;
+    pristineRef.current = structuredClone(chosen.frame);
+    pristineId.current = chosen.id;
+    forkedRef.current = null;
+  }, [chosen]);
 
   useEffect(() => {
     const entry = entriesRef.current.find((item) => item.id === selected);
@@ -323,11 +401,22 @@ export function FormationLibraryView() {
     const rows = entriesRef.current;
     const entry = rows.find((item) => item.id === id);
     if (!entry) return;
+    const fromRight = entry.id.startsWith("bundled:");
+    const priorLocal = readFormationLibrary();
+    const copied = copiesForRightRemove(entry, rows, () => `import-${crypto.randomUUID()}`);
+    if (copied.length) {
+      const copyErr = writeFormationLibrary([...priorLocal, ...copied]);
+      if (copyErr) {
+        setNotice(copyErr);
+        return;
+      }
+    }
     const file = libraryRemoveFile(entry, rows, retired);
     let deleted: string | null = null;
     if (file) {
       deleted = await deleteRepoJson("formations", file);
       if (!deleted) {
+        if (copied.length) writeFormationLibrary(priorLocal);
         setNotice("Could not remove that formation.");
         return;
       }
@@ -335,7 +424,7 @@ export function FormationLibraryView() {
     const next = deleted
       ? libraryStateAfterDelete(readFormationLibrary(), saved, retired, rows, id, deleted)
       : { local: readFormationLibrary().filter((item) => item.id !== id), saved, retired };
-    const err = entry.id.startsWith("bundled:") ? null : writeFormationLibrary(next.local);
+    const err = fromRight ? null : writeFormationLibrary(next.local);
     if (deleted) {
       setSaved(next.saved);
       // File is gone. Keep the retired entry so the stale glob cannot bring it back.
@@ -344,25 +433,30 @@ export function FormationLibraryView() {
     const listed = libraryEntries(next.saved, next.retired);
     setEntries(listed);
     setNotice(err);
+    if (fromRight) {
+      const kept = copied.find((item) => item.name === entry.name) ?? copied[0];
+      setSelected(kept?.id ?? null);
+      setView("adjusted");
+      return;
+    }
     if (listed.some((item) => item.id === selected)) return;
     const left = listed.filter((item) => !item.id.startsWith("bundled:"));
     const right = listed.filter((item) => item.id.startsWith("bundled:"));
-    const pick = entry.id.startsWith("bundled:")
-      ? nextAfterLeftRemove(right, left)
-      : nextAfterLeftRemove(left, right);
+    const pick = nextAfterLeftRemove(left, right);
     setSelected(pick?.id ?? null);
     setView("adjusted");
   };
 
   const saveCurrent = async (name: string) => {
-    if (!chosen || !name.trim()) return;
+    const saveName = chosen ? formationSaveName(chosen.name, name) : "";
+    if (!chosen || !saveName.trim()) return;
     let res: Response;
     try {
       res = await fetch("/api/formations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name,
+          name: saveName,
           frame: chosen.frame,
           from: chosen.id.startsWith("bundled:") ? chosen.name : undefined,
         }),
@@ -415,6 +509,20 @@ export function FormationLibraryView() {
             <h1>Formations</h1>
           </div>
           <FormationKits />
+          <button
+            type="button"
+            className={`btn-ghost formation-grid-toggle${gridOn ? " is-on" : ""}`}
+            aria-pressed={gridOn}
+            onClick={() => {
+              setGridOn((on) => {
+                const next = !on;
+                writeFormationGrid(next);
+                return next;
+              });
+            }}
+          >
+            Gridlines
+          </button>
         </div>
         <div className="formation-top-center">
           <button type="button" className="btn-primary" onClick={() => fileRef.current?.click()}>
@@ -454,19 +562,6 @@ export function FormationLibraryView() {
             onClick={() => editRef.current.redo()}
           >
             Redo
-          </button>
-          <button
-            type="button"
-            className="btn-ghost"
-            disabled={!chosen}
-            onKeyDown={(e) => {
-              if (e.code === "Space") e.preventDefault();
-            }}
-            onClick={() => {
-              if (chosen) downloadFormationFrame(chosen.frame);
-            }}
-          >
-            Download formation
           </button>
         </div>
       </header>
@@ -557,6 +652,7 @@ export function FormationLibraryView() {
               hist={hist}
               onDepth={onDepth}
               editRef={editRef}
+              grid={gridOn}
             />
           </Canvas>
         ) : (

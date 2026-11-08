@@ -1882,6 +1882,16 @@ h2 {
   justify-self: start;
 }
 
+.formation-grid-toggle {
+  width: auto;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.formation-grid-toggle.is-on {
+  border-color: var(--color-accent);
+}
+
 .formation-top-center {
   justify-self: center;
 }

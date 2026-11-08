@@ -3,6 +3,14 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { PlayerMesh, SeatedPlayer } from "./PlayerMesh";
+import {
+  POSE_GALLERY_CAMERA,
+  POSE_GALLERY_FILL,
+  POSE_GALLERY_KEY,
+  POSE_GALLERY_TARGET,
+  PoseAxisLegend,
+  poseModelYaw,
+} from "./poseViewFrame";
 import { world } from "./sim";
 import { useGame } from "./store";
 import { kitById, UNIFORMS } from "./uniforms";
@@ -36,12 +44,13 @@ function PoseStage({ pose, index, kitId, seat }: { pose: string; index: number; 
       <color attach="background" args={["#070b12"]} />
       <ambientLight intensity={0.55} />
       <hemisphereLight args={["#d7e8f4", "#1a2838", 0.45]} />
-      <directionalLight position={[3.2, 6.5, -2.4]} intensity={1.35} />
-      <directionalLight position={[-3.5, 3.2, 3]} intensity={0.28} />
+      <directionalLight position={POSE_GALLERY_KEY} intensity={1.35} />
+      <directionalLight position={POSE_GALLERY_FILL} intensity={0.28} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
         <planeGeometry args={[14, 14]} />
         <meshStandardMaterial color="#d5e4ee" roughness={0.4} metalness={0.02} />
       </mesh>
+      <group rotation={[0, poseModelYaw(seat !== null), 0]}>
       {seat ? (
         <SeatedPlayer
           key={`${pose}-${index}-kit-${kitId}`}
@@ -55,9 +64,10 @@ function PoseStage({ pose, index, kitId, seat }: { pose: string; index: number; 
       ) : (
         <PlayerMesh key={`${pose}-${index}-kit-${kitId}`} index={index} kitId={kitId} />
       )}
+      </group>
       <OrbitControls
         makeDefault
-        target={[0, 0.9, 0]}
+        target={[...POSE_GALLERY_TARGET]}
         enableDamping={false}
         enableRotate
         enableZoom
@@ -229,16 +239,17 @@ export function PoseGalleryView<Id extends string>({
               frameloop="always"
               dpr={[1, 1.5]}
               gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 0.92 }}
-              camera={{ position: [1.8, 1.4, -3.6], fov: 38, near: 0.05, far: 50 }}
+              camera={{ position: [...POSE_GALLERY_CAMERA], fov: 38, near: 0.05, far: 50 }}
               onCreated={({ gl, camera }) => {
                 gl.setClearColor("#070b12");
-                camera.lookAt(0, 0.9, 0);
+                camera.lookAt(...POSE_GALLERY_TARGET);
               }}
               style={{ width: "100%", height: "100%", display: "block" }}
             >
               <PoseStage pose={pose} index={index} kitId={homeKit} seat={seated?.(pose) ?? null} />
             </Canvas>
           )}
+          <PoseAxisLegend />
         </div>
       </div>
     </div>

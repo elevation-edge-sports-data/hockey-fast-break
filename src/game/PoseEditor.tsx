@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentRef, type CSSProperties } from "react";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, TransformControls } from "@react-three/drei";
 import * as THREE from "three";
 import { PlayerMesh, SeatedPlayer } from "./PlayerMesh";
@@ -16,6 +16,14 @@ import {
   setWorldEulerAxis,
 } from "./poseWorldEuler";
 import { mountStickKnobPivot, mountStickOnHand, releaseStickFromHand, releaseStickKnobPivot } from "./stickKnobPivot";
+import {
+  pinPoseIceMarks,
+  POSE_EDITOR_CAMERA,
+  POSE_EDITOR_LIGHT,
+  POSE_EDITOR_TARGET,
+  PoseAxisLegend,
+  poseModelYaw,
+} from "./poseViewFrame";
 import { setRageGizmoDrag, world } from "./sim";
 import { kitById, UNIFORMS } from "./uniforms";
 
@@ -367,6 +375,14 @@ function applyJoint(snap: JointSnap) {
   snap.object.updateMatrixWorld();
 }
 
+/** Runs after PlayerMesh, so a bake that plants the shadow at the hips is pinned back to the origin. */
+function PinIceOrigin({ root }: { root: { current: THREE.Group | null } }) {
+  useFrame(() => {
+    if (root.current) pinPoseIceMarks(root.current);
+  }, 1);
+  return null;
+}
+
 /**
  * Write the gallery pose, then freeze so the gizmo is not overwritten.
  * A save locks edits. Switching during that save still bakes: the lock is
@@ -447,6 +463,7 @@ function Scene({
   hand: THREE.Object3D | null;
 }) {
   const orbitRef = useRef<ComponentRef<typeof OrbitControls>>(null);
+  const playerRef = useRef<THREE.Group>(null);
   const pivotRef = useRef<THREE.Group>(new THREE.Group());
   const pivotedStick = useRef<THREE.Object3D | null>(null);
   const anchorRef = useRef<THREE.Group>(new THREE.Group());
@@ -608,10 +625,10 @@ function Scene({
     <>
       <color attach="background" args={[SCENE_BG[sceneBg]]} />
       <ambientLight intensity={0.45} />
-      <directionalLight position={[4, 7, 4]} intensity={1.1} castShadow />
+      <directionalLight position={POSE_EDITOR_LIGHT} intensity={1.1} castShadow />
       <gridHelper args={[8, 16, GRID_BG[sceneBg][0], GRID_BG[sceneBg][1]]} />
 
-      <group visible={showPlayer}>
+      <group ref={playerRef} visible={showPlayer} rotation={[0, poseModelYaw(seat !== null), 0]}>
         {seat ? (
           <SeatedPlayer
             key={`${pose}-${bake}`}
@@ -636,6 +653,7 @@ function Scene({
           />
         )}
       </group>
+      <PinIceOrigin root={playerRef} />
       <PoseBake token={bake} onBaked={onBaked} />
 
       {editable && gizmo && (
@@ -680,7 +698,7 @@ function Scene({
         />
       )}
 
-      <OrbitControls ref={orbitRef} makeDefault enableDamping={false} target={[0, 0.95, 0]} />
+      <OrbitControls ref={orbitRef} makeDefault enableDamping={false} target={[...POSE_EDITOR_TARGET]} />
     </>
   );
 }
@@ -1026,9 +1044,15 @@ export function PoseEditor({
         })}
       </aside>
 
-      <div style={{ gridColumn: 2, gridRow: 2, flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: SCENE_BG[sceneBg] }}>
+      <div style={{ gridColumn: 2, gridRow: 2, position: "relative", flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: SCENE_BG[sceneBg] }}>
         {meshIndex !== null ? (
-          <Canvas shadows frameloop="demand" camera={{ position: [2.8, 1.6, 3.6], fov: 38 }}>
+          <>
+          <Canvas
+            shadows
+            frameloop="demand"
+            camera={{ position: [...POSE_EDITOR_CAMERA], fov: 38 }}
+            onCreated={({ camera }) => camera.lookAt(...POSE_EDITOR_TARGET)}
+          >
             <EditorScene
               selected={selected}
               mode={mode}
@@ -1056,6 +1080,8 @@ export function PoseEditor({
               }
             />
           </Canvas>
+          <PoseAxisLegend />
+          </>
         ) : null}
       </div>
 

@@ -1,3 +1,5 @@
+import { resolveRink } from "./rink";
+
 /**
  * Ice X shared by the formation library and the replay viewer.
  * Pause replay pans with `cam.radius * 0.9` metres per second at full stick.
@@ -25,6 +27,27 @@ export type IceMark = {
   /** The free X has reached open ice, so the next body it meets can be carried. */
   driven: boolean;
 };
+
+/**
+ * Keep an ice X on the ice. Straight boards are ±RINK_L/2 and ±RINK_W/2.
+ * Past the corner the arc of CORNER_R pulls the point back in, same as resolveRink.
+ */
+export function clampIceMark(x: number, z: number): { x: number; z: number } {
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return { x: 0, z: 0 };
+  const ice = resolveRink(x, z, 0);
+  return { x: ice.x, z: ice.z };
+}
+
+export function putIceMark(mark: { x: number; z: number }, x: number, z: number): void {
+  const at = clampIceMark(x, z);
+  mark.x = at.x;
+  mark.z = at.z;
+}
+
+export function iceMarkAt(x: number, z: number, lock: MarkLock | null = null, driven = false): IceMark {
+  const at = clampIceMark(x, z);
+  return { x: at.x, z: at.z, lock, driven };
+}
 
 export function markMetersPerSecond(radius: number): number {
   return radius * MARK_SPEED_PER_RADIUS;

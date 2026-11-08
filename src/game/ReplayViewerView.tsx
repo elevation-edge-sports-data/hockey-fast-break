@@ -36,9 +36,11 @@ import { attachInput, gamepadFaceDown, readActions, windowHasInputFocus } from "
 import {
   MARK_STICK_GATE,
   cycleMarkLock,
+  clampIceMark,
   iceBasisStep,
   nearestMark,
   orbitStick,
+  putIceMark,
   shadowXZ,
   type IceMark,
   type MarkLock,
@@ -91,8 +93,7 @@ function snapMark(mark: IceMark): void {
   const lock = mark.lock;
   if (!lock) return;
   if (lock.kind === "puck") {
-    mark.x = world.puck.x;
-    mark.z = world.puck.z;
+    putIceMark(mark, world.puck.x, world.puck.z);
     return;
   }
   const s = world.skaters[lock.index];
@@ -101,8 +102,7 @@ function snapMark(mark: IceMark): void {
     return;
   }
   const at = shadowXZ(s.comX, s.comZ, s.x, s.z);
-  mark.x = at.x;
-  mark.z = at.z;
+  putIceMark(mark, at.x, at.z);
 }
 
 /**
@@ -110,7 +110,8 @@ function snapMark(mark: IceMark): void {
  * A later pan, ice click, or Y tap can leave that lock.
  */
 function openReplayMark(x: number, z: number): IceMark {
-  return { x, z, lock: { kind: "puck" }, driven: false };
+  const at = clampIceMark(x, z);
+  return { x: at.x, z: at.z, lock: { kind: "puck" }, driven: false };
 }
 
 /** Gamepad Y with the stick centered: next player, then the free X, then the puck again. */
@@ -327,8 +328,7 @@ function ReplayDriver({
         }
         const spots = viewerShadows();
         const before = nearestMark(cursor.x, cursor.z, spots.players, spots.puck);
-        cursor.x += step.dx;
-        cursor.z += step.dz;
+        putIceMark(cursor, cursor.x + step.dx, cursor.z + step.dz);
         const after = nearestMark(cursor.x, cursor.z, spots.players, spots.puck);
         if (!after) cursor.driven = true;
         if (after && cursor.driven && !sameLock(before, after)) {
@@ -418,14 +418,12 @@ function ReplayStage({
     }
     if (hit.kind === "ice") {
       cursor.lock = null;
-      cursor.x = hit.x;
-      cursor.z = hit.z;
+      putIceMark(cursor, hit.x, hit.z);
       return;
     }
     cursor.lock = hit;
     if (hit.kind === "puck") {
-      cursor.x = world.puck.x;
-      cursor.z = world.puck.z;
+      putIceMark(cursor, world.puck.x, world.puck.z);
       return;
     }
     const s = world.skaters[hit.index];
@@ -433,8 +431,7 @@ function ReplayStage({
       cursor.lock = null;
       return;
     }
-    cursor.x = Number.isFinite(s.comX) ? s.comX : s.x;
-    cursor.z = Number.isFinite(s.comZ) ? s.comZ : s.z;
+    putIceMark(cursor, Number.isFinite(s.comX) ? s.comX : s.x, Number.isFinite(s.comZ) ? s.comZ : s.z);
   };
 
   return (
@@ -505,12 +502,14 @@ function ReplayStage({
           if (cursor.lock?.kind === "skater") {
             const s = world.skaters[cursor.lock.index];
             if (s) {
-              cursor.x = Number.isFinite(s.comX) ? s.comX : s.x;
-              cursor.z = Number.isFinite(s.comZ) ? s.comZ : s.z;
+              putIceMark(
+                cursor,
+                Number.isFinite(s.comX) ? s.comX : s.x,
+                Number.isFinite(s.comZ) ? s.comZ : s.z,
+              );
             }
           } else if (cursor.lock?.kind === "puck") {
-            cursor.x = world.puck.x;
-            cursor.z = world.puck.z;
+            putIceMark(cursor, world.puck.x, world.puck.z);
           }
           return lookOf(cursor);
         }}

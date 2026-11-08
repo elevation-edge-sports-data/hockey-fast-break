@@ -214,6 +214,24 @@ function entryName(fileName: string, frames: FormationFrame[], frame: FormationF
   return `${fileName} · ${frame.frame}`;
 }
 
+/** Appended to a library name when an edit is copied to the left panel. */
+export const FORMATION_EDITED_SUFFIX = " (edited)";
+
+export function editedFormationName(name: string): string {
+  return name.endsWith(FORMATION_EDITED_SUFFIX) ? name : `${name}${FORMATION_EDITED_SUFFIX}`;
+}
+
+export function isEditedFormationName(name: string): boolean {
+  return name.endsWith(FORMATION_EDITED_SUFFIX);
+}
+
+/** Display name before " (edited)", or null when this row is not an edit copy. */
+export function editedSourceName(name: string): string | null {
+  if (!isEditedFormationName(name)) return null;
+  const source = name.slice(0, -FORMATION_EDITED_SUFFIX.length).trim();
+  return source || null;
+}
+
 export function entriesFromFile(fileName: string, text: string, idAt: () => string): FormationEntry[] | string {
   const frames = parseFormationJson(text);
   if (typeof frames === "string") return frames;
@@ -330,6 +348,42 @@ function displayBasename(name: string): string | null {
   const trimmed = name.trim().replace(/\\/g, "/").split("/").pop()?.trim() ?? "";
   const marked = trimmed.match(/^(.*\.json) · \d+$/i);
   return asJsonBasename(marked?.[1] ?? trimmed);
+}
+
+/**
+ * Name Save posts. An "(edited)" row updates the original file when the field
+ * still shows that copy. A renamed field is saved under the typed name.
+ */
+export function formationSaveName(entryName: string, typed: string): string {
+  const typedTrim = typed.trim();
+  const source = editedSourceName(entryName);
+  if (!source) return typedTrim;
+  const auto = entryName.replace(/\.json$/i, "");
+  if (typedTrim !== auto && typedTrim !== entryName && typedTrim !== `${auto}.json`) return typedTrim;
+  const file = displayBasename(source) ?? source;
+  return file.replace(/\.json$/i, "");
+}
+
+/**
+ * Left-panel copies of a right-panel remove. Every frame of that file is copied
+ * so unlinking the json does not drop the other frames. Left rows are not copied.
+ */
+export function copiesForRightRemove<T extends { id: string; name: string; frame: FormationFrame }>(
+  entry: T,
+  rows: readonly T[],
+  idAt: () => string,
+): T[] {
+  if (!entry.id.startsWith("bundled:")) return [];
+  const file = repoJsonName(entry.id, entry.name);
+  const group = file
+    ? rows.filter((row) => row.id.startsWith("bundled:") && repoJsonName(row.id, row.name) === file)
+    : [entry];
+  const list = group.length ? group : [entry];
+  return list.map((row) => ({
+    ...row,
+    id: idAt(),
+    frame: structuredClone(row.frame),
+  }));
 }
 
 /** Json basename for a library row. A multi-frame label keeps the file before " · ". */

@@ -56,11 +56,18 @@ const server = await createServer({
 after(() => server.close());
 
 const sim = await server.ssrLoadModule("/src/game/sim.ts");
+const rinkGeom = await server.ssrLoadModule("/src/game/rink.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const { orbitReplayPointer, zoomReplayPointer, resetWorld, stepSim, world, beginPauseReplay, stopPauseReplay, pauseGame, pickReplayLock, replayLockKind, toggleReplayFrameLock, replayFrameLocked, replayEditSkater, exportReplayFrame, rewindPauseReplay, undoReplayEdit, redoReplayEdit, replayUndoDepth, replayRedoDepth, seekReplay, replayFootagePct, goalieZKind, replayBoardNow, pressReplayShuttle, releaseReplayShuttle, toggleReplayTransport } = sim;
 const { inferNamedPose } = poses;
+const { resolveRink, RINK_L, RINK_W } = rinkGeom;
+
+function iceMarkInside(x, z) {
+  const ice = resolveRink(x, z, 0);
+  return !ice.hit && Math.abs(x) <= RINK_L / 2 + 1e-6 && Math.abs(z) <= RINK_W / 2 + 1e-6;
+}
 const { useGame } = store;
 const { setInjectedKeys } = input;
 
@@ -857,6 +864,116 @@ test("the left stick moves a locked player or the ice X like the arrow keys", ()
     assert.equal(world.skaters[0].z, heldZ);
     assert.equal(world.replayCam.phi, phi);
     assert.ok(world.replayCam.theta > theta);
+  } finally {
+    pads = [];
+    setInjectedKeys([]);
+    if (replayFrameLocked()) toggleReplayFrameLock();
+    stopPauseReplay();
+  }
+});
+
+test("a Y tap edits the body it just locked", () => {
+  bootReplay();
+  const dt = 1 / 60;
+  try {
+    assert.equal(toggleReplayFrameLock(), true);
+    assert.ok(world.skaters.length >= 2);
+    world.camFx = 1;
+    world.camFz = 0;
+    world.camRx = 0;
+    world.camRz = 1;
+    const tapY = () => {
+      setInjectedKeys(["KeyQ"]);
+      stepSim(dt);
+      setInjectedKeys([]);
+      stepSim(dt);
+    };
+    const slide = () => {
+      setInjectedKeys(["ArrowUp"]);
+      stepSim(dt);
+      setInjectedKeys([]);
+      stepSim(dt);
+    };
+
+    tapY();
+    assert.equal(replayLockKind(), "puck");
+    assert.equal(replayEditSkater(), null);
+    const beforePuck = exportReplayFrame();
+    slide();
+    const movedPuck = exportReplayFrame();
+    assert.ok(Math.abs(movedPuck.adjusted.puck.x - (beforePuck.adjusted.puck.x + 4 * dt)) < 1e-9);
+    assert.equal(movedPuck.adjusted.puck.z, beforePuck.adjusted.puck.z);
+    for (let i = 0; i < beforePuck.adjusted.players.length; i++) {
+      assert.equal(movedPuck.adjusted.players[i].x, beforePuck.adjusted.players[i].x);
+      assert.equal(movedPuck.adjusted.players[i].z, beforePuck.adjusted.players[i].z);
+    }
+
+    tapY();
+    assert.equal(replayLockKind(), "skater");
+    assert.equal(replayEditSkater(), 0);
+    const before0 = exportReplayFrame();
+    slide();
+    const moved0 = exportReplayFrame();
+    assert.ok(Math.abs(moved0.adjusted.players[0].x - (before0.adjusted.players[0].x + 4 * dt)) < 1e-9);
+    assert.equal(moved0.adjusted.players[0].z, before0.adjusted.players[0].z);
+    for (let i = 1; i < before0.adjusted.players.length; i++) {
+      assert.equal(moved0.adjusted.players[i].x, before0.adjusted.players[i].x);
+      assert.equal(moved0.adjusted.players[i].z, before0.adjusted.players[i].z);
+    }
+
+    tapY();
+    assert.equal(replayEditSkater(), 1);
+    const before1 = exportReplayFrame();
+    slide();
+    const moved1 = exportReplayFrame();
+    assert.equal(moved1.adjusted.players[0].x, before1.adjusted.players[0].x);
+    assert.equal(moved1.adjusted.players[0].z, before1.adjusted.players[0].z);
+    assert.ok(Math.abs(moved1.adjusted.players[1].x - (before1.adjusted.players[1].x + 4 * dt)) < 1e-9);
+    assert.equal(moved1.adjusted.players[1].z, before1.adjusted.players[1].z);
+    assert.equal(moved1.original.players[1].x, before1.original.players[1].x);
+  } finally {
+    setInjectedKeys([]);
+    pads = [];
+    if (replayFrameLocked()) toggleReplayFrameLock();
+    stopPauseReplay();
+  }
+});
+
+test("stick, arrows, and lock-follow keep the ice X inside the rink", () => {
+  bootReplay();
+  const dt = 1 / 60;
+  try {
+    world.camFx = 1;
+    world.camFz = 0;
+    world.camRx = 0;
+    world.camRz = 1;
+    pads = stickPad(1, -1);
+    for (let i = 0; i < 400; i++) stepSim(dt);
+    pads = [];
+    assert.equal(iceMarkInside(world.replayCam.lx, world.replayCam.lz), true);
+
+    world.replayCam.lx = RINK_L;
+    world.replayCam.lz = RINK_W;
+    stepSim(dt);
+    assert.equal(iceMarkInside(world.replayCam.lx, world.replayCam.lz), true);
+
+    assert.equal(toggleReplayFrameLock(), true);
+    setInjectedKeys(["ArrowUp", "ArrowRight"]);
+    for (let i = 0; i < 400; i++) stepSim(dt);
+    setInjectedKeys([]);
+    assert.equal(iceMarkInside(world.replayCam.lx, world.replayCam.lz), true);
+
+    setInjectedKeys(["KeyQ"]);
+    stepSim(dt);
+    setInjectedKeys([]);
+    stepSim(dt);
+    assert.equal(replayLockKind(), "puck");
+    setInjectedKeys(["ArrowUp"]);
+    for (let i = 0; i < 800; i++) stepSim(dt);
+    setInjectedKeys([]);
+    stepSim(dt);
+    assert.ok(Math.abs(world.puck.x) > RINK_L / 2);
+    assert.equal(iceMarkInside(world.replayCam.lx, world.replayCam.lz), true);
   } finally {
     pads = [];
     setInjectedKeys([]);
