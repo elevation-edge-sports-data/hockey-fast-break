@@ -104,7 +104,8 @@ function skipRinkside(x: number, z: number): boolean {
   const out = Math.abs(z) - RINK_W / 2;
   if (out < 0.15 || out > 3.4) return false;
   if (z < 0 && Math.abs(x) < 10.6) return true;
-  if (z > 0 && Math.abs(x) < 4.1) return true;
+  // Penalty boxes end about 2.1 m outside the boards. Rows behind that stay filled.
+  if (z > 0 && Math.abs(x) < 4.1 && out < 2.2) return true;
   return false;
 }
 

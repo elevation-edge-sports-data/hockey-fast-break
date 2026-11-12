@@ -133,7 +133,7 @@ test("a knockdown schedules a center-ice faceoff", () => {
   assert.equal(ui.clockMode, "scrimmage");
   assert.equal(localStorage.getItem("hfb-play-mode"), "scrimmage");
   assert.equal(localStorage.getItem("hfb-play-mode-v"), "2");
-  assert.equal(ui.powerPlay, false);
+  assert.equal(ui.powerPlay, true);
   assert.equal(localStorage.getItem("hfb-power-play"), "1");
   assert.equal(ui.offsides, false);
   assert.equal(world.homeAttack, 1);

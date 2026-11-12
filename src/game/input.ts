@@ -1,6 +1,12 @@
 export type Actions = {
   moveX: number;
   moveY: number;
+  /**
+   * Pause orbit. Keyboard, touch, and both sticks, then the same
+   * magnitude clamp as moveX so matching directions do not stack past 1.
+   */
+  orbitX: number;
+  orbitY: number;
   burst: boolean;
   aEdge: boolean;
   aTap: boolean;
@@ -240,6 +246,13 @@ export function attachInput(target: Window | HTMLElement): () => void {
   };
 }
 
+/** Summed sticks longer than 1 keep their direction and lose the extra length. */
+function clampPlanar(x: number, y: number): { x: number; y: number } {
+  const mag = Math.hypot(x, y);
+  if (mag > 1) return { x: x / mag, y: y / mag };
+  return { x, y };
+}
+
 function radialDeadzone(x: number, y: number, dz = 0.1): { x: number; y: number } {
   const m = Math.hypot(x, y);
   if (m < dz) return { x: 0, y: 0 };
@@ -433,11 +446,12 @@ export function readActions(): Actions {
   const pad = readPad();
   mx += pad.mx;
   my += pad.my;
-  const mag = Math.hypot(mx, my);
-  if (mag > 1) {
-    mx /= mag;
-    my /= mag;
-  }
+  const aimRawX = pad.ax + injectedAimX;
+  const aimRawY = pad.ay + injectedAimY;
+  const orbit = clampPlanar(mx + aimRawX, my + aimRawY);
+  const move = clampPlanar(mx, my);
+  mx = move.x;
+  my = move.y;
 
   const now = performance.now() / 1000;
   const aDown = k.has("KeyE") || k.has("KeyJ") || pad.a || touchFace.a;
@@ -471,17 +485,13 @@ export function readActions(): Actions {
   const zoomOut =
     faceB.down || k.has("Minus") || k.has("NumpadSubtract") || k.has("BracketLeft");
 
-  let ax = pad.ax + injectedAimX;
-  let ay = pad.ay + injectedAimY;
-  const am = Math.hypot(ax, ay);
-  if (am > 1) {
-    ax /= am;
-    ay /= am;
-  }
+  const aim = clampPlanar(aimRawX, aimRawY);
 
   return {
     moveX: mx,
     moveY: my,
+    orbitX: orbit.x,
+    orbitY: orbit.y,
     burst: bDown,
     aEdge: faceA.edge,
     aTap: faceA.tap,
@@ -514,8 +524,8 @@ export function readActions(): Actions {
     selectHoldFor: faceView.heldFor,
     startDown: faceStart.down,
     startHoldFor: faceStart.heldFor,
-    aimX: ax,
-    aimY: ay,
+    aimX: aim.x,
+    aimY: aim.y,
     zoomIn,
     zoomOut,
     arrowX,

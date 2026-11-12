@@ -44,7 +44,7 @@ const inferMod = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 
-const { attackDir, faceYaw, periodEndLive, periodEndLook, resetPlayFrame, resetWorld, setShootoutRoll, shootoutBenchOverflow, shootoutFocusLook, shootoutSkaterHidden, shootoutStillGoing, stepPlayFrame, stepSim, world } = sim;
+const { attackDir, beginPauseReplay, faceYaw, periodEndLive, periodEndLook, resetPlayFrame, resetWorld, scoredOnGoalieRagePose, setShootoutRoll, shootoutBenchOverflow, shootoutFocusLook, shootoutSkaterHidden, shootoutStillGoing, stepPlayFrame, stepSim, stopPauseReplay, world } = sim;
 const {
   useGame,
   GAME_MINUTES_DEFAULT,
@@ -66,7 +66,7 @@ const {
   shootoutColumns,
   seriesShootoutRounds,
 } = store;
-const { GOAL_LINE_X, GOAL_D, BLUE_X, RINK_W } = rink;
+const { GOAL_LINE_X, GOAL_D, BLUE_X, RINK_W, CREASE_R } = rink;
 const { inferNamedPose } = inferMod;
 const { setInjectedKeys, setInjectedStart } = input;
 
@@ -1106,8 +1106,8 @@ test("regular-season overtime is one 5:00 3-on-3 period at the regulation clock 
   assert.deepEqual(sorted(starters.home), [7, 8, 29, 62, 88]);
   for (const side of ["home", "away"]) {
     assert.equal(countKind(side, "goalie"), 1, side);
-    assert.equal(countKind(side, "winger"), 3, side);
-    assert.equal(countKind(side, "defense"), 0, side);
+    assert.equal(countKind(side, "winger"), 2, side);
+    assert.equal(countKind(side, "defense"), 1, side);
   }
   assert.equal(world.shootout, null);
   liveClock();
@@ -1123,6 +1123,38 @@ test("regular-season overtime is one 5:00 3-on-3 period at the regulation clock 
   assert.equal(world.period, 4);
   assert.equal(world.periodOver, false);
   useGame.getState().setOtFormat("playoff");
+});
+
+test("regular-season overtime does not add skaters a short side does not have", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setOtFormat("reg");
+  ui.setHomeScore(0);
+  ui.setAwayScore(0);
+  for (let i = 1; i <= 2; i++) {
+    world.period = i;
+    ui.setPeriod(i);
+    expirePeriod();
+    drainPeriodBreak();
+  }
+  world.period = 3;
+  ui.setPeriod(3);
+  expirePeriod();
+  ui.setLiveHome({ g: 1, d: 2, o: 3 });
+  ui.setLiveAway({ g: 1, d: 0, o: 1 });
+  drainPeriodBreak();
+  assert.equal(world.period, 4);
+  assert.deepEqual(useGame.getState().liveHome, { g: 1, d: 1, o: 2 });
+  assert.deepEqual(useGame.getState().liveAway, { g: 1, d: 0, o: 1 });
+  assert.deepEqual(useGame.getState().homeLineup, { g: 1, d: 2, o: 3 });
+  assert.deepEqual(useGame.getState().awayLineup, { g: 1, d: 2, o: 3 });
+  assert.equal(countKind("home", "goalie"), 1);
+  assert.equal(countKind("home", "defense"), 1);
+  assert.equal(countKind("home", "winger"), 2);
+  assert.equal(countKind("away", "goalie"), 1);
+  assert.equal(countKind("away", "defense"), 0);
+  assert.equal(countKind("away", "winger"), 1);
+  ui.setOtFormat("playoff");
 });
 
 test("a regular-season overtime goal ends the match", () => {
@@ -1344,8 +1376,11 @@ test("a shootout goal cheers for 2 seconds and the user can take the goalie", ()
     assert.equal(world.shootout.goalieUser, false);
     setInjectedKeys(["KeyW"]);
     step(1);
-    assert.equal(world.shootout.goalieUser, true);
+    assert.equal(world.shootout.goalieUser, false);
     assert.equal(world.skaters[world.userId].kind, "goalie");
+    setInjectedKeys([]);
+    step(1);
+    assert.equal(world.shootout.goalieUser, false);
   }
   setInjectedKeys([]);
   setShootoutRoll(null);
@@ -1523,6 +1558,230 @@ test("a cpu shootout skater keeps the puck, and skating back fails the attempt",
   ui.setOtFormat("playoff");
 });
 
+test("an away shootout returns the home goalie to the crease when the stick is up", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  const so = world.shootout;
+  const goalie = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  const shooter = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
+  assert.ok(goalie && shooter);
+  so.attempts[0].side = "away";
+  so.phase = "live";
+  so.t = 0.2;
+  so.shooterId = shooter.id;
+  so.goalieUser = false;
+  const end = -attackDir("home");
+  const netX = end * (GOAL_LINE_X - 0.85);
+  shooter.x = 0;
+  shooter.z = 0;
+  shooter.vx = 0;
+  shooter.vz = 0;
+  world.puck.owner = shooter.id;
+  world.puck.x = shooter.x;
+  world.puck.z = 0;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.whistle = null;
+  world.stoppage = false;
+  world.faceoff = false;
+  goalie.x = netX;
+  goalie.z = 0.7;
+  goalie.vx = 0;
+  goalie.vz = 0;
+  goalie.dive = 0;
+  goalie.stun = 0;
+  goalie.tumble = 0;
+  setInjectedKeys([]);
+  step(1);
+  assert.ok(Math.abs(goalie.z) < 0.7, `idle crease z ${goalie.z}`);
+  assert.equal(so.goalieUser, false);
+
+  goalie.x = netX;
+  goalie.z = 0;
+  goalie.vx = 0;
+  goalie.vz = 0;
+  setInjectedKeys(["KeyD"]);
+  const x0 = goalie.x;
+  const z0 = goalie.z;
+  step(10);
+  setInjectedKeys([]);
+  assert.equal(so.goalieUser, false);
+  assert.ok(
+    Math.hypot(goalie.x - x0, goalie.z - z0) > 0.05,
+    `stick did not move the goalie ${goalie.x},${goalie.z}`,
+  );
+
+  goalie.x = netX;
+  goalie.z = 0.7;
+  goalie.vx = 0;
+  goalie.vz = 0;
+  step(1);
+  assert.ok(Math.abs(goalie.z) < 0.7, `crease did not resume at ${goalie.z}`);
+  assert.equal(so.goalieUser, false);
+  assert.equal(so.phase, "live");
+
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("a crease poke of a shootout pass is a save for either goalie", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(null);
+  setInjectedKeys([]);
+
+  const sendPass = (side) => {
+    resetWorld();
+    ui.setPlaying(true);
+    ui.setPaused(false);
+    const so = world.shootout;
+    const shooter =
+      side === "home"
+        ? world.skaters.find((s) => s.side === "home" && s.kind !== "goalie")
+        : world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
+    const keeper = world.skaters.find((s) => s.kind === "goalie" && s.side !== side);
+    assert.ok(shooter && keeper);
+    so.attempts[0].side = side;
+    so.attempts[0].result = null;
+    so.phase = "live";
+    so.t = 0.4;
+    so.shooterId = shooter.id;
+    const end = side === "home" ? world.homeAttack : -world.homeAttack;
+    keeper.x = end * (GOAL_LINE_X - 0.85);
+    keeper.z = 0;
+    keeper.vx = 0;
+    keeper.vz = 0;
+    keeper.yaw = faceYaw(keeper.side);
+    keeper.stun = 0;
+    keeper.dive = 0;
+    keeper.tumble = 0;
+    shooter.x = -end * 4;
+    shooter.z = 6;
+    shooter.vx = 0;
+    shooter.vz = 0;
+    for (const s of world.skaters) {
+      if (s === keeper || s === shooter) continue;
+      s.x = 0;
+      s.z = 8;
+      s.vx = 0;
+      s.vz = 0;
+    }
+    const mouth = end * GOAL_LINE_X;
+    world.puck.owner = null;
+    world.puck.x = mouth - end * (CREASE_R + 0.12);
+    world.puck.z = 0;
+    world.puck.y = 0.08;
+    world.puck.vx = end * 12;
+    world.puck.vz = 0;
+    world.puck.vy = 0;
+    world.lastPasser = shooter.id;
+    world.lastPass = world.time;
+    world.lastShooter = shooter.id;
+    world.lastShoot = world.time - 1;
+    world.goalieSaveT = -10;
+    world.whistle = null;
+    world.stoppage = false;
+    world.faceoff = false;
+    const x0 = shooter.x;
+    const z0 = shooter.z;
+    step(1);
+    assert.equal(so.attempts[0].result, "save");
+    assert.equal(so.phase, "result");
+    assert.equal(world.goalieSaveT, world.time);
+    assert.equal(world.lastPasser, keeper.id);
+    assert.ok(Math.hypot(shooter.x - x0, shooter.z - z0) < 0.4, "save landed before a skate-back");
+  };
+
+  sendPass("home");
+  sendPass("away");
+
+  resetWorld();
+  ui.setPlaying(true);
+  const shot = world.shootout;
+  const shotSide = shot.attempts[0].side;
+  const shotShooter = world.skaters[shot.shooterId];
+  const shotKeeper = world.skaters.find((s) => s.kind === "goalie" && s.side !== shotSide);
+  assert.ok(shotShooter && shotKeeper);
+  const shotEnd = shotSide === "home" ? world.homeAttack : -world.homeAttack;
+  shotKeeper.x = shotEnd * (GOAL_LINE_X - 0.85);
+  shotKeeper.z = 0;
+  shotKeeper.vx = 0;
+  shotKeeper.vz = 0;
+  shotKeeper.stun = 0;
+  shotKeeper.dive = 0;
+  shotKeeper.tumble = 0;
+  shotShooter.x = -shotEnd * 4;
+  shotShooter.z = 6;
+  world.puck.owner = null;
+  world.puck.x = shotEnd * GOAL_LINE_X - shotEnd * (CREASE_R + 0.12);
+  world.puck.z = 0;
+  world.puck.y = 0.08;
+  world.puck.vx = shotEnd * 12;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastShooter = shotShooter.id;
+  world.lastShoot = world.time;
+  world.lastPasser = shotShooter.id;
+  world.lastPass = -10;
+  world.goalieSaveT = -10;
+  world.whistle = null;
+  world.stoppage = false;
+  world.faceoff = false;
+  step(1);
+  assert.notEqual(world.lastPasser, shotKeeper.id);
+
+  ui.setClockMode("game");
+  resetWorld();
+  liveClock();
+  const awayG = world.skaters.find((s) => s.kind === "goalie" && s.side === "away");
+  assert.ok(awayG);
+  const gameEnd = attackDir("home");
+  awayG.x = gameEnd * (GOAL_LINE_X - 0.85);
+  awayG.z = 0;
+  awayG.vx = 0;
+  awayG.vz = 0;
+  awayG.yaw = faceYaw("away");
+  awayG.stun = 0;
+  awayG.dive = 0;
+  awayG.tumble = 0;
+  for (const s of world.skaters) {
+    if (s.kind === "goalie") continue;
+    s.x = 0;
+    s.z = 8;
+    s.vx = 0;
+    s.vz = 0;
+    s.stun = 2;
+  }
+  world.puck.owner = null;
+  world.puck.x = gameEnd * GOAL_LINE_X - gameEnd * (CREASE_R + 0.12);
+  world.puck.z = 0;
+  world.puck.y = 0.08;
+  world.puck.vx = gameEnd * 12;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastPasser = world.userId;
+  world.lastPass = world.time;
+  world.lastShooter = world.userId;
+  world.lastShoot = world.time - 1;
+  world.goalieSaveT = -10;
+  step(1);
+  assert.equal(world.shootout, null);
+  assert.equal(world.goalieSaveT, -10);
+  assert.equal(world.lastPasser, awayG.id);
+
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
 test("a goalie faces the ice, and X poke-checks outside a shootout", () => {
   freshGame();
   liveClock();
@@ -1679,14 +1938,25 @@ test("a shootout shot across the goal line counts, and play does not freeze", ()
   assert.equal(shootoutSkaterHidden(cpu.id), true);
   assert.equal(shootoutSkaterHidden(home.id), true);
   world.replay = true;
-  assert.equal(shootoutSkaterHidden(cpu.id), false);
-  assert.equal(shootoutSkaterHidden(home.id), false);
+  assert.equal(shootoutSkaterHidden(cpu.id), true);
+  assert.equal(shootoutSkaterHidden(home.id), true);
+  assert.equal(shootoutSkaterHidden(world.shootout.shooterId), false);
+  const staleShooter = world.shootout.shooterId;
+  world.shootout.shooterId = cpu.id;
+  assert.equal(shootoutSkaterHidden(cpu.id), true);
+  assert.equal(shootoutSkaterHidden(staleShooter), false);
+  world.shootout.shooterId = staleShooter;
   const spare = world.skaters.find((s) => s.kind !== "goalie" && s.id !== world.shootout.shooterId);
-  const overflowId = world.skaters.length;
-  world.skaters.push({ ...spare, id: overflowId, number: 501 });
-  assert.equal(shootoutBenchOverflow(overflowId), true);
+  const before = world.skaters.length;
+  let overflowId = -1;
+  for (let n = 0; n < 20; n++) {
+    const id = world.skaters.length;
+    world.skaters.push({ ...spare, id, number: 500 + n });
+    if (shootoutBenchOverflow(id)) overflowId = id;
+  }
+  assert.ok(overflowId >= 0);
   assert.equal(shootoutSkaterHidden(overflowId), true);
-  world.skaters.pop();
+  world.skaters.length = before;
   const saveLook = shootoutFocusLook();
   const saveSide = world.shootout.attempts[0].side === "home" ? "away" : "home";
   const saveGoalie = world.skaters.find((s) => s.side === saveSide && s.kind === "goalie");
@@ -1720,6 +1990,139 @@ test("a shootout shot across the goal line counts, and play does not freeze", ()
   assert.equal(goalWin.z, homeSkater.z);
   world.replay = false;
 
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("a shootout clears a scored-on goalie rage", () => {
+  reachRegOt();
+  const homeG = world.skaters.find((s) => s.side === "home" && s.kind === "goalie");
+  const awayG = world.skaters.find((s) => s.side === "away" && s.kind === "goalie");
+  const skater = world.skaters.find((s) => s.kind !== "goalie");
+  assert.ok(homeG && awayG && skater);
+  world.userId = skater.id;
+  homeG.celebrate = 2;
+  homeG.coverPose = 1;
+  homeG.smashKind = 0;
+  homeG.dive = 0;
+  homeG.tumble = 0;
+  homeG.struck = 0;
+  awayG.celebrate = 1.5;
+  awayG.coverPose = 0.8;
+  world.whistle = "goal";
+  world.goalSide = "away";
+  world.stoppage = true;
+  world.stoppageT = 2;
+  assert.equal(scoredOnGoalieRagePose(homeG), "goalieRage1");
+  homeG.smashKind = 1;
+  assert.equal(inferNamedPose(homeG, homeG.id), "goalieRage1");
+  expirePeriod();
+  assert.ok(world.shootout);
+  assert.equal(homeG.celebrate, 0);
+  assert.equal(homeG.coverPose, 0);
+  assert.equal(homeG.smash, 0);
+  assert.equal(homeG.smashKind, 0);
+  assert.equal(homeG.smashHit, 0);
+  assert.equal(awayG.celebrate, 0);
+  assert.equal(awayG.coverPose, 0);
+  world.whistle = "goal";
+  world.goalSide = "away";
+  world.stoppage = true;
+  world.stoppageT = 2;
+  homeG.smashKind = 1;
+  world.replay = true;
+  assert.equal(scoredOnGoalieRagePose(homeG), null);
+  assert.notEqual(inferNamedPose(homeG, homeG.id), "goalieRage1");
+  assert.notEqual(inferNamedPose(homeG, homeG.id), "goalieRage2");
+  world.shootout = null;
+  world.replay = false;
+  world.userId = skater.id;
+  homeG.smashKind = 0;
+  assert.equal(scoredOnGoalieRagePose(homeG), "goalieRage1");
+  useGame.getState().setOtFormat("playoff");
+  useGame.getState().setWhistle(null);
+  useGame.getState().setGoalSide(null);
+});
+
+test("shootout replay keeps bench skaters off the ice", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  ui.setInstantReplay(false);
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  for (let i = 0; i < 30; i++) step(1);
+  const extras = () =>
+    world.skaters.filter((s) => s.kind !== "goalie" && s.id !== world.shootout.shooterId);
+  assert.ok(extras().length > 0);
+  for (const s of extras()) assert.ok(s.z < -RINK_W / 2, `live bench z ${s.z}`);
+  const shooter = world.skaters[world.shootout.shooterId];
+  assert.ok(shooter && Math.abs(shooter.z) < RINK_W / 2);
+  for (const s of extras()) {
+    s.x = 0;
+    s.z = 0;
+  }
+  assert.equal(beginPauseReplay(), true);
+  for (let i = 0; i < 8; i++) step(1);
+  assert.equal(world.replay, true);
+  assert.equal(world.replayKind, "pause");
+  for (const s of extras()) {
+    assert.ok(s.z < -RINK_W / 2, `replay bench z ${s.z}`);
+    assert.equal(shootoutSkaterHidden(s.id), true, `replay shows ${s.id}`);
+  }
+  const liveShooter = world.shootout.shooterId;
+  const parked = extras()[0];
+  assert.ok(parked);
+  world.shootout.shooterId = parked.id;
+  assert.equal(shootoutSkaterHidden(liveShooter), false);
+  world.shootout.shooterId = liveShooter;
+  for (const s of world.skaters) {
+    if (s.kind !== "goalie") continue;
+    assert.ok(Math.abs(s.z) < RINK_W / 2, `goalie z ${s.z}`);
+  }
+  assert.ok(Math.abs(world.skaters[world.shootout.shooterId].z) < RINK_W / 2);
+  stopPauseReplay();
+  setShootoutRoll(null);
+  ui.setClockMode("game");
+  ui.setOtFormat("playoff");
+});
+
+test("shootout replay shows a loose-puck shooter when the live shooterId is stale", () => {
+  freshGame();
+  const ui = useGame.getState();
+  ui.setClockMode("shootout");
+  setShootoutRoll(null);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  step(5);
+  const so = world.shootout;
+  const shooter = world.skaters[so.shooterId];
+  const other = world.skaters.find((s) => s.kind !== "goalie" && s.id !== shooter.id);
+  assert.ok(shooter && other);
+  const attack = shooter.side === "home" ? world.homeAttack : -world.homeAttack;
+  shooter.x = attack * (GOAL_LINE_X - 4);
+  shooter.z = 0.2;
+  world.puck.owner = null;
+  world.puck.x = shooter.x + attack * 1.5;
+  world.puck.z = 0.05;
+  world.puck.vx = attack * 10;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastShooter = shooter.id;
+  for (const s of world.skaters) {
+    if (s.kind === "goalie" || s.id === shooter.id) continue;
+    s.z = -RINK_W / 2 - 2.4;
+  }
+  so.shooterId = other.id;
+  world.replay = true;
+  assert.equal(shootoutSkaterHidden(shooter.id), false);
+  assert.equal(shootoutSkaterHidden(other.id), true);
+  assert.equal(shootoutBenchOverflow(shooter.id), false);
+  world.replay = false;
   setShootoutRoll(null);
   ui.setClockMode("game");
   ui.setOtFormat("playoff");
@@ -2255,10 +2658,11 @@ test("roller defaults to regular overtime and playoff overtime keeps going", () 
   drainPeriodBreak();
   assert.equal(world.period, 3);
   assert.equal(world.periodClock, REG_OT_SECONDS);
-  assert.equal(useGame.getState().liveHome.d, 0);
-  assert.equal(useGame.getState().liveHome.o, 3);
+  assert.equal(useGame.getState().liveHome.d, 1);
+  assert.equal(useGame.getState().liveHome.o, 2);
   assert.equal(useGame.getState().liveHome.g, 1);
-  assert.equal(useGame.getState().liveAway.d, 0);
+  assert.equal(useGame.getState().liveAway.d, 1);
+  assert.equal(useGame.getState().liveAway.o, 2);
   assert.equal(useGame.getState().homeLineup.d, 1);
 
   crossNet(world.homeAttack);

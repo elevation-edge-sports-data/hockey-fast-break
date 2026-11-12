@@ -42,7 +42,7 @@ const input = await server.ssrLoadModule("/src/game/input.ts");
 const rink = await server.ssrLoadModule("/src/game/rink.ts");
 const uniforms = await server.ssrLoadModule("/src/game/uniforms.ts");
 
-const { resetWorld, stepSim, world, previewPausedMode, previewPausedMinutes, previewPausedOtFormat, startPausedNewGame, pauseGame } = sim;
+const { resetWorld, resetPausedGame, stepSim, world, previewPausedMode, previewPausedMinutes, previewPausedOtFormat, startPausedNewGame, pauseGame } = sim;
 const { useGame, patchLineup, cycleMatchKits, drawCpuKit, armCpuKitCycle, applyArmedCpuKitCycle } = store;
 const { setInjectedKeys } = input;
 const { GOAL_LINE_X } = rink;
@@ -171,7 +171,7 @@ test("the corner reset keeps the away kit and a saved offsides choice", () => {
   ui.applyCornerReset();
   assert.equal(useGame.getState().awayKit, away);
   assert.equal(useGame.getState().offsides, false);
-  assert.equal(useGame.getState().clockMode, "game");
+  assert.equal(useGame.getState().clockMode, "practice");
   assert.equal(localStorage.getItem("hfb-offsides"), "0");
 
   ui.setOffsides(true);
@@ -179,15 +179,68 @@ test("the corner reset keeps the away kit and a saved offsides choice", () => {
   ui.applyCornerReset();
   assert.equal(useGame.getState().awayKit, away);
   assert.equal(useGame.getState().offsides, true);
-  assert.equal(useGame.getState().clockMode, "game");
+  assert.equal(useGame.getState().clockMode, "roller");
 
   localStorage.removeItem("hfb-offsides");
   ui.setClockMode("practice");
   assert.equal(useGame.getState().offsides, false);
   ui.applyCornerReset();
   assert.equal(useGame.getState().awayKit, away);
-  assert.equal(useGame.getState().clockMode, "game");
+  assert.equal(useGame.getState().clockMode, "practice");
   assert.equal(useGame.getState().offsides, false);
+});
+
+test("the corner reset stays in the current clock mode", () => {
+  for (const mode of ["drill", "shootout", "practice", "scrimmage", "roller", "game"]) {
+    boot(mode, { g: 1, d: 1, o: 1 }, { g: 1, d: 1, o: 1 });
+    useGame.getState().applyCornerReset();
+    assert.equal(useGame.getState().clockMode, mode);
+    resetWorld({ keepReplay: true });
+    assert.equal(useGame.getState().clockMode, mode);
+    pauseGame();
+    useGame.getState().applyCornerReset();
+    resetPausedGame();
+    assert.equal(useGame.getState().clockMode, mode);
+    assert.equal(useGame.getState().paused, false);
+  }
+});
+
+test("the corner reset keeps the stepper lineup", () => {
+  const home = { g: 1, d: 1, o: 2 };
+  const away = { g: 1, d: 0, o: 1 };
+  boot("practice", home, away);
+  const ui = useGame.getState();
+  ui.applyCornerReset();
+  resetWorld({ keepReplay: true });
+  const next = useGame.getState();
+  assert.equal(next.clockMode, "practice");
+  assert.deepEqual(next.homeLineup, home);
+  assert.deepEqual(next.awayLineup, away);
+  assert.deepEqual(next.liveHome, home);
+  assert.deepEqual(next.liveAway, away);
+  assert.equal(world.skaters.filter((s) => s.side === "home" && s.kind === "goalie").length, 1);
+  assert.equal(world.skaters.filter((s) => s.side === "home" && s.kind === "defense").length, 1);
+  assert.equal(world.skaters.filter((s) => s.side === "home" && s.kind === "winger").length, 2);
+  assert.equal(world.skaters.filter((s) => s.side === "away" && s.kind === "goalie").length, 1);
+  assert.equal(world.skaters.filter((s) => s.side === "away" && s.kind === "defense").length, 0);
+  assert.equal(world.skaters.filter((s) => s.side === "away" && s.kind === "winger").length, 1);
+
+  next.setHomeLineup({ g: 1, d: 0, o: 3 });
+  next.setAwayLineup({ g: 0, d: 2, o: 2 });
+  pauseGame();
+  useGame.getState().applyCornerReset();
+  resetPausedGame();
+  const paused = useGame.getState();
+  assert.equal(paused.paused, false);
+  assert.equal(paused.clockMode, "practice");
+  assert.deepEqual(paused.homeLineup, { g: 1, d: 0, o: 3 });
+  assert.deepEqual(paused.awayLineup, { g: 0, d: 2, o: 2 });
+  assert.deepEqual(paused.liveHome, { g: 1, d: 0, o: 3 });
+  assert.deepEqual(paused.liveAway, { g: 0, d: 2, o: 2 });
+
+  paused.setClockMode("roller");
+  assert.deepEqual(useGame.getState().homeLineup, { g: 1, d: 1, o: 3 });
+  assert.deepEqual(useGame.getState().awayLineup, { g: 1, d: 1, o: 3 });
 });
 
 test("practice and scrimmage keep stepping with no user skaters", () => {

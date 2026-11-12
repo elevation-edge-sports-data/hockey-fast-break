@@ -75,10 +75,10 @@ function live() {
 test("the footer replay control is a full-length frame scrubber and greys out when empty", () => {
   const overlay = readFileSync(join(repo, "src/game/Overlay.tsx"), "utf8");
   const css = readFileSync(join(repo, "src/styles.css"), "utf8");
-  assert.match(overlay, /className=\{`replay-bar madden-replay/);
+  assert.match(overlay, /className=\{`replay-bar replay-scrubber/);
   assert.match(overlay, /aria-valuetext=\{`frame \$\{frame\}`\}/);
-  assert.match(overlay, /<span className="madden-replay-pct">\{frame\}<\/span>/);
-  assert.doesNotMatch(overlay, /madden-replay-pct">\{shown\}%/);
+  assert.match(overlay, /<span className="replay-scrubber-pct">\{frame\}<\/span>/);
+  assert.doesNotMatch(overlay, /replay-scrubber-pct">\{shown\}%/);
   assert.match(overlay, /\{replay \? <ReplayBar \/> : null\}/);
   assert.match(overlay, /disabled=\{!replay && \(!playing \|\| !replayReady\)\}/);
   assert.match(css, /\.cam-row button:disabled \{[^}]*opacity: 0\.4/);

@@ -28,7 +28,7 @@ Object.defineProperty(globalThis.navigator, "getGamepads", {
   value: () => pads,
 });
 
-function stickPad(x, y, a = false) {
+function stickPad(x, y, a = false, rx = 0, ry = 0) {
   const buttons = Array.from({ length: 17 }, () => ({ pressed: false, touched: false, value: 0 }));
   if (a) buttons[0] = { pressed: true, touched: true, value: 1 };
   return [
@@ -38,7 +38,7 @@ function stickPad(x, y, a = false) {
       connected: true,
       mapping: "standard",
       timestamp: 0,
-      axes: [x, y, 0, 0],
+      axes: [x, y, rx, ry],
       buttons,
     },
   ];
@@ -69,7 +69,7 @@ function iceMarkInside(x, z) {
   return !ice.hit && Math.abs(x) <= RINK_L / 2 + 1e-6 && Math.abs(z) <= RINK_W / 2 + 1e-6;
 }
 const { useGame } = store;
-const { setInjectedKeys } = input;
+const { setInjectedKeys, setInjectedAim, setTouchMove, readActions } = input;
 
 const view = new THREE.PerspectiveCamera(46, 16 / 9, 0.1, 240);
 
@@ -265,6 +265,88 @@ test("pause orbits from the left stick and arrows only while they are held", () 
   }
 });
 
+test("pause orbit takes either stick, and mixes cancel instead of doubling", () => {
+  const dt = 1 / 60;
+  const frames = 10;
+  const yaw = 2.15 * dt * frames;
+  const pitch = 1.35 * dt * frames;
+  useGame.getState().setClockMode("practice");
+  useGame.getState().setPlaying(true);
+  useGame.getState().setPaused(true);
+  resetWorld();
+  useGame.getState().setPlaying(true);
+  useGame.getState().setPaused(true);
+  world.replay = false;
+  const park = () => {
+    world.freeCam.theta = 0.4;
+    world.freeCam.phi = 0.8;
+    world.freeCam.radius = 20;
+    world.pauseDirty = false;
+  };
+  const hold = (pad, keys = []) => {
+    park();
+    pads = pad;
+    setInjectedKeys(keys);
+    for (let i = 0; i < frames; i++) stepSim(dt);
+  };
+  try {
+    hold([]);
+    assert.equal(world.freeCam.theta, 0.4);
+    assert.equal(world.freeCam.phi, 0.8);
+
+    hold(stickPad(0, 0, false, 1, 0));
+    assert.ok(Math.abs(world.freeCam.theta - (0.4 - yaw)) < 1e-9);
+    assert.equal(world.freeCam.phi, 0.8);
+
+    hold(stickPad(0, 0, false, 0, -1));
+    assert.equal(world.freeCam.theta, 0.4);
+    assert.ok(Math.abs(world.freeCam.phi - (0.8 - pitch)) < 1e-9);
+
+    hold(stickPad(1, 0, false, 1, 0));
+    assert.ok(Math.abs(world.freeCam.theta - (0.4 - yaw)) < 1e-9, "matching sticks must not double");
+    assert.equal(world.freeCam.phi, 0.8);
+
+    hold(stickPad(1, 0, false, -1, 0));
+    assert.equal(world.freeCam.theta, 0.4);
+    assert.equal(world.freeCam.phi, 0.8);
+    assert.equal(world.pauseDirty, false);
+
+    hold(stickPad(0, 0, false, -1, 0), ["ArrowRight"]);
+    assert.equal(world.freeCam.theta, 0.4);
+    assert.equal(world.freeCam.phi, 0.8);
+
+    hold(stickPad(0, 0, false, 1, 0), ["ArrowUp"]);
+    const unit = 1 / Math.sqrt(2);
+    assert.ok(Math.abs(world.freeCam.theta - (0.4 - unit * yaw)) < 1e-9);
+    assert.ok(Math.abs(world.freeCam.phi - (0.8 - unit * pitch)) < 1e-9);
+
+    setInjectedKeys([]);
+    setTouchMove(0.4, 0);
+    hold(stickPad(0, 0, false, 0, -0.46));
+    assert.ok(Math.abs(world.freeCam.theta - (0.4 - 0.4 * yaw)) < 1e-9);
+    assert.ok(Math.abs(world.freeCam.phi - (0.8 - 0.4 * pitch)) < 1e-9);
+
+    setTouchMove(0, 0);
+    pads = stickPad(0, 0, false, 1, 0);
+    setInjectedKeys([]);
+    useGame.getState().setPaused(false);
+    const live = readActions();
+    assert.equal(live.moveX, 0);
+    assert.equal(live.moveY, 0);
+    assert.ok(Math.abs(live.aimX - 1) < 1e-9);
+    park();
+    for (let i = 0; i < frames; i++) stepSim(dt);
+    assert.equal(world.freeCam.theta, 0.4);
+    assert.equal(world.freeCam.phi, 0.8);
+  } finally {
+    pads = [];
+    setInjectedKeys([]);
+    setInjectedAim(0, 0);
+    setTouchMove(0, 0);
+    useGame.getState().setPaused(false);
+  }
+});
+
 function bootReplay() {
   const dt = 1 / 60;
   useGame.getState().setClockMode("practice");
@@ -309,6 +391,80 @@ test("opening replay stays free while the X follows the puck", () => {
   } finally {
     stopPauseReplay();
     setInjectedKeys([]);
+  }
+});
+
+function replayEyeY() {
+  const rc = world.replayCam;
+  return rc.ly + rc.radius * Math.cos(rc.phi);
+}
+
+/** Record enough frames that the last one is the live puck, then open pause replay. */
+function openFromLivePuck(puckY) {
+  const dt = 1 / 60;
+  useGame.getState().setClockMode("practice");
+  useGame.getState().setPlaying(true);
+  useGame.getState().setPaused(false);
+  resetWorld();
+  useGame.getState().setPlaying(true);
+  useGame.getState().setPaused(false);
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  world.puck.owner = null;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  setInjectedKeys([]);
+  pads = [];
+  for (let i = 0; i < 20; i++) stepSim(dt);
+  world.puck.owner = null;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  if (puckY !== undefined) world.puck.y = puckY;
+  stepSim(dt);
+  const snapY = Math.max(0.4, world.puck.y);
+  world.camX = world.puck.x + 12;
+  world.camY = snapY + 9;
+  world.camZ = world.puck.z - 3;
+  pauseGame();
+  if (!beginPauseReplay()) throw new Error("replay did not start");
+  const shot = () => ({
+    ly: world.replayCam.ly,
+    eyeY: replayEyeY(),
+    theta: world.replayCam.theta,
+    phi: world.replayCam.phi,
+    radius: world.replayCam.radius,
+    puckY: world.puck.y,
+  });
+  const opened = shot();
+  stepSim(dt);
+  const stepped = shot();
+  stopPauseReplay();
+  return { opened, stepped };
+}
+
+test("pause replay opened with the puck in the air matches one opened on the ice", () => {
+  let ice;
+  let air;
+  try {
+    ice = openFromLivePuck();
+    air = openFromLivePuck(6.5);
+  } finally {
+    stopPauseReplay();
+    useGame.getState().setPaused(false);
+  }
+  assert.ok(air.opened.puckY > 2, `airborne puck was recorded at ${air.opened.puckY}`);
+  assert.ok(ice.opened.puckY < 0.5, `ice puck was recorded at ${ice.opened.puckY}`);
+  for (const when of ["opened", "stepped"]) {
+    assert.equal(air[when].ly, 0.4, `${when} ly`);
+    assert.equal(ice[when].ly, 0.4, `${when} ice ly`);
+    assert.ok(Math.abs(air[when].eyeY - ice[when].eyeY) < 1e-6, `${when} eye ${air[when].eyeY} vs ${ice[when].eyeY}`);
+    assert.ok(Math.abs(air[when].theta - ice[when].theta) < 1e-6, `${when} theta`);
+    assert.ok(Math.abs(air[when].phi - ice[when].phi) < 1e-6, `${when} phi`);
+    assert.ok(Math.abs(air[when].radius - ice[when].radius) < 1e-6, `${when} radius`);
   }
 });
 

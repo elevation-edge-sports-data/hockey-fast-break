@@ -558,14 +558,33 @@ function BackNumber({
 }) {
   const mesh = useRef<THREE.Mesh>(null);
   useLayoutEffect(() => {
+    let alive = true;
+    let raf = 0;
+    let tries = 0;
+    // Digit sprites paint after this effect. A shared kit material may already have
+    // dispatched "update" for an earlier seat, so keep reading until the canvas grows.
     const fit = () => {
       const image = material.map?.image as { width?: number; height?: number } | undefined;
-      if (!mesh.current || !image?.width || !image.height) return;
-      mesh.current.scale.x = image.width / image.height;
+      const meshNow = mesh.current;
+      if (!meshNow || !image?.width || !image.height) return false;
+      if (image.width <= 1 && image.height <= 1) return false;
+      meshNow.scale.x = image.width / image.height;
+      return true;
+    };
+    const poll = () => {
+      if (!alive) return;
+      if (fit() || tries >= 180) return;
+      tries += 1;
+      raf = requestAnimationFrame(poll);
     };
     fit();
     material.map?.addEventListener("update", fit);
-    return () => material.map?.removeEventListener("update", fit);
+    raf = requestAnimationFrame(poll);
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+      material.map?.removeEventListener("update", fit);
+    };
   }, [material]);
   return <mesh ref={mesh} geometry={numPlane} material={material} position={position} rotation={[0, Math.PI, 0]} />;
 }
@@ -5160,35 +5179,12 @@ export function PlayerMesh({
     const g = root.current;
     if (!s || !g) return;
     if (shootoutSkaterHidden(s.id)) {
+      // Root visibility only. Cloth and number materials are shared by kit+number.
       g.visible = false;
       g.position.set(s.x, 0, s.z);
-      g.traverse((obj) => {
-        const mesh = obj as THREE.Mesh;
-        if (!mesh.isMesh || !mesh.material) return;
-        const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const mat of list) {
-          if (mat.userData.shootoutFade) continue;
-          mat.userData.shootoutFade = mat.opacity;
-          mat.transparent = true;
-          mat.opacity = 0;
-          mat.depthWrite = false;
-        }
-      });
       return;
     }
     g.visible = true;
-    g.traverse((obj) => {
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh || !mesh.material) return;
-      const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const mat of list) {
-        if (mat.userData.shootoutFade === undefined) continue;
-        mat.opacity = mat.userData.shootoutFade as number;
-        mat.transparent = mat.opacity < 1;
-        mat.depthWrite = mat.opacity >= 1;
-        delete mat.userData.shootoutFade;
-      }
-    });
     const diveU = Math.min(1, Math.max(0, s.dive / 0.95));
     const diving = !goalie && s.dive > 0.04;
     const tumbling = s.tumble !== 0 && s.struck > 0.1;
@@ -6024,16 +6020,20 @@ export function SeatedPlayer({
   goalie = false,
   seatX,
   poseId,
+  centerStick = false,
   onJointRefs,
   onJointClick,
   posedEpoch = 0,
 }: {
   kit: UniformKit;
   number: number;
+  /** Local −X hand. The bench pose stores the stick on +X; centerStick flips that after the pose. */
   holdStick?: boolean;
   goalie?: boolean;
   seatX?: number;
   poseId?: string;
+  /** Keep the pose, and put the stick on the hand named by holdStick. */
+  centerStick?: boolean;
   onJointRefs?: (refs: Record<string, THREE.Object3D | null>) => void;
   onJointClick?: (id: string) => void;
   /** Bumps after a pose bake so the saved joints are stamped again once React commits. */
@@ -6059,7 +6059,7 @@ export function SeatedPlayer({
   const rBoot = useRef<THREE.Group>(null);
   const stick = useRef<THREE.Group>(null);
   const bladeGrp = useRef<THREE.Group>(null);
-  // Same local stick on every seat. Bench side does not mirror it toward center ice.
+  // Goalie bench pose stores the stick on +X. centerStick mirrors that after the pose.
   const seatedStickPos: [number, number, number] = [
     0.72 + _seatedGoalieKnobOff.x,
     0.04 + _seatedGoalieKnobOff.y,
@@ -6130,6 +6130,11 @@ export function SeatedPlayer({
     g.rotation.x = seatPitch;
     g.rotation.z = 0;
     if (poseId) applyPoseJoints(poseId, poseGroups());
+    if (centerStick && stick.current) {
+      const x = stick.current.position.x;
+      const sign = holdStick ? -1 : 1;
+      if (x !== 0 && Math.sign(x) !== sign) stick.current.position.x = -x;
+    }
     const d = world.benchDump;
     const near = seatX !== undefined && !!d && (d.phase !== "fly" || d.t > d.dur * 0.45) && ((d.kind === "help" && seatX > 0.4) || (d.kind === "shove" && seatX < -0.4)) && Math.abs(seatX - d.x1) < 2.8;
     if (!near || !d) return;

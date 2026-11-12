@@ -379,7 +379,7 @@ function applyJoint(snap: JointSnap) {
 function PinIceOrigin({ root }: { root: { current: THREE.Group | null } }) {
   useFrame(() => {
     if (root.current) pinPoseIceMarks(root.current);
-  }, 1);
+  });
   return null;
 }
 

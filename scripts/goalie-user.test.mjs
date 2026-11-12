@@ -124,6 +124,102 @@ test("goalie-only home starts in the crease and is not the faceoff taker", () =>
   assert.equal(world.userId, g.id);
 });
 
+test("an idle home goalie slides in the crease in every mode", () => {
+  for (const mode of ["game", "roller", "scrimmage", "practice"]) {
+    setInjectedKeys([]);
+    const ui = useGame.getState();
+    ui.setClockMode(mode);
+    ui.setPlaying(true);
+    ui.setPaused(false);
+    ui.setHomeLineup(SOLO);
+    ui.setAwayLineup(FULL);
+    resetWorld();
+    world.faceoff = false;
+    world.faceoffPhase = "live";
+    world.stoppage = false;
+    world.whistle = null;
+    const g = homeGoalie();
+    const foe = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
+    assert.ok(foe, mode);
+    foe.x = 0;
+    foe.z = 0;
+    foe.vx = 0;
+    foe.vz = 0;
+    world.puck.owner = foe.id;
+    world.puck.x = 0;
+    world.puck.z = 0;
+    world.puck.vx = 0;
+    world.puck.vz = 0;
+    world.puck.vy = 0;
+    const netX = defendDir("home") * (GOAL_LINE_X - 0.85);
+    g.x = netX;
+    g.z = 0.7;
+    g.vx = 0;
+    g.vz = 0;
+    g.dive = 0;
+    g.stun = 0;
+    g.tumble = 0;
+    stepSim(DT);
+    assert.equal(world.userId, g.id, mode);
+    assert.ok(Math.abs(g.z) < 0.7, `${mode} idle crease z ${g.z}`);
+
+    g.x = netX;
+    g.z = 0;
+    g.vx = 0;
+    g.vz = 0;
+    setInjectedKeys(["KeyD"]);
+    const x0 = g.x;
+    const z0 = g.z;
+    for (let i = 0; i < 10; i++) stepSim(DT);
+    setInjectedKeys([]);
+    assert.equal(world.userId, g.id, mode);
+    assert.ok(Math.hypot(g.x - x0, g.z - z0) > 0.05, `${mode} stick ${g.x},${g.z}`);
+
+    g.x = netX;
+    g.z = 0.7;
+    g.vx = 0;
+    g.vz = 0;
+    stepSim(DT);
+    assert.ok(Math.abs(g.z) < 0.7, `${mode} crease resume ${g.z}`);
+    assert.equal(world.userId, g.id, mode);
+  }
+
+  setInjectedKeys([]);
+  const ui = useGame.getState();
+  ui.setClockMode("game");
+  ui.setHomeLineup(FULL);
+  ui.setAwayLineup(FULL);
+  resetWorld();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  const awayG = world.skaters.find((s) => s.side === "away" && s.kind === "goalie");
+  assert.ok(awayG);
+  world.userId = awayG.id;
+  const homeSkater = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie");
+  assert.ok(homeSkater);
+  world.puck.owner = homeSkater.id;
+  world.puck.x = homeSkater.x;
+  world.puck.z = homeSkater.z;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  const awayNet = defendDir("away") * (GOAL_LINE_X - 0.85);
+  awayG.x = awayNet;
+  awayG.z = 0.7;
+  awayG.vx = 0;
+  awayG.vz = 0;
+  awayG.dive = 0;
+  awayG.stun = 0;
+  awayG.tumble = 0;
+  stepSim(DT);
+  assert.equal(world.userId, awayG.id);
+  assert.ok(Math.abs(awayG.z - 0.7) < 0.02, `away goalie slid to ${awayG.z}`);
+  ui.setClockMode("game");
+  ui.setHomeLineup(FULL);
+  setInjectedKeys([]);
+});
+
 test("holding the goalie still bursts, and release hands back to a skater", () => {
   setInjectedKeys([]);
   const ui = useGame.getState();
@@ -190,14 +286,16 @@ function parkOthers(g) {
 
 test("user goalie claims a loose puck outside the old crease reach", () => {
   const g = liveSolo();
+  const netX = defendDir("home") * (GOAL_LINE_X - 0.85);
+  const attack = -defendDir("home");
   parkOthers(g);
   g.yaw = faceYaw("home");
-  g.x = 0;
+  g.x = netX;
   g.z = 0;
   g.vx = 0;
   g.vz = 0;
   world.puck.owner = null;
-  world.puck.x = 1.35;
+  world.puck.x = netX + attack * 1.35;
   world.puck.z = 0;
   world.puck.y = 0.042;
   world.puck.vx = 0;
@@ -215,12 +313,12 @@ test("user goalie claims a loose puck outside the old crease reach", () => {
   const far = liveSolo();
   parkOthers(far);
   far.yaw = faceYaw("home");
-  far.x = 0;
+  far.x = netX;
   far.z = 0;
   far.vx = 0;
   far.vz = 0;
   world.puck.owner = null;
-  world.puck.x = 3.4;
+  world.puck.x = netX + attack * 3.4;
   world.puck.z = 0.73;
   world.puck.y = 0.042;
   world.puck.vx = 0;

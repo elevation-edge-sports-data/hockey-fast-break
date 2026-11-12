@@ -1,7 +1,7 @@
 /**
- * Entering Practice turns power play off for that visit without writing the
- * saved flag. Roller and Game keep the stored toggle. A toggle after Practice
- * has started stays on.
+ * Power play follows the button. Mode changes do not clear it or restore it.
+ * A missing saved flag stays off. Deselect writes "0" and cancels a release
+ * already armed for the next faceoff.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -32,8 +32,17 @@ const server = await createServer({
 });
 after(() => server.close());
 
-mem.set("hfb-power-play", "1");
+if (typeof globalThis.navigator?.getGamepads !== "function") {
+  Object.defineProperty(globalThis.navigator, "getGamepads", {
+    configurable: true,
+    value: () => [],
+  });
+}
+
 const { useGame } = await server.ssrLoadModule("/src/game/store.ts");
+const { resetWorld, world } = await server.ssrLoadModule("/src/game/sim.ts");
+const loadedPowerPlay = useGame.getState().powerPlay;
+const loadedStoredFlag = localStorage.getItem("hfb-power-play");
 
 function stored() {
   return localStorage.getItem("hfb-power-play");
@@ -50,54 +59,90 @@ function boot(flag) {
   assert.equal(stored(), flag ? "1" : "0");
 }
 
-test("practice starts with power play off and does not write the saved flag", () => {
-  boot(true);
-  useGame.getState().setClockMode("practice");
-  assert.equal(useGame.getState().clockMode, "practice");
-  assert.equal(useGame.getState().powerPlay, false);
-  assert.equal(stored(), "1");
+test("a missing saved flag loads off", () => {
+  assert.equal(loadedPowerPlay, false);
+  assert.equal(loadedStoredFlag, null);
 });
 
-test("roller and game keep the saved toggle", () => {
+test("mode changes leave the toggle where the button set it", () => {
   boot(true);
-  useGame.getState().setClockMode("roller");
-  assert.equal(useGame.getState().powerPlay, true);
-  assert.equal(stored(), "1");
-  useGame.getState().setClockMode("game");
-  assert.equal(useGame.getState().powerPlay, true);
-  assert.equal(stored(), "1");
-
-  useGame.getState().setClockMode("practice");
-  assert.equal(useGame.getState().powerPlay, false);
-  assert.equal(stored(), "1");
-  useGame.getState().setClockMode("roller");
-  assert.equal(useGame.getState().powerPlay, true);
-  assert.equal(stored(), "1");
-  useGame.getState().setClockMode("game");
-  assert.equal(useGame.getState().powerPlay, true);
-  assert.equal(stored(), "1");
+  for (const mode of ["practice", "scrimmage", "roller", "game", "drill", "shootout"]) {
+    useGame.getState().setClockMode(mode);
+    assert.equal(useGame.getState().powerPlay, true);
+    assert.equal(stored(), "1");
+  }
 
   boot(false);
+  for (const mode of ["practice", "scrimmage", "roller", "game"]) {
+    useGame.getState().setClockMode(mode);
+    assert.equal(useGame.getState().powerPlay, false);
+    assert.equal(stored(), "0");
+  }
+});
+
+test("deselecting stays off and cancels a release armed at the whistle", () => {
+  boot(true);
+  useGame.getState().setChaos(false);
   useGame.getState().setClockMode("roller");
+  resetWorld();
+  const before = useGame.getState().liveAway.d;
+  assert.equal(before, 1);
+
+  world.ppRelease = "away";
+  world.ppChaos = false;
+  useGame.getState().setPowerPlay(false);
+  assert.equal(useGame.getState().powerPlay, false);
+  assert.equal(stored(), "0");
+  resetWorld({ keepScore: true });
+  assert.equal(useGame.getState().liveAway.d, before);
+  assert.equal(world.ppRelease, null);
+
+  useGame.getState().setClockMode("practice");
   useGame.getState().setClockMode("game");
   assert.equal(useGame.getState().powerPlay, false);
   assert.equal(stored(), "0");
-});
-
-test("a power play toggle after practice starts stays on", () => {
-  boot(true);
-  useGame.getState().setClockMode("practice");
-  assert.equal(useGame.getState().powerPlay, false);
 
   useGame.getState().setPowerPlay(true);
+  useGame.getState().setClockMode("roller");
+  world.ppRelease = "away";
+  world.ppChaos = false;
+  resetWorld({ keepScore: true });
   assert.equal(useGame.getState().powerPlay, true);
-  assert.equal(stored(), "1");
+  assert.equal(useGame.getState().liveAway.d, before + 1);
+});
 
-  useGame.getState().setClockMode("practice");
-  assert.equal(useGame.getState().powerPlay, true);
-  assert.equal(stored(), "1");
+test("chaos forces power play on, and turning chaos off turns power play off", () => {
+  const ui = useGame.getState();
+  ui.setChaos(false);
+  ui.setPowerPlay(false);
+  assert.equal(useGame.getState().chaos, false);
+  assert.equal(useGame.getState().powerPlay, false);
 
-  useGame.getState().setClockMode("game");
+  useGame.getState().setChaos(true);
+  assert.equal(useGame.getState().chaos, true);
   assert.equal(useGame.getState().powerPlay, true);
-  assert.equal(stored(), "1");
+  assert.equal(localStorage.getItem("hfb-chaos"), "1");
+  assert.equal(localStorage.getItem("hfb-power-play"), "1");
+
+  useGame.getState().setPowerPlay(false);
+  assert.equal(useGame.getState().chaos, true);
+  assert.equal(useGame.getState().powerPlay, true);
+  assert.equal(localStorage.getItem("hfb-power-play"), "1");
+
+  useGame.getState().setChaos(false);
+  assert.equal(useGame.getState().chaos, false);
+  assert.equal(useGame.getState().powerPlay, false);
+  assert.equal(localStorage.getItem("hfb-chaos"), "0");
+  assert.equal(localStorage.getItem("hfb-power-play"), "0");
+
+  useGame.getState().setPowerPlay(true);
+  assert.equal(useGame.getState().chaos, false);
+  assert.equal(useGame.getState().powerPlay, true);
+  assert.equal(localStorage.getItem("hfb-chaos"), "0");
+  assert.equal(localStorage.getItem("hfb-power-play"), "1");
+
+  useGame.getState().setChaos(false);
+  assert.equal(useGame.getState().chaos, false);
+  assert.equal(useGame.getState().powerPlay, true);
+  assert.equal(localStorage.getItem("hfb-power-play"), "1");
 });

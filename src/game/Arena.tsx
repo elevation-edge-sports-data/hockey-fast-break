@@ -980,8 +980,24 @@ function benchXs(end: -1 | 1): number[] {
 const HOME_BENCH_XS = benchXs(1);
 const AWAY_BENCH_XS = benchXs(-1);
 
-function penaltyBoxWidth(n: number): number {
-  return n <= 2 ? 2.6 : Math.min(5.1, 1.15 + n * 0.96);
+/** Both boxes. The 3-skater width. Occupancy does not change it. */
+const PENALTY_BOX_W = 1.15 + 3 * 0.96;
+/** Bench-pose half-width. Shoulders and arms reach about 0.39 m. */
+const BOX_PLAYER_HALF = 0.4;
+/** Inner face of the side glass. The pane center is w/2 - 0.05 and the glass is 0.06 thick. */
+const BOX_INNER = PENALTY_BOX_W / 2 - 0.08;
+/** Five of these bodies are wider than the interior even with every gap at zero. */
+const BOX_SEAT_MAX = 4;
+
+/** Center-to-center seats. More players, smaller gap. The same gap is left at each wall. */
+function penaltySeatXs(count: number): number[] {
+  const n = Math.max(0, Math.min(count, BOX_SEAT_MAX));
+  if (n === 0) return [];
+  if (n === 1) return [0];
+  const free = BOX_INNER * 2 - n * BOX_PLAYER_HALF * 2;
+  const gap = Math.max(0, free / (n + 1));
+  const pitch = BOX_PLAYER_HALF * 2 + gap;
+  return Array.from({ length: n }, (_, i) => (i - (n - 1) / 2) * pitch);
 }
 
 function PenaltyBox({
@@ -1006,7 +1022,8 @@ function PenaltyBox({
     [],
   );
   const n = sitters?.length ?? 0;
-  const w = penaltyBoxWidth(n);
+  const seats = penaltySeatXs(n);
+  const w = PENALTY_BOX_W;
   const gY = BOARD_H + GLASS_H / 2;
   return (
     <group position={[x, 0, z]} rotation={[0, Math.PI, 0]}>
@@ -1025,14 +1042,22 @@ function PenaltyBox({
       <mesh position={[w / 2 - 0.05, gY, 0]} material={glass}>
         <boxGeometry args={[0.06, GLASS_H, 1.1]} />
       </mesh>
-      {sitters?.map((s, i) => (
-        <group
-          key={`${s.number}-${s.kit.id}`}
-          position={[n <= 1 ? 0 : (i - (n - 1) / 2) * 0.92, 0.61, -0.18]}
-        >
-          <SeatedPlayer kit={s.kit} number={s.number} holdStick={i % 2 === 0} />
-        </group>
-      ))}
+      {seats.map((seatX, i) => {
+        const s = sitters![i]!;
+        // Yaw π sends local −X to world +X. holdStick is that local −X hand.
+        const worldX = x - seatX;
+        return (
+          <group key={`${s.number}-${s.kit.id}`} position={[seatX, 0.61, -0.18]}>
+            <SeatedPlayer
+              kit={s.kit}
+              number={s.number}
+              poseId="bench"
+              centerStick
+              holdStick={worldX < 0}
+            />
+          </group>
+        );
+      })}
     </group>
   );
 }
@@ -1191,7 +1216,7 @@ function Benches() {
       <group position={[0, 0, zPost]}>
         <BenchReporter />
       </group>
-      {/* Same pose on both benches. Stick side is not flipped toward center ice. */}
+      {/* Bench pose. Local −X is the center-line hand on the +X side of the ice. */}
       {(shootout
         ? (["home", "away"] as const).flatMap((side) => {
             const kit = side === "home" ? home : away;
@@ -1229,7 +1254,8 @@ function Benches() {
           <SeatedPlayer
             kit={seat.kit}
             number={seat.number}
-            holdStick={!seat.goalie}
+            holdStick={seat.x > 0}
+            centerStick
             goalie={seat.goalie}
             seatX={seat.x}
             poseId={seat.goalie ? "goalieBench" : "bench"}
@@ -1237,12 +1263,12 @@ function Benches() {
         </group>
       ))}
       <PenaltyBox
-        x={-(penaltyBoxWidth(homeBox.length) / 2 + 0.05)}
+        x={PENALTY_BOX_W / 2 + 0.05}
         z={zBox}
         sitters={homeBox.map((number) => ({ kit: home, number }))}
       />
       <PenaltyBox
-        x={penaltyBoxWidth(awayBox.length) / 2 + 0.05}
+        x={-(PENALTY_BOX_W / 2 + 0.05)}
         z={zBox}
         sitters={awayBox.map((number) => ({ kit: away, number }))}
       />

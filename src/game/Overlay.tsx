@@ -472,7 +472,7 @@ function ReplayBar() {
   };
   return (
     <div
-      className={`replay-bar madden-replay${locked ? " is-locked" : ""}`}
+      className={`replay-bar replay-scrubber${locked ? " is-locked" : ""}`}
       role="slider"
       aria-label="Replay position"
       aria-valuemin={0}
@@ -483,7 +483,7 @@ function ReplayBar() {
     >
       <div
         ref={track}
-        className="madden-replay-track"
+        className="replay-scrubber-track"
         onPointerDown={(e) => {
           if (locked || e.button !== 0) return;
           drag.current = true;
@@ -501,14 +501,14 @@ function ReplayBar() {
           drag.current = false;
         }}
       >
-        <div className="madden-replay-lane">
-          <div className="madden-replay-fill" style={{ width: `${shown}%` }} />
+        <div className="replay-scrubber-lane">
+          <div className="replay-scrubber-fill" style={{ width: `${shown}%` }} />
           {marks.map((markPct, i) => (
-            <i key={i} className="madden-replay-mark" style={{ left: `${markPct * 100}%` }} aria-hidden="true" />
+            <i key={i} className="replay-scrubber-mark" style={{ left: `${markPct * 100}%` }} aria-hidden="true" />
           ))}
         </div>
       </div>
-      <span className="madden-replay-pct">{frame}</span>
+      <span className="replay-scrubber-pct">{frame}</span>
     </div>
   );
 }
@@ -929,9 +929,14 @@ function MainMenus() {
               </button>
               <button
                 type="button"
-                className={powerPlay ? "is-on" : ""}
-                title="Scored-on team gets a player out of the box on the next faceoff"
+                className={powerPlay ? `is-on${chaos ? " is-locked" : ""}` : ""}
+                title={
+                  chaos
+                    ? "Forced on while Chaos is on"
+                    : "Scored-on team gets a player out of the box on the next faceoff"
+                }
                 aria-pressed={powerPlay}
+                disabled={chaos}
                 onClick={() => setPowerPlay(!powerPlay)}
               >
                 Power Play
@@ -939,9 +944,12 @@ function MainMenus() {
               <button
                 type="button"
                 className={chaos ? "is-on" : ""}
-                title="Scored-on team keeps gaining a skater each goal, up to 11"
+                title="Turns Power Play on. Scored-on team keeps gaining a skater each goal, up to 11. Turning Chaos off turns Power Play off"
                 aria-pressed={chaos}
-                onClick={() => setChaos(!chaos)}
+                onClick={() => {
+                  // setChaos(true) forces Power Play on. setChaos(false) turns Power Play off.
+                  setChaos(!chaos);
+                }}
               >
                 Chaos
               </button>
@@ -1576,7 +1584,7 @@ export function Overlay() {
           <p className="eyebrow">Elevation Edge Sports Data</p>
           <h1>Hockey Fast Break (V4)</h1>
         </div>
-        {playing && !paused ? null : hudReady ? (
+        {(playing && !paused) || replay ? null : hudReady ? (
           <>
             <span className="play-gap" aria-hidden="true" />
             <FormationKits />
@@ -1962,7 +1970,9 @@ export function Overlay() {
                 ? "Line Brawl"
                 : whistle === "crowd"
                   ? "Puck in the crowd"
-                  : "Goalie Covered"}
+                  : whistle === "frozen"
+                    ? "PUCK FROZEN"
+                    : "Goalie Covered"}
         </div>
       ) : playing && delayedOffside && !replay ? (
         <div

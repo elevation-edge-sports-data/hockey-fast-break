@@ -1040,6 +1040,8 @@ export function ReplayViewerView() {
               e.target.value = "";
             }}
           />
+        </div>
+        <div className="formation-top-end">
           {chosen ? (
             <>
               <button
@@ -1065,58 +1067,10 @@ export function ReplayViewerView() {
                   if (frame && lockedRef.current) downloadFormationFrame(frame);
                 }}
               >
-                Download formation
+                Save formation
               </button>
             </>
           ) : null}
-        </div>
-        <div className="replay-transport" role="group" aria-label="Playback">
-          <ShuttleButton
-            label="Fast rewind"
-            icon="fast-rewind"
-            rate={-3.4}
-            on={shuttle === -3.4}
-            disabled={!chosen || locked}
-            onPress={pressShuttle}
-            onRelease={releaseShuttle}
-          />
-          <ShuttleButton
-            label="Slow rewind"
-            icon="slow-rewind"
-            rate={-0.28}
-            on={shuttle === -0.28}
-            disabled={!chosen || locked}
-            onPress={pressShuttle}
-            onRelease={releaseShuttle}
-          />
-          <button
-            type="button"
-            className="btn-ghost"
-            disabled={!chosen || locked}
-            aria-pressed={playing}
-            aria-label="Play/pause"
-            onClick={togglePlay}
-          >
-            <TransportIcon name={playing && shuttle === 0 ? "pause" : "play"} />
-          </button>
-          <ShuttleButton
-            label="Slow forward"
-            icon="slow-forward"
-            rate={0.28}
-            on={shuttle === 0.28}
-            disabled={!chosen || locked}
-            onPress={pressShuttle}
-            onRelease={releaseShuttle}
-          />
-          <ShuttleButton
-            label="Fast forward"
-            icon="fast-forward"
-            rate={3.4}
-            on={shuttle === 3.4}
-            disabled={!chosen || locked}
-            onPress={pressShuttle}
-            onRelease={releaseShuttle}
-          />
         </div>
       </header>
       <aside className="formation-side">
@@ -1244,38 +1198,88 @@ export function ReplayViewerView() {
                 onDepth={onDepth}
               />
             </Canvas>
-            <div
-              ref={sliderRef}
-              className={`replay-bar madden-replay${locked ? " is-locked" : ""}`}
-              role="slider"
-              aria-label="Replay position"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={0}
-              aria-disabled={locked}
-            >
-              <div
-                ref={trackRef}
-                className="madden-replay-track"
-                onPointerDown={(e) => {
-                  if (lockedRef.current || e.button !== 0) return;
-                  stopForSeek();
-                  (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
-                  cursorRef.current = seekClient(e.clientX, e.currentTarget, last);
-                }}
-                onPointerMove={(e) => {
-                  if (lockedRef.current) return;
-                  if (!(e.currentTarget as HTMLDivElement).hasPointerCapture(e.pointerId)) return;
-                  cursorRef.current = seekClient(e.clientX, e.currentTarget, last);
-                }}
-              >
-                <div className="madden-replay-lane">
-                  <div ref={fillRef} className="madden-replay-fill" />
-                </div>
+            <div className="replay-dock">
+              <div className="replay-transport" role="group" aria-label="Playback">
+                <ShuttleButton
+                  label="Fast rewind"
+                  icon="fast-rewind"
+                  rate={-3.4}
+                  on={shuttle === -3.4}
+                  disabled={!chosen || locked}
+                  onPress={pressShuttle}
+                  onRelease={releaseShuttle}
+                />
+                <ShuttleButton
+                  label="Slow rewind"
+                  icon="slow-rewind"
+                  rate={-0.28}
+                  on={shuttle === -0.28}
+                  disabled={!chosen || locked}
+                  onPress={pressShuttle}
+                  onRelease={releaseShuttle}
+                />
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  disabled={!chosen || locked}
+                  aria-pressed={playing}
+                  aria-label="Play/pause"
+                  onClick={togglePlay}
+                >
+                  <TransportIcon name={playing && shuttle === 0 ? "pause" : "play"} />
+                </button>
+                <ShuttleButton
+                  label="Slow forward"
+                  icon="slow-forward"
+                  rate={0.28}
+                  on={shuttle === 0.28}
+                  disabled={!chosen || locked}
+                  onPress={pressShuttle}
+                  onRelease={releaseShuttle}
+                />
+                <ShuttleButton
+                  label="Fast forward"
+                  icon="fast-forward"
+                  rate={3.4}
+                  on={shuttle === 3.4}
+                  disabled={!chosen || locked}
+                  onPress={pressShuttle}
+                  onRelease={releaseShuttle}
+                />
               </div>
-              <span ref={labelRef} className="madden-replay-pct">
-                0
-              </span>
+              <div
+                ref={sliderRef}
+                className={`replay-bar replay-scrubber${locked ? " is-locked" : ""}`}
+                role="slider"
+                aria-label="Replay position"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={0}
+                aria-disabled={locked}
+              >
+                <div
+                  ref={trackRef}
+                  className="replay-scrubber-track"
+                  onPointerDown={(e) => {
+                    if (lockedRef.current || e.button !== 0) return;
+                    stopForSeek();
+                    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+                    cursorRef.current = seekClient(e.clientX, e.currentTarget, last);
+                  }}
+                  onPointerMove={(e) => {
+                    if (lockedRef.current) return;
+                    if (!(e.currentTarget as HTMLDivElement).hasPointerCapture(e.pointerId)) return;
+                    cursorRef.current = seekClient(e.clientX, e.currentTarget, last);
+                  }}
+                >
+                  <div className="replay-scrubber-lane">
+                    <div ref={fillRef} className="replay-scrubber-fill" />
+                  </div>
+                </div>
+                <span ref={labelRef} className="replay-scrubber-pct">
+                  0
+                </span>
+              </div>
             </div>
           </>
         ) : (

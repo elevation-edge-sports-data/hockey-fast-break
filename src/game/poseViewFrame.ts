@@ -1,4 +1,3 @@
-import { createElement, type CSSProperties } from "react";
 import { CircleGeometry, Matrix4, Mesh, Object3D, Quaternion, RingGeometry, Vector3 } from "three";
 
 /**
@@ -100,34 +99,6 @@ export function pinPoseIceMarks(root: Object3D): void {
   }
 }
 
-const legendStyle: CSSProperties = {
-  position: "absolute",
-  left: 12,
-  bottom: 12,
-  zIndex: 2,
-  pointerEvents: "none",
-  display: "flex",
-  gap: 14,
-  padding: "6px 10px",
-  borderRadius: 6,
-  background: "rgba(16, 22, 31, 0.82)",
-  color: "#e8ece6",
-  fontFamily: '"Barlow Condensed", sans-serif',
-  fontSize: 14,
-  letterSpacing: "0.04em",
-  textTransform: "none",
-};
-
-function axisLabel(color: string, text: string) {
-  return createElement("span", { style: { color } }, text);
-}
-
 export function PoseAxisLegend() {
-  return createElement(
-    "div",
-    { style: legendStyle, "aria-label": "Axes" },
-    axisLabel("#ff4d4d", "X = end-to-end"),
-    axisLabel("#5dce6a", "Y = up"),
-    axisLabel("#4d8dff", "Z = side-to-side"),
-  );
+  return null;
 }

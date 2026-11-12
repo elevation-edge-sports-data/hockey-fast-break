@@ -313,38 +313,50 @@ export function createIceTextures(blueLines = true, nzDots = true): {
 }
 
 export function createNetTexture(): THREE.CanvasTexture {
+  const size = 256;
   const c = document.createElement("canvas");
-  c.width = 256;
-  c.height = 256;
+  c.width = size;
+  c.height = size;
   const g = c.getContext("2d")!;
-  g.clearRect(0, 0, 256, 256);
-  g.fillStyle = "rgba(196, 206, 216, 0.16)";
-  g.fillRect(0, 0, 256, 256);
-  g.strokeStyle = "rgba(236, 242, 246, 0.92)";
-  g.lineWidth = 2.1;
-  const cells = 14;
-  const step = 256 / cells;
-  for (let i = 0; i <= cells; i++) {
-    g.beginPath();
-    g.moveTo(i * step, 0);
-    g.lineTo(i * step, 256);
-    g.stroke();
-    g.beginPath();
-    g.moveTo(0, i * step);
-    g.lineTo(256, i * step);
-    g.stroke();
+  const image = g.createImageData(size, size);
+  const data = image.data;
+  // Vertex-to-vertex pitch. Both cord families are diagonal, so the openings are diamonds.
+  const cells = 18;
+  const step = size / cells;
+  const half = 0.62;
+  const inner = half - 0.4;
+  const outer = half + 0.55;
+  const peak = Math.round(0.92 * 255);
+  const distToFamily = (coord: number) => {
+    const r = ((coord % step) + step) % step;
+    return Math.min(r, step - r) / Math.SQRT2;
+  };
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x + 0.5;
+      const v = y + 0.5;
+      const dist = Math.min(distToFamily(u - v), distToFamily(u + v));
+      const i = (y * size + x) * 4;
+      let fade = 0;
+      if (dist <= inner) fade = 1;
+      else if (dist < outer) {
+        const t = (dist - inner) / (outer - inner);
+        const s = t * t * (3 - 2 * t);
+        fade = 1 - s;
+      }
+      if (fade <= 0) continue;
+      data[i] = 236;
+      data[i + 1] = 242;
+      data[i + 2] = 246;
+      data[i + 3] = Math.round(peak * fade);
+    }
   }
-  g.strokeStyle = "rgba(168, 180, 192, 0.55)";
-  g.lineWidth = 0.9;
-  for (let i = 0; i < cells; i++) {
-    g.beginPath();
-    g.moveTo(i * step, 0);
-    g.lineTo((i + 1) * step, 256);
-    g.stroke();
-  }
+  g.putImageData(image, 0, 0);
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(2.2, 1.5);
+  // One UV span is the shell outline (~4.41 m) by the shell height (~1.32 m).
+  // 4 by 1.2 keeps each diamond near square and about 6 cm across.
+  tex.repeat.set(4, 1.2);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
   return tex;

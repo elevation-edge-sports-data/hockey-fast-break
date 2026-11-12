@@ -61,7 +61,9 @@ function shotFollowPose(s: Skater): string | null {
   const blend = Math.min(0.1, total * 0.16);
   const rel = Math.min(0.08, Math.max(0.03, total * 0.1));
   const fol = Math.max(0.05, total - blend - rel);
-  if (!(elapsed >= rel && elapsed < rel + fol)) return null;
+  // A one-timer has no windup pose. Show the wrist or slap follow on the contact frame.
+  const open = world.lastShotOneTimer ? 0 : rel;
+  if (!(elapsed >= open && elapsed < rel + fol)) return null;
   if (world.lastShotSlap || world.lastShotKind === "slap") return "slapFollow";
   if (world.lastShotBackhand || world.lastShotKind === "backhand") return "backhandFollow";
   if (world.lastShotKind === "snap") return "snapFollow";
@@ -145,6 +147,10 @@ function captureGoaliePoseHold(): void {
 
 setGoaliePoseLockHook(captureGoaliePoseHold);
 
+function shootoutStoredRage(s: Skater, name: string | null | undefined): boolean {
+  return !!world.shootout && s.kind === "goalie" && (name === "goalieRage1" || name === "goalieRage2");
+}
+
 /** Live play only. Galleries pass the pose name in and do not use this. */
 export function inferNamedPose(s: Skater, index: number): string | null {
   if (!capturingGoaliePose) {
@@ -153,10 +159,11 @@ export function inferNamedPose(s: Skater, index: number): string | null {
   }
   if (!capturingGoaliePose && world.replayKind === "goal") {
     const recorded = instantReplayPoseName(s.id);
-    if (recorded !== undefined) return recorded;
+    if (recorded !== undefined && !shootoutStoredRage(s, recorded)) return recorded;
   }
   if (!capturingGoaliePose && replayFrameLocked() && s.kind === "goalie" && goaliePoseHold?.has(s.id)) {
-    return goaliePoseHold.get(s.id) ?? null;
+    const held = goaliePoseHold.get(s.id) ?? null;
+    if (!shootoutStoredRage(s, held)) return held;
   }
   return inferNamedPoseLive(s, index);
 }
@@ -164,7 +171,7 @@ export function inferNamedPose(s: Skater, index: number): string | null {
 function inferNamedPoseLive(s: Skater, index: number): string | null {
   const goalie = s.kind === "goalie";
   if (brawlLive(s.id)) return "fight";
-  if (goalie && !tumbling(s) && s.dive <= 0.04 && !checkedCyclePose(s.struck, s.tumble)) {
+  if (goalie && !world.shootout && !tumbling(s) && s.dive <= 0.04 && !checkedCyclePose(s.struck, s.tumble)) {
     if (s.smashKind > 0) return "goalieRage1";
     const ragePose = scoredOnGoalieRagePose(s);
     if (ragePose) return ragePose;

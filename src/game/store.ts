@@ -85,7 +85,7 @@ export function hudReleaseName(kind: HudRelease | null): string {
   if (kind === "pass") return "pass";
   return "Shot";
 }
-export type WhistleKind = "goal" | "cover" | "offside" | "brawl" | "crowd" | null;
+export type WhistleKind = "goal" | "cover" | "offside" | "brawl" | "crowd" | "frozen" | null;
 
 export const LINEUP_CAP = 6;
 export const CHAOS_CAP = 11;
@@ -325,17 +325,24 @@ function rollClockMode(): PlayMode {
 /** Old Roller saves used this id. The new target mode reuses it after one migration. */
 const PLAY_MODE_VERSION = "hfb-play-mode-v";
 
+const PLAY_MODES: readonly PlayMode[] = ["practice", "roller", "scrimmage", "game", "drill", "shootout"];
+
+function isPlayMode(v: string | null): v is PlayMode {
+  return v !== null && (PLAY_MODES as readonly string[]).includes(v);
+}
+
 function loadClockMode(): PlayMode {
   try {
     const version = localStorage.getItem(PLAY_MODE_VERSION);
-    const raw = localStorage.getItem("hfb-play-mode");
+    let raw = localStorage.getItem("hfb-play-mode");
     if (version !== "2") {
       localStorage.setItem(PLAY_MODE_VERSION, "2");
       if (raw === "scrimmage") {
-        localStorage.setItem("hfb-play-mode", "roller");
-        return "roller";
+        raw = "roller";
+        localStorage.setItem("hfb-play-mode", raw);
       }
     }
+    if (isPlayMode(raw)) return raw;
   } catch {
     /* ignore */
   }
@@ -481,6 +488,13 @@ export function clampGameMinutes(n: number): number {
 
 export function clampRollerMinutes(n: number): number {
   return clampPeriodMinutes(n, ROLLER_MINUTES_DEFAULT);
+}
+
+function openingPeriodClock(mode: PlayMode): number {
+  if (mode === "drill") return 60;
+  if (mode === "scrimmage" || mode === "shootout") return 0;
+  if (mode === "roller") return ROLLER_CLOCK_DISPLAY_MINUTES * 60;
+  return GAME_CLOCK_DISPLAY_MINUTES * 60;
 }
 
 /** Displayed minutes elapsed per real minute. A 1-minute period runs the clock at 20×, a 5-minute period at 4×. */
@@ -661,9 +675,85 @@ export function disarmCpuKitCycle(): void {
   cpuCycleArmed = false;
 }
 
-function rollAwayKit(): number {
-  const ids = UNIFORMS.map((u) => u.id).filter((id) => id !== COL_KIT);
-  return ids[Math.floor(Math.random() * ids.length)] ?? 2;
+function rollAwayKit(home = COL_KIT): number {
+  const ids = UNIFORMS.map((u) => u.id).filter((id) => id !== home);
+  return ids[Math.floor(Math.random() * ids.length)] ?? (home === 0 ? 1 : 0);
+}
+
+const HOME_KIT_KEY = "hfb-home-kit";
+const AWAY_KIT_KEY = "hfb-away-kit";
+const HOME_LINEUP_KEY = "hfb-home-lineup";
+const AWAY_LINEUP_KEY = "hfb-away-lineup";
+
+function loadKit(key: string, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0 || n >= UNIFORMS.length) return fallback;
+    return n;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveKit(key: string, id: number): void {
+  try {
+    localStorage.setItem(key, String(id));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadHomeKit(): number {
+  return loadKit(HOME_KIT_KEY, COL_KIT);
+}
+
+function loadAwayKit(home: number): number {
+  try {
+    const raw = localStorage.getItem(AWAY_KIT_KEY);
+    if (raw !== null) {
+      const n = Number(raw);
+      if (Number.isInteger(n) && n >= 0 && n < UNIFORMS.length && n !== home) return n;
+    }
+  } catch {
+    /* ignore */
+  }
+  return rollAwayKit(home);
+}
+
+function lineupFits(l: Lineup, mode: PlayMode): boolean {
+  const cap = modeLineupCap(mode);
+  if (mode === "scrimmage") return l.g <= 1 && l.d + l.o <= cap;
+  return lineupTotal(l) <= cap;
+}
+
+function loadLineup(key: string, fallback: Lineup, mode: PlayMode): Lineup {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return { ...fallback };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return { ...fallback };
+    const rec = parsed as Record<string, unknown>;
+    const g = Number(rec.g);
+    const d = Number(rec.d);
+    const o = Number(rec.o);
+    if (!Number.isFinite(g) || !Number.isFinite(d) || !Number.isFinite(o)) return { ...fallback };
+    const next = { g: clampSlot("g", g), d: clampSlot("d", d), o: clampSlot("o", o) };
+    if (!lineupFits(next, mode)) return { ...fallback };
+    return next;
+  } catch {
+    return { ...fallback };
+  }
+}
+
+function saveLineup(key: string, l: Lineup): void {
+  if (!Number.isFinite(l.g) || !Number.isFinite(l.d) || !Number.isFinite(l.o)) return;
+  try {
+    localStorage.setItem(key, JSON.stringify({ g: l.g, d: l.d, o: l.o }));
+  } catch {
+    /* ignore */
+  }
 }
 
 function loadFlag(key: string, fallback: boolean): boolean {
@@ -690,7 +780,54 @@ function snapSlider(n: number, min: number, max: number): number {
   return min + Math.max(0, Math.min(20, t)) * ((max - min) / 20);
 }
 
+const GAME_SPEED_KEY = "hfb-game-speed";
+const GAME_SPEED_MIN = 0.75;
+const GAME_SPEED_MAX = 1.25;
+const GAME_SPEED_DEFAULT = 0.85;
+const CPU_OFFENSE_KEY = "hfb-cpu-offense";
+const CPU_DEFENSE_KEY = "hfb-cpu-defense";
+const CPU_GOALIE_KEY = "hfb-cpu-goalie";
+const USER_OFFENSE_KEY = "hfb-user-offense";
+const USER_DEFENSE_KEY = "hfb-user-defense";
+const USER_GOALIE_KEY = "hfb-user-goalie";
+
+function loadSlider(key: string, min: number, max: number, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return fallback;
+    return snapSlider(n, min, max);
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSlider(key: string, n: number): void {
+  try {
+    localStorage.setItem(key, String(n));
+  } catch {
+    /* ignore */
+  }
+}
+
+function storeSlider(n: number, min: number, max: number, key: string): number {
+  const v = snapSlider(n, min, max);
+  if (Number.isFinite(v)) saveSlider(key, v);
+  return v;
+}
+
 const INITIAL_MODE = loadClockMode();
+const INITIAL_HOME_KIT = loadHomeKit();
+const INITIAL_AWAY_KIT = loadAwayKit(INITIAL_HOME_KIT);
+const INITIAL_HOME_LINEUP = loadLineup(HOME_LINEUP_KEY, MODE_LINEUPS[INITIAL_MODE].home, INITIAL_MODE);
+const INITIAL_AWAY_LINEUP = loadLineup(AWAY_LINEUP_KEY, MODE_LINEUPS[INITIAL_MODE].away, INITIAL_MODE);
+
+const loadedChaos = loadFlag("hfb-chaos", false);
+const storedPowerPlay = loadFlag("hfb-power-play", false);
+// Chaos on requires Power Play on, including a pair already saved the other way.
+const loadedPowerPlay = loadedChaos || storedPowerPlay;
+if (loadedChaos && !storedPowerPlay) saveFlag("hfb-power-play", true);
 
 export const useGame = create<GameUi>((set, get) => ({
   playing: false,
@@ -698,15 +835,17 @@ export const useGame = create<GameUi>((set, get) => ({
   camAdjust: false,
   camMode: "classic",
   freeCamLive: false,
-  homeKit: COL_KIT,
-  awayKit: rollAwayKit(),
-  homeLineup: { ...MODE_LINEUPS[INITIAL_MODE].home },
-  awayLineup: { ...MODE_LINEUPS[INITIAL_MODE].away },
-  liveHome: { ...MODE_LINEUPS[INITIAL_MODE].home },
-  liveAway: { ...MODE_LINEUPS[INITIAL_MODE].away },
+  homeKit: INITIAL_HOME_KIT,
+  awayKit: INITIAL_AWAY_KIT,
+  homeLineup: { ...INITIAL_HOME_LINEUP },
+  awayLineup: { ...INITIAL_AWAY_LINEUP },
+  liveHome: { ...INITIAL_HOME_LINEUP },
+  liveAway: { ...INITIAL_AWAY_LINEUP },
   lineupRev: 0,
-  powerPlay: loadFlag("hfb-power-play", true),
-  chaos: loadFlag("hfb-chaos", false),
+  // A missing key stays off. The old true fallback turned the mode on after a reload.
+  // Chaos on forces this on at load as well as in setChaos.
+  powerPlay: loadedPowerPlay,
+  chaos: loadedChaos,
   speed: 0,
   shotKind: null,
   practiceShots: emptyPracticeShots(),
@@ -736,7 +875,7 @@ export const useGame = create<GameUi>((set, get) => ({
   shootoutRounds: loadShootoutRounds(),
   shootout: null,
   period: 1,
-  periodClock: INITIAL_MODE === "drill" ? 60 : 1200,
+  periodClock: openingPeriodClock(INITIAL_MODE),
   periodOver: false,
   periodBreak: 0,
   drillScore: 0,
@@ -752,13 +891,13 @@ export const useGame = create<GameUi>((set, get) => ({
   ignoreAutoFind: loadFlag("hfb-ignore-auto-find", false),
   passLock: loadFlag("hfb-pass-lock", true),
   offsides: false,
-  gameSpeed: 0.85,
-  cpuOffense: 1,
-  cpuDefense: 1,
-  cpuGoalie: 0.8,
-  userOffense: 0.6,
-  userDefense: 1,
-  userGoalie: 0.5,
+  gameSpeed: loadSlider(GAME_SPEED_KEY, GAME_SPEED_MIN, GAME_SPEED_MAX, GAME_SPEED_DEFAULT),
+  cpuOffense: loadSlider(CPU_OFFENSE_KEY, 0, 2, 1),
+  cpuDefense: loadSlider(CPU_DEFENSE_KEY, 0, 2, 1),
+  cpuGoalie: loadSlider(CPU_GOALIE_KEY, 0, 1.6, 0.8),
+  userOffense: loadSlider(USER_OFFENSE_KEY, 0, 1.2, 0.6),
+  userDefense: loadSlider(USER_DEFENSE_KEY, 0, 2, 1),
+  userGoalie: loadSlider(USER_GOALIE_KEY, 0, 1, 0.5),
   setPlaying: (v) => set({ playing: v, paused: v ? false : get().paused, camAdjust: false }),
   setPaused: (v) => set({ paused: v, camAdjust: v }),
   setCamAdjust: (v) => set({ camAdjust: v }),
@@ -766,6 +905,7 @@ export const useGame = create<GameUi>((set, get) => ({
   setFreeCamLive: (v) => set({ freeCamLive: v }),
   setHomeKit: (id) => {
     if (id < 0 || id >= UNIFORMS.length) return;
+    saveKit(HOME_KIT_KEY, id);
     set({ homeKit: id, lineupRev: get().lineupRev + 1 });
   },
   setAwayKit: (id) => {
@@ -774,6 +914,7 @@ export const useGame = create<GameUi>((set, get) => ({
     if (id < 0 || id >= UNIFORMS.length) return;
     markCpuSeen(id);
     if (get().awayKit === id) return;
+    saveKit(AWAY_KIT_KEY, id);
     set({ awayKit: id, lineupRev: get().lineupRev + 1 });
   },
   rerollClockMode: () => {
@@ -788,8 +929,14 @@ export const useGame = create<GameUi>((set, get) => ({
     } catch {
       /* ignore */
     }
-    get().rerollClockMode();
+    const home = get().homeLineup;
+    const away = get().awayLineup;
+    const keptHome = { g: home.g, d: home.d, o: home.o };
+    const keptAway = { g: away.g, d: away.d, o: away.o };
     if (saved !== null) get().setOffsides(saved);
+    // Stay in the current clock mode and keep the stepper counts.
+    get().setHomeLineup(keptHome);
+    get().setAwayLineup(keptAway);
   },
   rerollAwayKit: () => {
     const home = get().homeKit;
@@ -801,21 +948,40 @@ export const useGame = create<GameUi>((set, get) => ({
     get().setAwayKit(next);
   },
   setHomeLineup: (l) => {
-    set({ homeLineup: l, liveHome: { g: l.g, d: l.d, o: l.o }, lineupRev: get().lineupRev + 1 });
+    const homeLineup = { g: l.g, d: l.d, o: l.o };
+    saveLineup(HOME_LINEUP_KEY, homeLineup);
+    set({ homeLineup, liveHome: { ...homeLineup }, lineupRev: get().lineupRev + 1 });
   },
   setAwayLineup: (l) => {
-    set({ awayLineup: l, liveAway: { g: l.g, d: l.d, o: l.o }, lineupRev: get().lineupRev + 1 });
+    const awayLineup = { g: l.g, d: l.d, o: l.o };
+    saveLineup(AWAY_LINEUP_KEY, awayLineup);
+    set({ awayLineup, liveAway: { ...awayLineup }, lineupRev: get().lineupRev + 1 });
   },
   setLiveHome: (l) => set({ liveHome: { g: l.g, d: l.d, o: l.o }, lineupRev: get().lineupRev + 1 }),
   setLiveAway: (l) => set({ liveAway: { g: l.g, d: l.d, o: l.o }, lineupRev: get().lineupRev + 1 }),
   bumpLineup: () => set({ lineupRev: get().lineupRev + 1 }),
+  // Chaos implies Power Play. Turning Chaos on forces Power Play on and
+  // persists both. Turning Chaos off turns Power Play off. Power Play can be
+  // enabled alone after that. An off request is ignored while Chaos is on.
   setPowerPlay: (v) => {
+    if (!v && get().chaos) return;
     saveFlag("hfb-power-play", v);
     set({ powerPlay: v });
   },
   setChaos: (v) => {
+    const wasOn = get().chaos;
     saveFlag("hfb-chaos", v);
-    set({ chaos: v });
+    if (v) {
+      saveFlag("hfb-power-play", true);
+      set({ chaos: true, powerPlay: true });
+      return;
+    }
+    if (wasOn) {
+      saveFlag("hfb-power-play", false);
+      set({ chaos: false, powerPlay: false });
+      return;
+    }
+    set({ chaos: false });
   },
   setSpeed: (n) => set({ speed: n }),
   setShotKind: (k) => set({ shotKind: k }),
@@ -866,36 +1032,28 @@ export const useGame = create<GameUi>((set, get) => ({
     saveClockMode(m);
     const prev = get().clockMode;
     const lu = MODE_LINEUPS[m];
-    const quiet = (mode: PlayMode) => mode === "practice" || mode === "scrimmage";
-    const powerPlay =
-      quiet(m) && !quiet(prev)
-        ? false
-        : !quiet(m) && quiet(prev)
-          ? loadFlag("hfb-power-play", true)
-          : undefined;
+    const homeLineup = { ...lu.home };
+    const awayLineup = { ...lu.away };
+    saveLineup(HOME_LINEUP_KEY, homeLineup);
+    saveLineup(AWAY_LINEUP_KEY, awayLineup);
     const enterPractice = m === "practice" && prev !== "practice";
+    // Leave powerPlay alone. Practice and Scrimmage used to force it off in
+    // memory, then the way out reloaded hfb-power-play with a true fallback,
+    // so the button came back on without a click.
     set({
       ...(enterPractice ? { practiceShots: emptyPracticeShots() } : {}),
       clockMode: m,
-      homeLineup: { ...lu.home },
-      awayLineup: { ...lu.away },
-      liveHome: { ...lu.home },
-      liveAway: { ...lu.away },
+      homeLineup,
+      awayLineup,
+      liveHome: { ...homeLineup },
+      liveAway: { ...awayLineup },
       lineupRev: get().lineupRev + 1,
       periodOver: false,
       periodBreak: 0,
       period: 1,
-      periodClock:
-        m === "drill"
-          ? 60
-          : m === "scrimmage" || m === "shootout"
-            ? 0
-            : m === "roller"
-              ? ROLLER_CLOCK_DISPLAY_MINUTES * 60
-              : GAME_CLOCK_DISPLAY_MINUTES * 60,
+      periodClock: openingPeriodClock(m),
       drillScore: 0,
       offsides: false,
-      ...(powerPlay === undefined ? {} : { powerPlay }),
     });
   },
   setGameMinutes: (n) => {
@@ -980,13 +1138,13 @@ export const useGame = create<GameUi>((set, get) => ({
     saveFlag("hfb-offsides", v);
     set({ offsides: v });
   },
-  setGameSpeed: (n) => set({ gameSpeed: snapSlider(n, 0.75, 1.25) }),
-  setCpuOffense: (n) => set({ cpuOffense: snapSlider(n, 0, 2) }),
-  setCpuDefense: (n) => set({ cpuDefense: snapSlider(n, 0, 2) }),
-  setCpuGoalie: (n) => set({ cpuGoalie: snapSlider(n, 0, 1.6) }),
-  setUserOffense: (n) => set({ userOffense: snapSlider(n, 0, 1.2) }),
-  setUserDefense: (n) => set({ userDefense: snapSlider(n, 0, 2) }),
-  setUserGoalie: (n) => set({ userGoalie: snapSlider(n, 0, 1) }),
+  setGameSpeed: (n) => set({ gameSpeed: storeSlider(n, GAME_SPEED_MIN, GAME_SPEED_MAX, GAME_SPEED_KEY) }),
+  setCpuOffense: (n) => set({ cpuOffense: storeSlider(n, 0, 2, CPU_OFFENSE_KEY) }),
+  setCpuDefense: (n) => set({ cpuDefense: storeSlider(n, 0, 2, CPU_DEFENSE_KEY) }),
+  setCpuGoalie: (n) => set({ cpuGoalie: storeSlider(n, 0, 1.6, CPU_GOALIE_KEY) }),
+  setUserOffense: (n) => set({ userOffense: storeSlider(n, 0, 1.2, USER_OFFENSE_KEY) }),
+  setUserDefense: (n) => set({ userDefense: storeSlider(n, 0, 2, USER_DEFENSE_KEY) }),
+  setUserGoalie: (n) => set({ userGoalie: storeSlider(n, 0, 1, USER_GOALIE_KEY) }),
 }));
 
 markCpuSeen(useGame.getState().awayKit);

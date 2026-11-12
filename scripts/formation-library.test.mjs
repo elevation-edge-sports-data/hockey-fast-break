@@ -789,11 +789,10 @@ test("replay playback uses the in-game game-speed clock and the formation save l
   assert.match(overlay, /Hockey Fast Break \(V4\)/);
   assert.match(
     overlay,
-    /\{playing && !paused \? null : hudReady \? \(\s*<>\s*<span className="play-gap" aria-hidden="true" \/>\s*<FormationKits \/>/,
+    /\{\(playing && !paused\) \|\| replay \? null : hudReady \? \(\s*<>\s*<span className="play-gap" aria-hidden="true" \/>\s*<FormationKits \/>/,
   );
   assert.match(overlay, /className=\{`play-lineups\$\{lineupsFit \? "" : " is-hidden"\}`\}/);
   assert.doesNotMatch(overlay, /className="uni-banner"/);
-  assert.doesNotMatch(overlay, /\(playing && !paused\) \|\| replay \? null/);
   assert.match(
     css,
     /\.formation-lib \{\s*display: grid;\s*grid-template-columns: min\(280px, 25%\) minmax\(50%, 1fr\) min\(280px, 25%\);\s*grid-template-rows: auto minmax\(0, 1fr\);\s*grid-template-areas:\s*"top top top"\s*"side stage repo";/,
@@ -877,7 +876,7 @@ test("locked-frame download keeps original and adjusted, matching the in-game re
   assert.match(library, /<FormationMarkDriver/);
   assert.match(replay, /Edit formation/);
   assert.match(replay, /"Revert"/);
-  assert.match(replay, /Download formation/);
+  assert.match(replay, /Save formation/);
   assert.match(replay, /downloadFormationFrame\(frame\)/);
   assert.match(replay, /<FormationMarkDriver/);
   assert.match(replay, /restoreFormationFrame/);

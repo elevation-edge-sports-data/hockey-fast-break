@@ -31,6 +31,7 @@ import {
   MARK_W,
   GLASS_H,
   benchGlassOpen,
+  cageOutlinePoint,
   GOAL_D,
   GOAL_D_TOP,
   GOAL_PIPE_R,
@@ -64,6 +65,9 @@ function extrudeRing(outerInset: number, innerInset: number, depth: number) {
   return geo;
 }
 
+/** Full-width extra so an ice stripe crosses the kick face. */
+const ICE_LINE_PAST = 0.08;
+
 function IceStripe({
   x,
   color,
@@ -73,7 +77,8 @@ function IceStripe({
   color: string;
   width: number;
 }) {
-  const span = Math.max(1, iceWidthAtX(x) - 0.18);
+  // Past the nominal edge so both sides of the stripe meet the kick, including the goal line on the arc.
+  const span = Math.max(1, iceWidthAtX(x) + ICE_LINE_PAST);
   return (
     <mesh position={[x, 0.024, 0]} rotation={[-Math.PI / 2, 0, 0]}>
       <planeGeometry args={[width, span]} />
@@ -340,7 +345,7 @@ function Crease({ side }: { side: 1 | -1 }) {
 function CenterRedLine() {
   const halfW = CENTER_LINE_W / 2;
   const crest = Math.sqrt(Math.max(0, FACEOFF_MARK_R * FACEOFF_MARK_R - halfW * halfW));
-  const halfIce = Math.max(1, iceWidthAtX(0) - 0.18) / 2;
+  const halfIce = Math.max(1, iceWidthAtX(0) + ICE_LINE_PAST) / 2;
   const seg = Math.max(0.2, halfIce - crest);
   const z = (halfIce + crest) / 2;
   return (
@@ -373,35 +378,43 @@ function IceLines({ blue }: { blue: boolean }) {
   );
 }
 
-const STRIPE_T = 0.05;
-const STRIPE_PROUD = 0.016;
+/** Just off the board face. The stripe has no thickness of its own. */
+const PAINT_OFF = 0.001;
+/** Past the ice, and past the top of the boards into the glass. */
+const PAINT_PAST = 0.012;
 const BOARD_FACE_IN = 0.02;
 const KICK_FACE_IN = 0.01;
 
 function BoardPaint({ x, color, width }: { x: number; color: string; width: number }) {
-  const proud = STRIPE_PROUD + STRIPE_T / 2;
-  const kick = boardLineFaces(x, KICK_FACE_IN, proud);
-  const boards = boardLineFaces(x, BOARD_FACE_IN, proud);
-  const kickH = Math.max(0.08, KICK_H - 0.012);
-  const boardTop = BOARD_H - 0.006;
-  const boardH = Math.max(0.2, boardTop - (KICK_H - 0.01));
-  const band = (faces: { x: number; z: number; rot: number }[], y: number, h: number, key: string) =>
-    faces.map((face, i) => (
-      <group key={`${key}${i}`} position={[face.x, y, face.z]} rotation={[0, face.rot, 0]}>
-        <mesh position={[0, 0, 0.01]}>
-          <boxGeometry args={[width, h + 0.012, STRIPE_T * 0.62]} />
-          <meshBasicMaterial color="#121212" toneMapped={false} />
-        </mesh>
-        <mesh>
-          <boxGeometry args={[width, h, STRIPE_T]} />
-          <meshBasicMaterial color={color} toneMapped={false} />
-        </mesh>
-      </group>
+  const kick = boardLineFaces(x, KICK_FACE_IN, PAINT_OFF);
+  const boards = boardLineFaces(x, BOARD_FACE_IN, PAINT_OFF);
+  const seam = 0.004;
+  const band = (
+    faces: { x: number; z: number; rot: number }[],
+    bottom: number,
+    top: number,
+    key: string,
+  ) => {
+    const h = top - bottom;
+    const y = (bottom + top) / 2;
+    return faces.map((face, i) => (
+      <mesh key={`${key}${i}`} position={[face.x, y, face.z]} rotation={[0, face.rot, 0]}>
+        <planeGeometry args={[width, h]} />
+        <meshBasicMaterial
+          color={color}
+          toneMapped={false}
+          side={THREE.DoubleSide}
+          polygonOffset
+          polygonOffsetFactor={-2}
+          polygonOffsetUnits={-2}
+        />
+      </mesh>
     ));
+  };
   return (
     <group>
-      {band(kick, 0.006 + kickH / 2, kickH, "k")}
-      {band(boards, KICK_H - 0.01 + boardH / 2, boardH, "b")}
+      {band(kick, -PAINT_PAST, KICK_H + seam, "k")}
+      {band(boards, KICK_H - seam, BOARD_H + PAINT_PAST, "b")}
     </group>
   );
 }
@@ -422,15 +435,30 @@ function BoardLines({ blue }: { blue: boolean }) {
   );
 }
 
-function cagePoint(dir: 1 | -1, t: number, y: number, depth: number, hw: number) {
-  return new THREE.Vector3(dir * depth * Math.sin(t), y, hw * Math.cos(t));
+function cagePoint(dir: 1 | -1, t: number, y: number, depth: number) {
+  const p = cageOutlinePoint(t, depth);
+  return new THREE.Vector3(dir * p.a, y, p.z);
+}
+
+class CageOutlineCurve extends THREE.Curve<THREE.Vector3> {
+  constructor(
+    private readonly dir: 1 | -1,
+    private readonly y: number,
+    private readonly depth: number,
+  ) {
+    super();
+  }
+
+  getPoint(t: number, optionalTarget?: THREE.Vector3) {
+    const target = optionalTarget ?? new THREE.Vector3();
+    return target.copy(cagePoint(this.dir, t, this.y, this.depth));
+  }
 }
 
 function goalMesh(dir: 1 | -1) {
   const h = GOAL_H;
-  const hw = GOAL_W / 2;
   const r = GOAL_PIPE_R;
-  const segs = 18;
+  const segs = 36;
   const ySegs = 5;
   const shell = new THREE.BufferGeometry();
   const pos: number[] = [];
@@ -441,8 +469,8 @@ function goalMesh(dir: 1 | -1) {
     const y = r + (h - r) * yf;
     const depth = GOAL_D * (1 - yf * (1 - GOAL_D_TOP / GOAL_D));
     for (let i = 0; i <= segs; i++) {
-      const t = (i / segs) * Math.PI;
-      const p = cagePoint(dir, t, y, depth, hw);
+      const t = i / segs;
+      const p = cagePoint(dir, t, y, depth);
       pos.push(p.x, p.y, p.z);
       uv.push(i / segs, yf);
     }
@@ -468,8 +496,8 @@ function goalMesh(dir: 1 | -1) {
   const tUv = [0.5, 0];
   const tIdx: number[] = [];
   for (let i = 0; i <= segs; i++) {
-    const t = (i / segs) * Math.PI;
-    const p = cagePoint(dir, t, h, GOAL_D_TOP, hw);
+    const t = i / segs;
+    const p = cagePoint(dir, t, h, GOAL_D_TOP);
     tPos.push(p.x, p.y, p.z);
     tUv.push(i / segs, 1);
     if (i > 0) {
@@ -485,12 +513,12 @@ function goalMesh(dir: 1 | -1) {
   const basePts: THREE.Vector3[] = [];
   const topPts: THREE.Vector3[] = [];
   for (let i = 0; i <= segs; i++) {
-    const t = (i / segs) * Math.PI;
-    basePts.push(cagePoint(dir, t, r, GOAL_D, hw));
-    topPts.push(cagePoint(dir, t, h, GOAL_D_TOP, hw));
+    const t = i / segs;
+    basePts.push(cagePoint(dir, t, r, GOAL_D));
+    topPts.push(cagePoint(dir, t, h, GOAL_D_TOP));
   }
-  const baseTube = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(basePts), segs, r, 8, false);
-  const topTube = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(topPts), segs, r, 8, false);
+  const baseTube = new THREE.TubeGeometry(new CageOutlineCurve(dir, r, GOAL_D), 64, r, 8, false);
+  const topTube = new THREE.TubeGeometry(new CageOutlineCurve(dir, h, GOAL_D_TOP), 64, r, 8, false);
   return { shell, top, baseTube, topTube, basePts, topPts };
 }
 
@@ -815,10 +843,6 @@ export function Rink() {
     capMat.needsUpdate = true;
     return () => capMat.dispose();
   }, [capMat, homeRibbon]);
-  const posts = useMemo(
-    () => rinkPerimeter(0.06, 64).filter((p) => !benchGlassOpen(p.x, p.z)),
-    [],
-  );
   const glassWalls = useMemo(() => {
     const ring = rinkPerimeter(-0.06, 96);
     const out: { x: number; z: number; len: number; rot: number }[] = [];
@@ -875,13 +899,6 @@ export function Rink() {
             depthWrite={false}
             side={THREE.DoubleSide}
           />
-        </mesh>
-      ))}
-
-      {posts.map((p, i) => (
-        <mesh key={i} position={[p.x, BOARD_H + GLASS_H / 2, p.z]}>
-          <boxGeometry args={[0.05, GLASS_H, 0.05]} />
-          <meshStandardMaterial color="#9aa7b4" metalness={0.65} roughness={0.28} />
         </mesh>
       ))}
 
