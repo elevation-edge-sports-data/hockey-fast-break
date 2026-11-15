@@ -659,6 +659,8 @@ export type JumboPaint = RibbonPaint & {
   puckX: number;
   puckZ: number;
   players: { x: number; z: number; home: boolean }[];
+  /** False hides the center-ice crest on the board. Omitted still draws it. */
+  centerLogo?: boolean;
 };
 
 /** Overhead token: head, striped torso, legs, and a short stick. Centered on the ice point. */
@@ -984,20 +986,22 @@ export function createJumboFace(kind: "wide" | "tall" = "wide", flip = false): {
       g.lineWidth = 1.2;
       g.stroke();
     }
-    const logoAt = toIce(0, 0);
-    const logoR = FACEOFF_MARK_R * pxPerM;
-    if (centerIceLogo.complete && centerIceLogo.naturalWidth > 0) {
-      g.save();
-      g.beginPath();
-      g.arc(logoAt.x, logoAt.y, logoR, 0, Math.PI * 2);
-      g.clip();
-      g.drawImage(centerIceLogo, logoAt.x - logoR, logoAt.y - logoR, logoR * 2, logoR * 2);
-      g.restore();
-    } else {
-      g.fillStyle = LINE_BLUE;
-      g.beginPath();
-      g.arc(logoAt.x, logoAt.y, Math.max(2, logoR * 0.28), 0, Math.PI * 2);
-      g.fill();
+    if (opts.centerLogo !== false) {
+      const logoAt = toIce(0, 0);
+      const logoR = FACEOFF_MARK_R * pxPerM;
+      if (centerIceLogo.complete && centerIceLogo.naturalWidth > 0) {
+        g.save();
+        g.beginPath();
+        g.arc(logoAt.x, logoAt.y, logoR, 0, Math.PI * 2);
+        g.clip();
+        g.drawImage(centerIceLogo, logoAt.x - logoR, logoAt.y - logoR, logoR * 2, logoR * 2);
+        g.restore();
+      } else {
+        g.fillStyle = LINE_BLUE;
+        g.beginPath();
+        g.arc(logoAt.x, logoAt.y, Math.max(2, logoR * 0.28), 0, Math.PI * 2);
+        g.fill();
+      }
     }
     g.strokeStyle = LINE_RED;
     g.lineWidth = 2;

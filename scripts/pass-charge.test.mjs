@@ -3,6 +3,7 @@
  * A goalie tap is 45 mph and 1.5s is 85. A goalie shot tap is 55 mph and a full hold is 87.
  * Select (gamepad button 8) held at release makes that pass a saucer.
  * Sauce height is a second curve on that hold: empty at the tap, full at 1s.
+ * A clean Select release under 1s, with A never down, launches a saucer at that partial charge.
  * Select held alone for 2s, with A never down, releases a high clear.
  * The shot meter fills across the 1.5s windup. Slap starts at half of that, not at xHeld.
  */
@@ -891,6 +892,187 @@ test("a user goalie sauces on Select release, and a 2s hold is a clear", () => {
     if (world.puck.owner !== null) break;
   }
   assert.ok(peak > GOAL_H + 1.15, `goalie clear peak ${peak}`);
+});
+
+test("a clean Select release launches a partial saucer without A", () => {
+  fresh();
+  parkGoalie();
+  settleUser();
+  parkOthers();
+  user().z = 0;
+  setInjectedAim(0, 1);
+  holdSelect(true);
+  step(1);
+  clockMs += 450;
+  step(1);
+  const winding = useGame.getState();
+  assert.equal(winding.chargeKind, null);
+  assert.ok(Math.abs(winding.sauce - 0.45) < 0.06, `partial sauce ${winding.sauce}`);
+  assert.equal(world.puck.owner, user().id);
+  holdSelect(false);
+  step(1);
+  assertSpeed(0.45);
+  assertHud(0.45, "saucer");
+  assertSaucer();
+  assert.ok(Math.abs(useGame.getState().speed - 86) > 8, `partial speed ${useGame.getState().speed}`);
+  let peak = world.puck.y;
+  for (let i = 0; i < 80; i++) {
+    step(1);
+    if (world.puck.y > peak) peak = world.puck.y;
+    if (world.puck.owner !== null) break;
+  }
+  assert.ok(peak < 2.2, `partial peak ${peak}`);
+
+  fresh();
+  parkGoalie();
+  settleUser();
+  parkOthers();
+  setInjectedAim(0, 1);
+  holdSelect(true);
+  step(1);
+  clockMs += 20;
+  step(1);
+  holdSelect(false);
+  step(1);
+  assert.equal(world.puck.owner, user().id, "a flick under 0.05s stays on the stick");
+
+  fresh();
+  parkGoalie();
+  settleUser();
+  parkOthers();
+  setInjectedAim(0, 1);
+  holdSelect(true);
+  setInjectedKeys(["KeyE"]);
+  step(1);
+  clockMs += 450;
+  step(1);
+  holdSelect(false);
+  step(1);
+  assert.equal(world.puck.owner, user().id, "Select up while A is held is not a partial saucer");
+  setInjectedKeys([]);
+  step(1);
+  assert.equal(useGame.getState().shotKind, "pass");
+  assertIce();
+
+  fresh();
+  parkGoalie();
+  settleUser();
+  parkOthers();
+  setInjectedAim(0, 1);
+  holdSelect(true);
+  setInjectedKeys(["KeyE"]);
+  step(1);
+  clockMs += 1100;
+  step(1);
+  setInjectedKeys(["KeyE", "Space"]);
+  step(1);
+  holdSelect(false);
+  step(1);
+  assert.equal(world.puck.owner, user().id, "B cancel blocks the Select release");
+  assert.notEqual(world.lastPasser, user().id);
+});
+
+test("a partial saucer lands flat and a full saucer bounces once", () => {
+  function releaseSelectHold(ms, x = 0) {
+    fresh();
+    parkGoalie();
+    settleUser();
+    parkOthers();
+    const s = user();
+    s.x = x;
+    s.z = 0;
+    const blade = stickBlade(s);
+    world.puck.x = blade.x;
+    world.puck.z = blade.z;
+    world.puck.owner = s.id;
+    setInjectedAim(0, 1);
+    holdSelect(true);
+    step(1);
+    clockMs += ms;
+    step(1);
+    const real = Math.random;
+    Math.random = () => 0;
+    holdSelect(false);
+    try {
+      step(1);
+    } finally {
+      Math.random = real;
+    }
+  }
+  function firstIce(pin) {
+    let airborne = false;
+    let peak = 0;
+    for (let i = 0; i < 240; i++) {
+      const y0 = world.puck.y;
+      const v0 = Math.hypot(world.puck.vx, world.puck.vz);
+      if (y0 > peak) peak = y0;
+      if (pin) pin();
+      step(1);
+      if (world.puck.y > peak) peak = world.puck.y;
+      if (y0 > 0.12) airborne = true;
+      if (airborne && y0 > 0.06 && world.puck.y <= 0.05) {
+        return {
+          vy: world.puck.vy,
+          keep: Math.hypot(world.puck.vx, world.puck.vz) / Math.max(0.01, v0),
+          frame: i,
+          x: world.puck.x,
+        };
+      }
+      if (world.puck.owner !== null) {
+        return { missed: `caught frame ${i} peak ${peak.toFixed(2)} x ${world.puck.x.toFixed(2)}` };
+      }
+    }
+    return { missed: `still up peak ${peak.toFixed(2)} y ${world.puck.y.toFixed(2)} x ${world.puck.x.toFixed(2)}` };
+  }
+
+  releaseSelectHold(450);
+  const partial = firstIce();
+  assert.ok(partial.vy !== undefined, partial.missed ?? "partial saucer never landed");
+  assert.equal(partial.vy, 0, `partial bounce vy ${partial.vy}`);
+  assert.ok(partial.keep < 0.9 && partial.keep > 0.55, `partial keep ${partial.keep}`);
+  let partialRose = world.puck.y;
+  for (let i = 0; i < 40; i++) {
+    step(1);
+    if (world.puck.y > partialRose) partialRose = world.puck.y;
+    if (world.puck.owner !== null) break;
+  }
+  assert.ok(partialRose < 0.08, `partial rose to ${partialRose}`);
+
+  releaseSelectHold(1100, -16);
+  function holdSkatersAway() {
+    for (const s of world.skaters) {
+      s.x = -58;
+      s.z = (s.id % 9) * 2 - 8;
+      s.vx = 0;
+      s.vz = 0;
+    }
+  }
+  const full = firstIce(holdSkatersAway);
+  assert.ok(full.vy !== undefined, full.missed ?? "full saucer never landed");
+  assert.ok(full.vy > 0.4, `full bounce vy ${full.vy}`);
+  assert.ok(full.keep < 0.55, `full keep ${full.keep}`);
+  let hopped = world.puck.y;
+  let stuck = false;
+  for (let i = 0; i < 180; i++) {
+    const y0 = world.puck.y;
+    holdSkatersAway();
+    step(1);
+    if (world.puck.y > hopped) hopped = world.puck.y;
+    if (hopped > 0.2 && y0 > 0.05 && world.puck.y <= 0.05) {
+      assert.equal(world.puck.vy, 0, `second contact vy ${world.puck.vy}`);
+      stuck = true;
+      break;
+    }
+  }
+  assert.ok(hopped > 0.2, `full bounce height ${hopped}`);
+  assert.ok(stuck, `full saucer did not stick after the bounce y ${world.puck.y.toFixed(2)} x ${world.puck.x.toFixed(2)}`);
+  let after = world.puck.y;
+  for (let i = 0; i < 30; i++) {
+    holdSkatersAway();
+    step(1);
+    if (world.puck.y > after) after = world.puck.y;
+  }
+  assert.ok(after < 0.08, `full rose again to ${after}`);
 });
 
 test("a full sauce releases on Select as soon as the meter fills", () => {

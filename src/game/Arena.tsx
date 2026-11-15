@@ -10,7 +10,7 @@ import {
 } from "./iceTexture";
 import { BOARD_H, CORNER_R, FT, GLASS_H, GOAL_LINE_X, RINK_L, RINK_W } from "./rink";
 import { rinkPerimeter } from "./rinkGeom";
-import { kitById, kitWornColors } from "./uniforms";
+import { crowdPrimaryShare, kitById, kitWornColors } from "./uniforms";
 import { periodOrdinal, showsPeriodClock, useGame, type ArenaLook } from "./store";
 import {
   AWAY_BENCH_NUMS,
@@ -174,35 +174,30 @@ function shootoutMissCheer(): boolean {
   return !!so && so.phase !== "done" && world.whistle !== "goal" && world.goalTicker > 0 && !!world.goalSide;
 }
 
-function fanTri(kitId: number): { helmet: THREE.Color; jersey: THREE.Color; pants: THREE.Color } {
-  const worn = kitWornColors(kitById(kitId));
+type CrowdMix = { pri: THREE.Color; sec: THREE.Color; ratio: number };
+
+function crowdMix(kitId: number): CrowdMix {
+  const kit = kitById(kitId);
   return {
-    helmet: new THREE.Color(worn.helmet),
-    jersey: new THREE.Color(worn.jersey),
-    pants: new THREE.Color(worn.pants),
+    pri: new THREE.Color(kit.crowdPri),
+    sec: new THREE.Color(kit.crowdSec),
+    ratio: crowdPrimaryShare(kit),
   };
 }
 
-function fanJersey(
-  i: number,
-  awayFan: boolean,
-  homeTri: ReturnType<typeof fanTri>,
-  awayTri: ReturnType<typeof fanTri>,
-  dark: THREE.Color,
-): THREE.Color {
-  if (awayFan ? i % 9 === 0 : i % 11 === 0) return dark;
-  const tri = awayFan ? awayTri : homeTri;
-  const band = i % 3;
-  return band === 0 ? tri.helmet : band === 1 ? tri.jersey : tri.pants;
+function fanColor(i: number, awayFan: boolean, home: CrowdMix, away: CrowdMix): THREE.Color {
+  const mix = awayFan ? away : home;
+  // Knuth hash. A raw i % N follows STANDS row order and paints horizontal bands.
+  const hash = ((Math.imul(i, 2654435761) >>> 0) % 10000) / 10000;
+  return hash < mix.ratio ? mix.pri : mix.sec;
 }
 
 function paintCrowdColors(crowd: THREE.InstancedMesh, homeId: number, awayId: number): void {
-  const homeTri = fanTri(homeId);
-  const awayTri = fanTri(awayId);
-  const dark = new THREE.Color("#1c222c");
+  const home = crowdMix(homeId);
+  const away = crowdMix(awayId);
   for (let i = 0; i < STANDS.length; i++) {
     const p = STANDS[i]!;
-    crowd.setColorAt(i, fanJersey(i, p.awayFan, homeTri, awayTri, dark));
+    crowd.setColorAt(i, fanColor(i, p.awayFan, home, away));
   }
   if (crowd.instanceColor) crowd.instanceColor.needsUpdate = true;
 }
@@ -219,16 +214,14 @@ function SeatDeck() {
   const count = STANDS.length;
   const { camera } = useThree();
 
-  const colors = useMemo(() => {
-    const homeTri = fanTri(home.id);
-    const awayTri = fanTri(away.id);
-    return {
+  const colors = useMemo(
+    () => ({
       seat: new THREE.Color("#2a3340"),
-      dark: new THREE.Color("#1c222c"),
-      homeTri,
-      awayTri,
-    };
-  }, [home, away]);
+      home: crowdMix(home.id),
+      away: crowdMix(away.id),
+    }),
+    [home, away],
+  );
   const crowdMat = useMemo(() => {
     const material = new THREE.MeshStandardMaterial({ roughness: 0.75 });
     applyFarSideCull(material, 0.24);
@@ -255,7 +248,7 @@ function SeatDeck() {
       dummy.position.y = p.y + PERSON_LIFT;
       dummy.updateMatrix();
       crowd.setMatrixAt(i, dummy.matrix);
-      crowd.setColorAt(i, fanJersey(i, p.awayFan, colors.homeTri, colors.awayTri, colors.dark));
+      crowd.setColorAt(i, fanColor(i, p.awayFan, colors.home, colors.away));
     }
     seats.instanceMatrix.needsUpdate = true;
     crowd.instanceMatrix.needsUpdate = true;
@@ -828,6 +821,9 @@ function Jumbotron() {
       puckX: replay?.puckX ?? world.puck.x,
       puckZ: replay?.puckZ ?? world.puck.z,
       players: replay?.players ?? world.skaters.map((s) => ({ x: s.x, z: s.z, home: s.side === "home" })),
+      centerLogo:
+        useGame.getState().centerIceLogo === "ee" ||
+        (useGame.getState().centerIceLogo === "custom" && !useGame.getState().customLogoDataUrl),
     };
     wideFace.paint(paintOpts);
     wideFlipFace.paint(paintOpts);
@@ -1279,6 +1275,7 @@ function Benches() {
 export function Arena() {
   const look = useGame((s) => s.arenaLook);
   const cam = useGame((s) => s.camMode);
+  const jumbotronEnabled = useGame((s) => s.jumbotronEnabled);
   const env = useMemo(() => createArenaEnv(look), [look]);
   useLayoutEffect(() => () => env.dispose(), [env]);
   const overhead = cam === "high";
@@ -1295,7 +1292,7 @@ export function Arena() {
         </>
       )}
       <PressBox />
-      <Jumbotron />
+      {jumbotronEnabled ? <Jumbotron /> : null}
       <Truss />
       <Benches />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.04, 0]} receiveShadow>

@@ -192,6 +192,14 @@ function CenterIceDot() {
 }
 
 function CenterIceLogo() {
+  const centerIceLogo = useGame((s) => s.centerIceLogo);
+  const customLogoDataUrl = useGame((s) => s.customLogoDataUrl);
+  const src =
+    centerIceLogo === "off"
+      ? null
+      : centerIceLogo === "custom" && customLogoDataUrl
+        ? customLogoDataUrl
+        : centerIceUrl;
   const mat = useMemo(
     () =>
       new THREE.MeshBasicMaterial({
@@ -202,8 +210,14 @@ function CenterIceLogo() {
     [],
   );
   useLayoutEffect(() => {
+    if (!src) {
+      mat.map = null;
+      mat.color.set("#e4edf4");
+      mat.needsUpdate = true;
+      return;
+    }
     let alive = true;
-    const tex = new THREE.TextureLoader().load(centerIceUrl, () => {
+    const tex = new THREE.TextureLoader().load(src, () => {
       if (!alive) return;
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = 8;
@@ -219,8 +233,9 @@ function CenterIceLogo() {
       mat.needsUpdate = true;
       tex.dispose();
     };
-  }, [mat]);
+  }, [mat, src]);
   useLayoutEffect(() => () => mat.dispose(), [mat]);
+  if (centerIceLogo === "off") return null;
   return (
     <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={1}>
       <circleGeometry args={[FACEOFF_MARK_R, 64]} />
@@ -250,6 +265,7 @@ function FaceoffCircles() {
   const map = useMemo(() => createFaceoffDotTexture(), []);
   useLayoutEffect(() => () => map.dispose(), [map]);
   const roller = useGame((s) => s.clockMode) === "roller";
+  const centerIceLogo = useGame((s) => s.centerIceLogo);
   const dots: readonly (readonly [number, number])[] = roller
     ? [
         [FACEOFF_EZ_X, FACEOFF_SPOT_Z],
@@ -269,7 +285,7 @@ function FaceoffCircles() {
       ];
   return (
     <group>
-      <CenterIceLogo />
+      {centerIceLogo === "off" ? null : <CenterIceLogo />}
       <CenterLogoGaps />
       <CenterIceDot />
       <FaceoffCircle x={0} z={0} r={FACEOFF_MARK_R} />

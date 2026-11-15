@@ -25,7 +25,7 @@ import {
   poseModelYaw,
 } from "./poseViewFrame";
 import { setRageGizmoDrag, world } from "./sim";
-import { kitById, UNIFORMS } from "./uniforms";
+import { kitById, kitIconColors, UNIFORMS } from "./uniforms";
 
 function applyEditorPose(pose: string, applyFull: ((pose: string) => number) | null): number {
   if (pose === "default") {
@@ -1150,7 +1150,7 @@ export function PoseEditor({
 }
 
 function KitSwatch({ id, selected, onPick }: { id: number; selected: boolean; onPick: (id: number) => void }) {
-  const kit = UNIFORMS[id]!;
+  const icon = kitIconColors(UNIFORMS[id]!);
   return (
     <button
       type="button"
@@ -1159,9 +1159,9 @@ function KitSwatch({ id, selected, onPick }: { id: number; selected: boolean; on
       onClick={() => onPick(id)}
       className={`uni-swatch${selected ? " is-on" : ""}`}
     >
-      <span style={{ background: kit.helmet }} />
-      <span style={{ background: kit.jersey }} />
-      <span style={{ background: kit.pants }} />
+      <span style={{ background: icon.top }} />
+      <span style={{ background: icon.mid }} />
+      <span style={{ background: icon.bot }} />
     </button>
   );
 }

@@ -29,6 +29,12 @@ export type UniformKit = {
   ribbon: string;
   crowdPri: string;
   crowdSec: string;
+  /** Share of crowd seats in crowdPri. Omitted means every seat is primary. */
+  crowdPriRatio?: number;
+  /** Kit-icon bars. Omitted bars fall back to helmet, jersey, and pants. */
+  iconTop?: string;
+  iconMid?: string;
+  iconBot?: string;
 };
 
 export const COL_KIT = 0;
@@ -66,10 +72,12 @@ export const UNIFORMS: UniformKit[] = [
     ribbon: AVS_BURGUNDY,
     crowdPri: AVS_BURGUNDY,
     crowdSec: AVS_BLUE,
+    crowdPriRatio: 0.7,
   },
   {
     id: 1,
     helmet: "#333f42",
+    iconTop: "#333f42",
     visor: "#2a343c",
     jersey: "#B4975A",
     yoke: "#B4975A",
@@ -88,11 +96,13 @@ export const UNIFORMS: UniformKit[] = [
     tape: "#ffffff",
     ribbon: "#b4975a",
     crowdPri: "#b4975a",
-    crowdSec: "#2a3336",
+    crowdSec: "#b4975a",
+    crowdPriRatio: 1,
   },
   {
     id: 2,
     helmet: "#3a3a3a",
+    iconTop: "#3a3a3a",
     visor: "#2c2c2c",
     jersey: "#006847",
     yoke: "#006847",
@@ -110,7 +120,8 @@ export const UNIFORMS: UniformKit[] = [
     tape: "#ffffff",
     ribbon: "#006847",
     crowdPri: "#006847",
-    crowdSec: "#111111",
+    crowdSec: "#006847",
+    crowdPriRatio: 1,
   },
   {
     id: 3,
@@ -120,6 +131,7 @@ export const UNIFORMS: UniformKit[] = [
     yoke: "#001628",
     sleeves: "#99d9d9",
     pants: "#001628",
+    iconTop: "#001628",
     stripe: "#e9072b",
     socks: "#99d9d9",
     gloves: "#001628",
@@ -129,12 +141,14 @@ export const UNIFORMS: UniformKit[] = [
     stick: "#1a1c1f",
     tape: "#ffffff",
     ribbon: "#008e97",
-    crowdPri: "#008e97",
-    crowdSec: "#062a32",
+    crowdPri: "#99d9d9",
+    crowdSec: "#99d9d9",
+    crowdPriRatio: 1,
   },
   {
     id: 4,
     helmet: "#3a3a3a",
+    iconTop: "#3a3a3a",
     visor: "#2c2c2c",
     jersey: "#CF0A2C",
     yoke: "#CF0A2C",
@@ -153,7 +167,8 @@ export const UNIFORMS: UniformKit[] = [
     tape: "#ffffff",
     ribbon: "#CF0A2C",
     crowdPri: "#CF0A2C",
-    crowdSec: "#3a3a3a",
+    crowdSec: "#CF0A2C",
+    crowdPriRatio: 1,
   },
   {
     id: 5,
@@ -181,6 +196,9 @@ export const UNIFORMS: UniformKit[] = [
   {
     id: 6,
     helmet: "#ffffff",
+    iconTop: "#F74902",
+    iconMid: "#ffffff",
+    iconBot: "#3a3a3a",
     visor: "#3a2218",
     jersey: "#ffffff",
     yoke: "#F74902",
@@ -196,16 +214,20 @@ export const UNIFORMS: UniformKit[] = [
     stick: "#1a1c1f",
     tape: "#ffffff",
     ribbon: "#e35205",
-    crowdPri: "#e35205",
-    crowdSec: "#111111",
+    crowdPri: "#F74902",
+    crowdSec: "#ffffff",
+    crowdPriRatio: 0.85,
   },
   {
     id: 7,
     helmet: "#ffffff",
+    iconTop: "#002868",
+    iconMid: "#ffffff",
+    iconBot: "#002868",
     visor: "#163868",
     jersey: "#ffffff",
-    yoke: "#ffffff",
-    sleeves: "#ffffff",
+    yoke: "#002868",
+    sleeves: "#002868",
     pants: "#002868",
     stripe: "#002868",
     pantStripe: "#ffffff",
@@ -218,12 +240,16 @@ export const UNIFORMS: UniformKit[] = [
     stick: "#1a1c1f",
     tape: "#ffffff",
     ribbon: "#0033a1",
-    crowdPri: "#0033a1",
-    crowdSec: "#0033a1",
+    crowdPri: "#002868",
+    crowdSec: "#ffffff",
+    crowdPriRatio: 0.9,
   },
   {
     id: 8,
     helmet: "#f6eedc",
+    iconTop: "#154734",
+    iconMid: "#f6eedc",
+    iconBot: "#154734",
     visor: "#1a4038",
     jersey: "#f6eedc",
     yoke: "#154734",
@@ -239,12 +265,16 @@ export const UNIFORMS: UniformKit[] = [
     stick: "#1a1c1f",
     tape: "#ffffff",
     ribbon: "#173f35",
-    crowdPri: "#f0e6d0",
-    crowdSec: "#173f35",
+    crowdPri: "#154734",
+    crowdSec: "#A6192E",
+    crowdPriRatio: 0.85,
   },
   {
     id: 9,
-    helmet: "#ffffff",
+    helmet: "#ce1126",
+    iconTop: "#ce1126",
+    iconMid: "#ffffff",
+    iconBot: "#ce1126",
     visor: "#4a1822",
     jersey: "#ffffff",
     yoke: "#ffffff",
@@ -261,7 +291,8 @@ export const UNIFORMS: UniformKit[] = [
     tape: "#ffffff",
     ribbon: "#ce1126",
     crowdPri: "#ce1126",
-    crowdSec: "#f4f6f8",
+    crowdSec: "#ffffff",
+    crowdPriRatio: 0.75,
   },
 ];
 
@@ -270,10 +301,16 @@ export function kitById(id: number): UniformKit {
 }
 
 /**
- * Colors the HUD kit bars show, and the colors the stands, scoreboard chip,
- * and jumbo token should wear for that same kit. `stripe` is the pants stripe
- * actually drawn on the player (pantStripe when the kit has one).
+ * Colors the HUD kit bars, scoreboard chip, and jumbo token wear.
+ * `stripe` is the pants stripe actually drawn on the player (pantStripe when the kit has one).
+ * Crowd seats use crowdPri, crowdSec, and crowdPriRatio.
  */
+export function crowdPrimaryShare(kit: UniformKit): number {
+  const raw = kit.crowdPriRatio;
+  if (raw === undefined || !Number.isFinite(raw)) return 1;
+  return Math.min(1, Math.max(0, raw));
+}
+
 export function kitWornColors(kit: UniformKit): {
   helmet: string;
   jersey: string;
@@ -285,5 +322,14 @@ export function kitWornColors(kit: UniformKit): {
     jersey: kit.jersey,
     pants: kit.pants,
     stripe: kit.pantStripe ?? kit.stripe,
+  };
+}
+
+/** Three bars on a kit icon. Missing bars use the colors the player wears. */
+export function kitIconColors(kit: UniformKit): { top: string; mid: string; bot: string } {
+  return {
+    top: kit.iconTop ?? kit.helmet,
+    mid: kit.iconMid ?? kit.jersey,
+    bot: kit.iconBot ?? kit.pants,
   };
 }

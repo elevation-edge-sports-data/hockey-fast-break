@@ -411,7 +411,9 @@ const DEFENSE_BURST = 9.8;
 const DEFENSE_ACCEL = 13.6;
 const ICE_DRAG = 0.85;
 /** Live puck ice drag. Pass coast, shot flight, and a loose puck share this. */
-const PUCK_DRAG = 0.25;
+function puckDrag(): number {
+  return useGame.getState().friction;
+}
 /** Skater shot band. The wrist and slap curve stays inside it. Backhands stay 58–68. */
 const SKATER_SHOT_LO_MPH = 73;
 const SKATER_SHOT_HI_MPH = 105;
@@ -2123,7 +2125,7 @@ function stepDrillGhosts(dt: number): void {
       if (g.vy < 0) g.vy *= -0.28;
       if (Math.abs(g.vy) < 0.4) g.vy = 0;
     }
-    const damp = Math.exp(-PUCK_DRAG * dt);
+    const damp = Math.exp(-puckDrag() * dt);
     g.vx *= damp;
     g.vz *= damp;
     containPuckBoards(g);
@@ -5706,7 +5708,7 @@ function ontoPassPuck(s: Skater): { x: number; z: number } {
   const puck = world.puck;
   const spd = Math.hypot(puck.vx, puck.vz);
   if (spd < 1.2) return { x: puck.x, z: puck.z };
-  const drag = PASS_DRAG;
+  const drag = puckDrag();
   const ux = puck.vx / spd;
   const uz = puck.vz / spd;
   const skate = 9;
@@ -8072,9 +8074,9 @@ function looseBoardCarom(): CaromFlight | null {
   const refl = reflectBoard(puck.vx, puck.vz, hit.nx, hit.nz);
   if (refl.vx * hit.nx + refl.vz * hit.nz > -2) return null;
   if (!sideWall && refl.vx * attackDir(passer.side) > -1.5) return null;
-  const knee = (hit.dist * PASS_DRAG) / spd;
+  const knee = (hit.dist * puckDrag()) / spd;
   if (!(knee > 0 && knee < 0.92)) return null;
-  const delay = -Math.log(1 - knee) / PASS_DRAG;
+  const delay = -Math.log(1 - knee) / puckDrag();
   if (world.lastPassTo !== null) {
     const mate = world.skaters[world.lastPassTo];
     if (mate && mate.side === passer.side) {
@@ -8177,7 +8179,7 @@ function caromSample(s: Skater, ray: CaromFlight): { x: number; z: number; late:
   const spd = Math.hypot(ray.vx, ray.vz);
   const ux = ray.vx / spd;
   const uz = ray.vz / spd;
-  const drag = PASS_DRAG;
+  const drag = puckDrag();
   const skate = 9;
   let bestX = ray.ox;
   let bestZ = ray.oz;
@@ -8560,16 +8562,16 @@ function boardRailSamples(): RailPt[] | null {
       pts.push({ t, x, z, nx: w.nx, nz: w.nz });
     }
     if (glide) {
-      speed *= Math.exp(-0.1 * dt);
       if (speed < 2.5) break;
-      const tx = dir > 0 ? -w.nz : w.nz;
-      const tz = dir > 0 ? w.nx : -w.nx;
-      const m = Math.hypot(tx, tz) || 1;
-      x += (tx / m) * speed * dt;
-      z += (tz / m) * speed * dt;
-      const w2 = nearestBoards(x, z);
-      x = w2.x - w2.nx * 0.16;
-      z = w2.z - w2.nz * 0.16;
+      const tang = rideTangent(w.nx, w.nz, vx, vz, dir);
+      const m = Math.hypot(tang.tx, tang.tz) || 1;
+      x += (tang.tx / m) * speed * dt;
+      z += (tang.tz / m) * speed * dt;
+      vx = (tang.tx / m) * speed;
+      vz = (tang.tz / m) * speed;
+      const seat = seatOnRide(x, z, vx, vz, dir);
+      x = seat.x;
+      z = seat.z;
       continue;
     }
     if (bankLeft) {
@@ -8585,7 +8587,7 @@ function boardRailSamples(): RailPt[] | null {
         bankLeft = null;
       }
     }
-    const damp = Math.exp(-PUCK_DRAG * dt);
+    const damp = Math.exp(-puckDrag() * dt);
     x += vx * dt;
     z += vz * dt;
     vx *= damp;
@@ -8597,9 +8599,12 @@ function boardRailSamples(): RailPt[] | null {
       if (hit.dist < 0.28 || resolveRink(x, z, 0.02).hit) {
         glide = true;
         dir = boardRide.dir;
-        speed = Math.max(12, Math.min(boardRide.speed, Math.max(spd, 12)));
-        x = hit.x - hit.nx * 0.16;
-        z = hit.z - hit.nz * 0.16;
+        speed = boardRide.speed;
+        const seat = seatOnRide(x, z, vx, vz, dir);
+        x = seat.x;
+        z = seat.z;
+        vx = seat.tx * speed;
+        vz = seat.tz * speed;
       }
       continue;
     }
@@ -11062,7 +11067,7 @@ function findPostContact(side: 1 | -1): PostContact | null {
         if (Math.abs(vy) < 0.4) vy = 0;
       }
     }
-    const damp = Math.exp((soft ? -1.85 : -PUCK_DRAG) * dt);
+    const damp = Math.exp((soft ? -1.85 : -puckDrag()) * dt);
     vx *= damp;
     vz *= damp;
     for (const zPost of [hw, -hw]) {
@@ -11193,7 +11198,7 @@ function findBarContact(side: 1 | -1): BarContact | null {
         if (Math.abs(vy) < 0.4) vy = 0;
       }
     }
-    const damp = Math.exp((soft ? -1.85 : -PUCK_DRAG) * dt);
+    const damp = Math.exp((soft ? -1.85 : -puckDrag()) * dt);
     vx *= damp;
     vz *= damp;
     const swept = segmentCircle(px, py, x, y, mouth, GOAL_H, barRad);
@@ -12030,7 +12035,7 @@ function shotGoalLineSample(s: Skater): { y: number; z: number } | null {
         if (Math.abs(vy) < 0.4) vy = 0;
       }
     }
-    const damp = Math.exp((soft ? -1.85 : -PUCK_DRAG) * dt);
+    const damp = Math.exp((soft ? -1.85 : -puckDrag()) * dt);
     vx *= damp;
     vz *= damp;
     if ((px - mouth) * end <= 0 && (x - mouth) * end >= 0) {
@@ -13466,7 +13471,6 @@ function teammatesOf(from: Skater): Skater[] {
   );
 }
 
-const PASS_DRAG = PUCK_DRAG;
 const PASS_CONE = 0.58;
 // Still a pass at the target. Slower than this, the coast has died.
 const PASS_ARRIVE = 8;
@@ -13515,6 +13519,8 @@ let sauceOffset = 0;
 let sauceClean = true;
 // Sauce charge until the first ice hit. Negative means this puck is not a saucer.
 let sauceLandCharge = -1;
+// A full saucer has used its one ice bounce. The next ice hit sticks.
+let sauceFlatNext = false;
 
 function resetSauceWindow(): void {
   sauceHold = 0;
@@ -13525,6 +13531,7 @@ function resetSauceWindow(): void {
   sauceOffset = 0;
   sauceClean = true;
   sauceLandCharge = -1;
+  sauceFlatNext = false;
 }
 
 function sauceMeterWind(): string {
@@ -13579,17 +13586,17 @@ function tapePower(travel: number, saucer: boolean, cpuGoalie: boolean): number 
   // Reach cap is only for a coast the pace cap would die on, such as goal line to goal line.
   const reachCap = cpuGoalie ? 22 : saucer ? 32 : 30;
   const pace = Math.min(paceCap, Math.max(floor, travel / want));
-  const firm = PASS_ARRIVE + PASS_DRAG * travel;
+  const firm = PASS_ARRIVE + puckDrag() * travel;
   if (firm <= pace) return pace;
   return Math.min(reachCap, Math.max(pace, firm));
 }
 
 function flightSeconds(travel: number, power: number): number {
-  const asymptote = Math.max(0.5, power) / PASS_DRAG;
+  const asymptote = Math.max(0.5, power) / puckDrag();
   const reach = Math.min(Math.max(0.2, travel), asymptote * 0.8);
-  const cover = (PASS_DRAG * reach) / Math.max(0.5, power);
+  const cover = (puckDrag() * reach) / Math.max(0.5, power);
   if (cover >= 0.97) return Math.max(0.16, reach / Math.max(0.5, power));
-  return Math.max(0.16, -Math.log(1 - cover) / PASS_DRAG);
+  return Math.max(0.16, -Math.log(1 - cover) / puckDrag());
 }
 
 function reachPoint(
@@ -13602,7 +13609,7 @@ function reachPoint(
   const dx = tx - ox;
   const dz = tz - oz;
   const travel = Math.hypot(dx, dz) || 1;
-  const asymptote = Math.max(0.5, power) / PASS_DRAG;
+  const asymptote = Math.max(0.5, power) / puckDrag();
   const reach = Math.min(travel, asymptote * 0.8);
   const eta = flightSeconds(reach, power);
   return { x: ox + (dx / travel) * reach, z: oz + (dz / travel) * reach, eta };
@@ -13697,7 +13704,7 @@ function laneLanding(
   let bestLate = Infinity;
   for (let i = 1; i <= 28; i++) {
     const t = (i / 28) * 1.7;
-    const reach = (Math.max(0.5, power) / PASS_DRAG) * (1 - Math.exp(-PASS_DRAG * t));
+    const reach = (Math.max(0.5, power) / puckDrag()) * (1 - Math.exp(-puckDrag() * t));
     const x = ox + ax * reach;
     const z = oz + az * reach;
     const late = Math.hypot(x - mate.x, z - mate.z) - skaterReach(t);
@@ -13813,6 +13820,7 @@ function launchPuck(s: Skater, vx: number, vz: number, vy = 0): void {
   clearShotShape();
   drillPipeHit = false;
   sauceLandCharge = -1;
+  sauceFlatNext = false;
   const blade = passOrigin(s);
   world.puck.owner = null;
   world.puck.x = blade.x;
@@ -13979,7 +13987,7 @@ function boardMeetY(
   grav: number,
 ): number | null {
   const dt = 1 / 60;
-  const damp = Math.exp(-PUCK_DRAG * dt);
+  const damp = Math.exp(-puckDrag() * dt);
   let px = x;
   let pz = z;
   let py = PUCK_Y + Math.max(0, vy) * 0.02;
@@ -14172,8 +14180,9 @@ function launchHighClear(s: Skater, mx: number, my: number): void {
 /**
  * Select up. A full meter fires a saucer immediately. No extra second.
  * A clean hold of SAUCE_CLEAR_HOLD is still the longer high clear.
- * A user goalie also sends a partial saucer on a shorter clean release.
- * A skater's partial Select hold still waits for the A release.
+ * A clean shorter release sends a saucer at that partial charge. A is not required.
+ * A goalie uses the outlet. A skater uses doPass at the real hold.
+ * B cancel still blocks the release.
  */
 function releaseSelectSauce(act: Actions): void {
   if (!sauceReleaseClean && !sauceReleaseFull) return;
@@ -14185,7 +14194,8 @@ function releaseSelectSauce(act: Actions): void {
   const full = sauceReleaseFull;
   const high = sauceReleaseClean && hold >= SAUCE_CLEAR_HOLD;
   const goalie = user.kind === "goalie";
-  if (!full && !high && !goalie) return;
+  const partialClean = sauceReleaseClean && hold >= 0.05 && !act.aDown;
+  if (!full && !high && !goalie && !partialClean) return;
   if (goalie && goalieMustHoldCover(user)) return;
   const aim = shotAim(act);
   if (high) {
@@ -14202,8 +14212,9 @@ function releaseSelectSauce(act: Actions): void {
     return;
   }
   withChargedPass(hold, true, hold, () => {
-    doGoalieOutlet(user, aim.mx, aim.my, true);
-  }, true, false);
+    if (goalie) doGoalieOutlet(user, aim.mx, aim.my, true);
+    else doPass(user, aim.mx, aim.my, true);
+  }, goalie, false);
 }
 
 function passJustStarting(s: Skater): boolean {
@@ -14315,14 +14326,14 @@ function farAim(luck: FarLuck, bank: -1 | 0 | 1): { z: number; y: number | null 
 }
 
 function speedForTime(dist: number, t: number): number {
-  const drag = PUCK_DRAG;
+  const drag = puckDrag();
   const knee = drag * t;
   if (knee < 0.05) return dist / Math.max(0.12, t);
   return (dist * drag) / (1 - Math.exp(-knee));
 }
 
 function timeForArrival(dist: number, vend: number): number {
-  const drag = PUCK_DRAG;
+  const drag = puckDrag();
   return Math.log(1 + (Math.max(0.2, dist) * drag) / Math.max(0.8, vend)) / drag;
 }
 
@@ -14349,7 +14360,7 @@ function etaToNet(x: number, z: number, vx: number, vz: number, netX: number): n
   for (let i = 0; i < 360; i++) {
     px += pvx / 60;
     pz += pvz / 60;
-    const damp = Math.exp(-PUCK_DRAG / 60);
+    const damp = Math.exp(-puckDrag() / 60);
     pvx *= damp;
     pvz *= damp;
     if (Math.abs(pz) > halfW && Math.abs(px) < straight) {
@@ -14367,7 +14378,7 @@ function etaToNet(x: number, z: number, vx: number, vz: number, netX: number): n
 
 /**
  * Where this lob meets the far goal line. Same symplectic step as the puck
- * (y += vy*dt, vy -= 12*dt, ice drag PUCK_DRAG), so a crossbar shot is still above
+ * (y += vy*dt, vy -= 12*dt, ice drag), so a crossbar shot is still above
  * the bar there. A closed form that uses 6*t*t calls that shot an ice shot.
  * attack > 0 means the far net is +X.
  */
@@ -14381,7 +14392,7 @@ function lobAtGoalLine(
   attack: number,
 ): { z: number; y: number } | null {
   const dt = 1 / 60;
-  const damp = Math.exp(-PUCK_DRAG * dt);
+  const damp = Math.exp(-puckDrag() * dt);
   let px = x;
   let pz = z;
   let py = PUCK_Y + Math.max(0, vy) * 0.02;
@@ -14438,7 +14449,7 @@ function holdLobInFront(
   if (!(path > 0.4)) return { vx, vz };
   const at = lobAtGoalLine(x, z, vx, vz, vy, netX, attack);
   if (at && Math.abs(at.z) <= GOAL_W / 2 - 0.04 && at.y <= GOAL_H - 0.02) return { vx, vz };
-  const drag = PUCK_DRAG;
+  const drag = puckDrag();
   const stop = Math.max(0.4, path - 1.1);
   const cap = drag * stop;
   if (speed <= cap) return { vx, vz };
@@ -14515,10 +14526,10 @@ function userHighFlipLaunch(
   const netX = attack * GOAL_LINE_X;
   const toLine = ux * attack > 0.08 ? Math.max(0.5, (netX - landX) / ux) : Math.abs(netX - landX);
   let t = 1.12 + Math.random() * 0.36;
-  const need = PUCK_DRAG * (toLine + 1.25);
-  const ratio = need / (dist * PUCK_DRAG);
+  const need = puckDrag() * (toLine + 1.25);
+  const ratio = need / (dist * puckDrag());
   if (ratio > 0) {
-    const tMax = -Math.log(ratio / (1 + ratio)) / PUCK_DRAG;
+    const tMax = -Math.log(ratio / (1 + ratio)) / puckDrag();
     if (t > tMax) t = Math.max(0.82, tMax * 0.9);
   }
   const speed = speedForTime(dist, t);
@@ -14536,7 +14547,7 @@ function predictBankCrossZ(
   attack: number,
 ): number | null {
   const dt = 1 / 60;
-  const damp = Math.exp(-PUCK_DRAG * dt);
+  const damp = Math.exp(-puckDrag() * dt);
   let px = x;
   let pz = z;
   let pvx = vx;
@@ -14594,7 +14605,7 @@ function goalieLengthPlay(s: Skater, play: FarPlay, registerShot = true): void {
   const attack = attackDir(s.side);
   const from = passOrigin(s);
   const netX = attack * GOAL_LINE_X;
-  const drag = PUCK_DRAG;
+  const drag = puckDrag();
   const damp = BOARD_BOUNCE_DAMP;
   const homeStick = s.side === "home";
   // Away CPU length shot only. cpuFarPlay never sets flip and high together.
@@ -14996,18 +15007,58 @@ function passCrossesCage(x: number, z: number, vx: number, vz: number): boolean 
 
 const BOARD_RIDE_INSET = 0.16;
 
+/** Along-board unit tangent from the live outward normal. Sign follows the puck's heading. */
+function rideTangent(
+  nx: number,
+  nz: number,
+  vx: number,
+  vz: number,
+  dir: 1 | -1,
+): { tx: number; tz: number } {
+  const t1x = -nz;
+  const t1z = nx;
+  const along = vx * t1x + vz * t1z;
+  const sp = Math.hypot(vx, vz);
+  const s = sp > 1 && Math.abs(along) > sp * 0.25 ? (along >= 0 ? 1 : -1) : dir > 0 ? 1 : -1;
+  return { tx: t1x * s, tz: t1z * s };
+}
+
+/**
+ * Seat a ride on the glass. On a straight wall the nearest point is the seat.
+ * On the corner arc the correction is radial only, so it cannot pull the puck backward.
+ */
+function seatOnRide(
+  x: number,
+  z: number,
+  vx: number,
+  vz: number,
+  dir: 1 | -1,
+): { x: number; z: number; tx: number; tz: number } {
+  const w = nearestBoards(x, z);
+  const tang = rideTangent(w.nx, w.nz, vx, vz, dir);
+  const turning = Math.abs(w.nx) > 0.22 && Math.abs(w.nz) > 0.22;
+  if (!turning) {
+    return {
+      x: w.x - w.nx * BOARD_RIDE_INSET,
+      z: w.z - w.nz * BOARD_RIDE_INSET,
+      tx: tang.tx,
+      tz: tang.tz,
+    };
+  }
+  const push = w.dist - BOARD_RIDE_INSET;
+  return { x: x + w.nx * push, z: z + w.nz * push, tx: tang.tx, tz: tang.tz };
+}
+
 function placeOnWall(dir: 1 | -1, speed: number): void {
   const puck = world.puck;
-  const w = nearestBoards(puck.x, puck.z);
-  puck.x = w.x - w.nx * BOARD_RIDE_INSET;
-  puck.z = w.z - w.nz * BOARD_RIDE_INSET;
+  const seat = seatOnRide(puck.x, puck.z, puck.vx, puck.vz, dir);
+  puck.x = seat.x;
+  puck.z = seat.z;
   puck.y = PUCK_Y;
   puck.vy = 0;
-  const tx = dir > 0 ? -w.nz : w.nz;
-  const tz = dir > 0 ? w.nx : -w.nx;
-  const m = Math.hypot(tx, tz) || 1;
-  puck.vx = (tx / m) * speed;
-  puck.vz = (tz / m) * speed;
+  const m = Math.hypot(seat.tx, seat.tz) || 1;
+  puck.vx = (seat.tx / m) * speed;
+  puck.vz = (seat.tz / m) * speed;
 }
 
 function launchBank(
@@ -15238,18 +15289,16 @@ function stepBoardGlide(dt: number): void {
     boardRide = null;
     return;
   }
-  ride.speed *= Math.exp(-0.1 * dt);
   if (ride.speed < 2) {
     boardRide = null;
     return;
   }
   const puck = world.puck;
   const w0 = nearestBoards(puck.x, puck.z);
-  const tx = ride.dir > 0 ? -w0.nz : w0.nz;
-  const tz = ride.dir > 0 ? w0.nx : -w0.nx;
-  const m = Math.hypot(tx, tz) || 1;
-  puck.x += (tx / m) * ride.speed * dt;
-  puck.z += (tz / m) * ride.speed * dt;
+  const tang = rideTangent(w0.nx, w0.nz, puck.vx, puck.vz, ride.dir);
+  const m = Math.hypot(tang.tx, tang.tz) || 1;
+  puck.x += (tang.tx / m) * ride.speed * dt;
+  puck.z += (tang.tz / m) * ride.speed * dt;
   placeOnWall(ride.dir, ride.speed);
 }
 
@@ -15293,8 +15342,6 @@ function settleBoardPass(): void {
     return;
   }
   if (boardRide?.phase === "seek" && pressed) {
-    const sp = Math.hypot(puck.vx, puck.vz);
-    boardRide.speed = Math.max(12, Math.min(boardRide.speed, Math.max(sp, 12)));
     boardRide.phase = "glide";
     noteRimTouch();
     placeOnWall(boardRide.dir, boardRide.speed);
@@ -15443,7 +15490,7 @@ function shotHeight(hgt: number): { wantY: number; loft: number } {
 
 function arriveVy(wantY: number, flight: number, loft: number): number {
   if (loft < 0.04 || wantY <= PUCK_Y + 0.06) return 0;
-  const dragK = PUCK_DRAG;
+  const dragK = puckDrag();
   let travel = Math.max(0.08, flight);
   const kneel = dragK * flight;
   if (kneel > 0.02 && kneel < 0.9) travel = -Math.log(1 - kneel) / dragK;
@@ -15452,7 +15499,7 @@ function arriveVy(wantY: number, flight: number, loft: number): number {
 }
 
 function cornerArriveVy(wantY: number, dist: number, power: number): number {
-  const dragK = PUCK_DRAG;
+  const dragK = puckDrag();
   const speed = Math.max(8, power);
   const flight = dist / speed;
   const kneel = dragK * flight;
@@ -15962,7 +16009,7 @@ function launchShotAtNet(
     vy = Math.max(vy, cornerArriveVy(Math.min(wantY, mouthTopY() - 0.02), dist, power));
   }
   if (!drillCorner && ironKind === null && wantY > mouthTopY()) {
-    const dragK = PUCK_DRAG;
+    const dragK = puckDrag();
     let travel = Math.max(0.14, dist / Math.max(8, power));
     const kneel = dragK * travel;
     if (kneel > 0.02 && kneel < 0.9) travel = -Math.log(1 - kneel) / dragK;
@@ -16895,7 +16942,7 @@ function saucerArrivalY(dist: number, speed: number, sauce: number, receiveY: nu
   let vy = (want - PUCK_Y + drop) / Math.max(0.08, tAim + 0.02);
   vy = Math.max(0.45, Math.min(22, vy));
   const dt = 1 / 60;
-  const damp = Math.exp(-PUCK_DRAG * dt);
+  const damp = Math.exp(-puckDrag() * dt);
   let x = 0;
   let y = PUCK_Y + Math.max(0, vy) * 0.02;
   let vx = sp;
@@ -19954,10 +20001,16 @@ function containPuckBoards(puck: Puck): boolean {
   const vz0 = puck.vz;
   const vn = vx0 * hit.nx + vz0 * hit.nz;
   const pressed = sameBoardPress(puck, hit.nx, hit.nz);
-  if (vn > BOARD_SLIDE_VN && !pressed) {
+  const along = Math.hypot(vx0 - vn * hit.nx, vz0 - vn * hit.nz);
+  // A corner skim still has a small outward part. It is not a bank, and stopping
+  // the swept step there cuts a fast ride down to a single slice.
+  const skim = along > 8 && vn < along * 0.4;
+  let haltStep = false;
+  if (vn > BOARD_SLIDE_VN && !pressed && !skim) {
     const b = reflectBoard(vx0, vz0, hit.nx, hit.nz);
     puck.vx = b.vx;
     puck.vz = b.vz;
+    haltStep = true;
     // A carried overlap, a windup, or a shot is not a pass carom.
     // A loose pass records the hit. Only a real turn becomes a bank.
     if (puck === world.puck && puck.owner === null) {
@@ -19984,7 +20037,7 @@ function containPuckBoards(puck: Puck): boolean {
     puck.x = again.x;
     puck.z = again.z;
   }
-  return true;
+  return haltStep;
 }
 
 function boardArrival(
@@ -20001,7 +20054,7 @@ function boardArrival(
   let py = PUCK_Y + Math.max(0, vy) * 0.02;
   let pvy = vy;
   for (let i = 0; i < 300; i++) {
-    const damp = Math.exp(-PUCK_DRAG / 60);
+    const damp = Math.exp(-puckDrag() / 60);
     pvx *= damp;
     pvz *= damp;
     px += pvx / 60;
@@ -20050,7 +20103,7 @@ function bankContactVy(x: number, z: number, vx: number, vz: number, vy: number)
   let pvx = vx;
   let pvz = vz;
   for (let i = 0; i < 240; i++) {
-    const damp = Math.exp(-PUCK_DRAG / 60);
+    const damp = Math.exp(-puckDrag() / 60);
     pvx *= damp;
     pvz *= damp;
     const nx = px + pvx / 60;
@@ -20181,7 +20234,7 @@ function drillStartX(): number {
 
 /** Time for a drill shot to reach the target net, including ice drag. Capped at 1s. */
 function drillArriveTime(dist: number, speed: number): number {
-  const drag = PUCK_DRAG;
+  const drag = puckDrag();
   const v = Math.max(8, speed);
   const span = (Math.max(0.2, dist) * drag) / v;
   if (span >= 0.92) return 1;
@@ -21554,7 +21607,7 @@ function clearsPosts(end: 1 | -1, x: number, z: number, vx: number, vz: number):
   let pvx = vx;
   let pvz = vz;
   for (let i = 0; i < 180; i++) {
-    const damp = Math.exp(-PUCK_DRAG / 60);
+    const damp = Math.exp(-puckDrag() / 60);
     pvx *= damp;
     pvz *= damp;
     const nx = px + pvx / 60;
@@ -23797,7 +23850,7 @@ function stepWhistlePuck(dt: number): void {
     if (puck.vy < 0) puck.vy *= -0.28;
     if (Math.abs(puck.vy) < 0.4) puck.vy = 0;
   }
-  const damp = Math.exp(-PUCK_DRAG * dt);
+  const damp = Math.exp(-puckDrag() * dt);
   puck.vx *= damp;
   puck.vz *= damp;
   containPuckBoards(puck);
@@ -24061,6 +24114,7 @@ function stepPuck(dt: number): void {
   if (puck.owner !== null) {
     clearShotTrack();
     sauceLandCharge = -1;
+    sauceFlatNext = false;
     world.goalieShot = null;
     boardRide = null;
     boardBank = null;
@@ -24196,15 +24250,23 @@ function stepPuck(dt: number): void {
         if (puck.vy < 0) puck.vy *= -0.28;
         if (Math.abs(puck.vy) < 0.4) puck.vy = 0;
       }
-      // First ice hit of a saucer. Full charge keeps the least speed. A tap barely sheds any.
+      // First ice hit of a saucer. Keep sheds horizontal speed either way.
+      // A partial charge sticks. A full charge keeps this one bounce, then sticks.
       if (hitIce && sauceLandCharge >= 0) {
         const keep = 1 - sauceLandCharge * 0.62;
         puck.vx *= keep;
         puck.vz *= keep;
+        if (sauceLandCharge < 0.999) {
+          puck.vy = 0;
+          sauceFlatNext = false;
+        } else if (puck.vy > 0) sauceFlatNext = true;
         sauceLandCharge = -1;
+      } else if (hitIce && sauceFlatNext) {
+        puck.vy = 0;
+        sauceFlatNext = false;
       }
     }
-    const damp = Math.exp((world.reboundSoft ? -1.85 : -PUCK_DRAG) * dt);
+    const damp = Math.exp((world.reboundSoft ? -1.85 : -puckDrag()) * dt);
     puck.vx *= damp;
     puck.vz *= damp;
     stanceBlocked = blockStanceShot(puck, prevX, prevY, prevZ);
@@ -26293,7 +26355,7 @@ export function instantReplayPose(): {
       lookZ: pz,
       camX: px * 0.16,
       camY: 12.2,
-      camZ: Math.min(10.2, RINK_W / 2 - 1.6),
+      camZ: RINK_W / 2 + 6,
       upX: 0,
       upY: 1,
       upZ: 0,

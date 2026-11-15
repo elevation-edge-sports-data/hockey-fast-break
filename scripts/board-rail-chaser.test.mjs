@@ -190,16 +190,19 @@ test("home LD on his wall turns for a rim before it reaches his x", () => {
     if (s.kind === "goalie" || s.id === ld.id || s.id === rd.id) continue;
     place(s, 4, (s.id - 6) * 0.8);
   }
-  for (let i = 0; i < 30; i++) stepSim(DT);
+  // The rim is still short of him here. A later sample meets his body and the puck kicks off.
+  for (let i = 0; i < 21; i++) stepSim(DT);
   const fx = -Math.sin(ld.yaw);
   const fz = -Math.cos(ld.yaw);
   const px = world.puck.x - ld.x;
   const pz = world.puck.z - ld.z;
   const plen = Math.hypot(px, pz) || 1;
   const face = (fx * px + fz * pz) / plen;
+  assert.ok(world.puck.x < ld.x - 2, `rim already reached the LD (puck x ${world.puck.x.toFixed(2)})`);
   assert.ok(ld.z > 11, `LD did not step to the glass (z ${ld.z.toFixed(2)})`);
   assert.ok(ld.x < -14.35, `LD did not turn up the wall toward the puck (x ${ld.x.toFixed(2)})`);
   assert.ok(face > 0.55, `LD is not facing the puck (dot ${face.toFixed(2)})`);
+  for (let i = 0; i < 9; i++) stepSim(DT);
   assert.ok(rd.z < -2, `RD left his side for the rim (z ${rd.z.toFixed(2)})`);
 });
 

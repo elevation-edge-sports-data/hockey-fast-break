@@ -52,6 +52,7 @@ seed({
   "hfb-play-mode-v": "2",
   "hfb-play-mode": "practice",
   "hfb-game-speed": "1.1",
+  "hfb-friction": "0.45",
   "hfb-home-kit": "4",
   "hfb-away-kit": "7",
   "hfb-cpu-offense": "1.5",
@@ -72,6 +73,7 @@ test("saved speed, kits, mode, sliders, and personnel restore on load", () => {
   assert.equal(ui.clockMode, "practice");
   assert.equal(ui.periodClock, 1200);
   close(ui.gameSpeed, 1.1, "game speed");
+  close(ui.friction, 0.45, "friction");
   assert.equal(ui.homeKit, 4);
   assert.equal(ui.awayKit, 7);
   close(ui.cpuOffense, 1.5, "cpu offense");
@@ -89,6 +91,7 @@ test("saved speed, kits, mode, sliders, and personnel restore on load", () => {
 test("setters write the same keys and a new load reads them", async () => {
   const ui = useGame.getState();
   ui.setGameSpeed(0.8);
+  ui.setFriction(0.55);
   ui.setHomeKit(2);
   ui.setAwayKit(2);
   ui.setAwayKit(5);
@@ -103,6 +106,7 @@ test("setters write the same keys and a new load reads them", async () => {
   ui.setAwayLineup({ g: 1, d: 1, o: 2 });
 
   assert.equal(localStorage.getItem("hfb-game-speed"), "0.8");
+  assert.equal(localStorage.getItem("hfb-friction"), "0.55");
   assert.equal(localStorage.getItem("hfb-home-kit"), "2");
   assert.equal(localStorage.getItem("hfb-away-kit"), "5");
   assert.equal(localStorage.getItem("hfb-play-mode"), "roller");
@@ -121,6 +125,7 @@ test("setters write the same keys and a new load reads them", async () => {
   assert.equal(next.clockMode, "roller");
   assert.equal(next.periodClock, 18 * 60);
   assert.equal(next.gameSpeed, 0.8);
+  assert.equal(next.friction, 0.55);
   assert.equal(next.homeKit, 2);
   assert.equal(next.awayKit, 5);
   assert.equal(next.cpuOffense, 2);
@@ -138,6 +143,7 @@ test("bad stored values clamp or fall back, and a matching away kit is replaced"
     "hfb-play-mode-v": "2",
     "hfb-play-mode": "nope",
     "hfb-game-speed": "9",
+    "hfb-friction": "9",
     "hfb-home-kit": "4",
     "hfb-away-kit": "4",
     "hfb-cpu-offense": "nope",
@@ -152,7 +158,8 @@ test("bad stored values clamp or fall back, and a matching away kit is replaced"
   const bad = await loadStore("bad");
   const ui = bad.useGame.getState();
   assert.equal(ui.clockMode, "game");
-  assert.equal(ui.gameSpeed, 1.25);
+  assert.equal(ui.gameSpeed, 1.5);
+  assert.equal(ui.friction, 1);
   assert.equal(ui.homeKit, 4);
   assert.notEqual(ui.awayKit, 4);
   assert.ok(ui.awayKit >= 0 && ui.awayKit < UNIFORMS.length);
@@ -199,6 +206,7 @@ test("missing keys keep the previous defaults", async () => {
   assert.equal(ui.clockMode, "game");
   assert.equal(localStorage.getItem("hfb-play-mode"), null);
   assert.equal(ui.gameSpeed, 0.85);
+  assert.equal(ui.friction, 0.25);
   assert.equal(ui.homeKit, COL_KIT);
   assert.notEqual(ui.awayKit, ui.homeKit);
   assert.equal(ui.cpuOffense, 1);

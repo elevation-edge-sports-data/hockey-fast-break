@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useGame } from "./store";
-import { kitWornColors, UNIFORMS } from "./uniforms";
+import { kitIconColors, UNIFORMS } from "./uniforms";
 
 function KitSwatch({
   id,
@@ -8,6 +8,7 @@ function KitSwatch({
   tag,
   targeted,
   onPick,
+  onSwap,
   onTarget,
 }: {
   id: number;
@@ -15,9 +16,32 @@ function KitSwatch({
   tag?: "YOU" | "CPU";
   targeted?: boolean;
   onPick: (id: number) => void;
+  onSwap: () => void;
   onTarget?: () => void;
 }) {
-  const worn = kitWornColors(UNIFORMS[id]!);
+  const icon = kitIconColors(UNIFORMS[id]!);
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (clickTimer.current) clearTimeout(clickTimer.current);
+    },
+    [],
+  );
+  // A double-click also emits a click. Hold the pick so the swap runs once.
+  const armPick = () => {
+    if (clickTimer.current) clearTimeout(clickTimer.current);
+    clickTimer.current = setTimeout(() => {
+      clickTimer.current = null;
+      onPick(id);
+    }, 280);
+  };
+  const swapIfWorn = () => {
+    if (clickTimer.current) {
+      clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+    }
+    if (selected) onSwap();
+  };
   return (
     <div className="formation-kit">
       {tag ? (
@@ -36,13 +60,14 @@ function KitSwatch({
         type="button"
         aria-label={`Kit ${id + 1}`}
         aria-pressed={selected}
-        onClick={() => onPick(id)}
+        onClick={armPick}
+        onDoubleClick={swapIfWorn}
         className={`uni-swatch${selected ? " is-on" : ""}`}
-        style={selected ? { outlineColor: worn.jersey } : undefined}
+        style={selected ? { outlineColor: icon.mid } : undefined}
       >
-        <span style={{ background: worn.helmet }} />
-        <span style={{ background: worn.jersey }} />
-        <span style={{ background: worn.pants }} />
+        <span style={{ background: icon.top }} />
+        <span style={{ background: icon.mid }} />
+        <span style={{ background: icon.bot }} />
       </button>
     </div>
   );
@@ -75,6 +100,12 @@ export function FormationKits() {
     }
     setAwayKit(id);
   };
+  const swapKits = () => {
+    const home = homeKit;
+    const away = awayKit;
+    setHomeKit(away);
+    setAwayKit(home);
+  };
   return (
     <div className="formation-kits">
       <div className="uni-side">
@@ -92,6 +123,7 @@ export function FormationKits() {
                 targeted={tag === "YOU" ? side === "home" : tag === "CPU" ? side === "away" : false}
                 onTarget={() => setSide(tag === "CPU" ? "away" : "home")}
                 onPick={pick}
+                onSwap={swapKits}
               />
             );
           })}

@@ -3,6 +3,8 @@ import { COL_KIT, UNIFORMS } from "./uniforms";
 
 export type CamMode = "classic" | "chase" | "broadcast" | "high" | "freestyle";
 export type ArenaLook = "light" | "dark";
+/** Center-ice crest. `ee` is the Elevation Edge mark. `custom` is selectable and draws nothing yet. */
+export type CenterIceLogo = "ee" | "off" | "custom";
 
 export type Lineup = { g: number; d: number; o: number };
 export type PlayMode = "practice" | "roller" | "scrimmage" | "game" | "drill" | "shootout";
@@ -168,6 +170,12 @@ type GameUi = {
   teamShots: TeamShots;
   quality: "high" | "low";
   arenaLook: ArenaLook;
+  /** `ee` is the Elevation Edge mark. `off` hides it. `custom` uses customLogoDataUrl, or the EE mark when that is empty. */
+  centerIceLogo: CenterIceLogo;
+  /** Data URL of an uploaded center-ice image. Null until the player picks a file. */
+  customLogoDataUrl: string | null;
+  /** Overhead board. On unless the player turned it off. */
+  jumbotronEnabled: boolean;
   pad: "Keyboard" | "Gamepad";
   hasPuck: boolean;
   charge: number;
@@ -220,6 +228,8 @@ type GameUi = {
   passLock: boolean;
   offsides: boolean;
   gameSpeed: number;
+  /** Live puck ice drag. Default 0.25 matches the old PUCK_DRAG constant. */
+  friction: number;
   cpuOffense: number;
   cpuDefense: number;
   cpuGoalie: number;
@@ -251,6 +261,9 @@ type GameUi = {
   resetTeamShots: () => void;
   setQuality: (q: "high" | "low") => void;
   setArenaLook: (v: ArenaLook) => void;
+  setCenterIceLogo: (v: CenterIceLogo) => void;
+  setCustomLogoDataUrl: (v: string | null) => void;
+  setJumbotronEnabled: (v: boolean) => void;
   setPad: (s: "Keyboard" | "Gamepad") => void;
   setHasPuck: (v: boolean) => void;
   setCharge: (
@@ -292,6 +305,7 @@ type GameUi = {
   setPassLock: (v: boolean) => void;
   setOffsides: (v: boolean) => void;
   setGameSpeed: (n: number) => void;
+  setFriction: (n: number) => void;
   setCpuOffense: (n: number) => void;
   setCpuDefense: (n: number) => void;
   setCpuGoalie: (n: number) => void;
@@ -313,6 +327,43 @@ function loadLook(): ArenaLook {
 function saveLook(v: ArenaLook): void {
   try {
     localStorage.setItem("hfb-arena-look", v);
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadCenterIceLogo(): CenterIceLogo {
+  try {
+    const raw = localStorage.getItem("hfb-center-ice-logo") ?? localStorage.getItem("hfb-ice-logo");
+    if (raw === "ee" || raw === "off" || raw === "custom") return raw;
+  } catch {
+    /* ignore */
+  }
+  return "ee";
+}
+
+function saveCenterIceLogo(v: CenterIceLogo): void {
+  try {
+    localStorage.setItem("hfb-center-ice-logo", v);
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadCustomLogoDataUrl(): string | null {
+  try {
+    const raw = localStorage.getItem("hfb-custom-logo-data-url");
+    if (raw && raw.startsWith("data:image/")) return raw;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function saveCustomLogoDataUrl(v: string | null): void {
+  try {
+    if (v && v.startsWith("data:image/")) localStorage.setItem("hfb-custom-logo-data-url", v);
+    else localStorage.removeItem("hfb-custom-logo-data-url");
   } catch {
     /* ignore */
   }
@@ -504,13 +555,13 @@ export function gameClockScale(minutes: number): number {
 
 /**
  * Sim steps per real second, relative to 60 Hz.
- * `speed` is the slider label (0.75–1.25, default 0.85). Applied speed is that
- * label times 0.8, clamped to 0.6–1.0, so 1.00x is the old display-30 rate.
+ * `speed` is the slider label (0.5–1.5, default 0.85). Applied speed is that
+ * label times 0.8, clamped to 0.4–1.2, so 1.00 is the old display-30 rate.
  * World multiplies the frame delta by this. The period clock divides it back out.
  */
 export function gameSpeedRate(speed: number): number {
   const label = Number.isFinite(speed) ? speed : 1;
-  return Math.max(0.6, Math.min(1, label * 0.8));
+  return Math.max(0.4, Math.min(1.2, label * 0.8));
 }
 
 /** A 1-minute roller period runs the 18:00 clock at 18×. A 3-minute period runs it at 6×. */
@@ -781,9 +832,13 @@ function snapSlider(n: number, min: number, max: number): number {
 }
 
 const GAME_SPEED_KEY = "hfb-game-speed";
-const GAME_SPEED_MIN = 0.75;
-const GAME_SPEED_MAX = 1.25;
+const GAME_SPEED_MIN = 0.5;
+const GAME_SPEED_MAX = 1.5;
 const GAME_SPEED_DEFAULT = 0.85;
+const FRICTION_KEY = "hfb-friction";
+const FRICTION_MIN = 0;
+const FRICTION_MAX = 1;
+const FRICTION_DEFAULT = 0.25;
 const CPU_OFFENSE_KEY = "hfb-cpu-offense";
 const CPU_DEFENSE_KEY = "hfb-cpu-defense";
 const CPU_GOALIE_KEY = "hfb-cpu-goalie";
@@ -852,6 +907,9 @@ export const useGame = create<GameUi>((set, get) => ({
   teamShots: emptyTeamShots(),
   quality: "high",
   arenaLook: loadLook(),
+  centerIceLogo: loadCenterIceLogo(),
+  customLogoDataUrl: loadCustomLogoDataUrl(),
+  jumbotronEnabled: loadFlag("hfb-jumbotron", true),
   pad: "Keyboard",
   hasPuck: false,
   charge: 0,
@@ -892,6 +950,7 @@ export const useGame = create<GameUi>((set, get) => ({
   passLock: loadFlag("hfb-pass-lock", true),
   offsides: false,
   gameSpeed: loadSlider(GAME_SPEED_KEY, GAME_SPEED_MIN, GAME_SPEED_MAX, GAME_SPEED_DEFAULT),
+  friction: loadSlider(FRICTION_KEY, FRICTION_MIN, FRICTION_MAX, FRICTION_DEFAULT),
   cpuOffense: loadSlider(CPU_OFFENSE_KEY, 0, 2, 1),
   cpuDefense: loadSlider(CPU_DEFENSE_KEY, 0, 2, 1),
   cpuGoalie: loadSlider(CPU_GOALIE_KEY, 0, 1.6, 0.8),
@@ -1012,6 +1071,19 @@ export const useGame = create<GameUi>((set, get) => ({
   setArenaLook: (v) => {
     saveLook(v);
     set({ arenaLook: v });
+  },
+  setCenterIceLogo: (v) => {
+    saveCenterIceLogo(v);
+    set({ centerIceLogo: v });
+  },
+  setCustomLogoDataUrl: (v) => {
+    const next = v && v.startsWith("data:image/") ? v : null;
+    saveCustomLogoDataUrl(next);
+    set({ customLogoDataUrl: next });
+  },
+  setJumbotronEnabled: (v) => {
+    saveFlag("hfb-jumbotron", v);
+    set({ jumbotronEnabled: v });
   },
   setPad: (s) => set({ pad: s }),
   setHasPuck: (v) => set({ hasPuck: v }),
@@ -1139,6 +1211,7 @@ export const useGame = create<GameUi>((set, get) => ({
     set({ offsides: v });
   },
   setGameSpeed: (n) => set({ gameSpeed: storeSlider(n, GAME_SPEED_MIN, GAME_SPEED_MAX, GAME_SPEED_KEY) }),
+  setFriction: (n) => set({ friction: storeSlider(n, FRICTION_MIN, FRICTION_MAX, FRICTION_KEY) }),
   setCpuOffense: (n) => set({ cpuOffense: storeSlider(n, 0, 2, CPU_OFFENSE_KEY) }),
   setCpuDefense: (n) => set({ cpuDefense: storeSlider(n, 0, 2, CPU_DEFENSE_KEY) }),
   setCpuGoalie: (n) => set({ cpuGoalie: storeSlider(n, 0, 1.6, CPU_GOALIE_KEY) }),

@@ -24,6 +24,7 @@ after(() => server.close());
 
 const cams = await server.ssrLoadModule("/src/game/replayCameras.ts");
 const form = await server.ssrLoadModule("/src/game/formationLibrary.ts");
+const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
 const subject = { x: 0, y: 0.55, z: 0 };
 const atk = -1;
@@ -72,7 +73,8 @@ test("the five game camera modes are distinct and match the live rig", () => {
 
   assert.equal(broadcast.fov, 44);
   assert.equal(broadcast.eye.y, 12.2);
-  assert.equal(broadcast.eye.z, 10.2);
+  assert.equal(broadcast.eye.z, rink.RINK_W / 2 + 6);
+  assert.ok(broadcast.eye.z > rink.RINK_W / 2 + 4);
   assert.equal(broadcast.eye.x, 0);
   assert.deepEqual(broadcast.up, { x: 0, y: 1, z: 0 });
 
@@ -92,6 +94,43 @@ test("the five game camera modes are distinct and match the live rig", () => {
   const highCam = applyPose(high);
   const highUp = new THREE.Vector3().setFromMatrixColumn(highCam.matrixWorld, 1);
   assert.ok(highUp.x < -0.9, `high screen-up should be -X, got ${highUp.x}`);
+});
+
+test("broadcast stays upright when the puck is on the near boards", () => {
+  const half = rink.RINK_W / 2;
+  const worldSrc = readFileSync(join(repo, "src/game/World.tsx"), "utf8");
+  const simSrc = readFileSync(join(repo, "src/game/sim.ts"), "utf8");
+  assert.match(worldSrc, /mode === "broadcast"[\s\S]{0,240}RINK_W \/ 2 \+ 6/);
+  assert.match(simSrc, /mode === "broadcast"[\s\S]{0,320}camZ: RINK_W \/ 2 \+ 6/);
+
+  const near = cams.placeReplayCamera(
+    "broadcast",
+    { x: 0, y: 0.4, z: half - 0.15 },
+    -1,
+    { x: 1, z: 0 },
+  );
+  assert.ok(near.eye.z >= half + 4 && near.eye.z <= half + 8, `eye z ${near.eye.z}`);
+  // The eye stays on +Z of every on-ice puck, so screen-up keeps the far side at the top.
+  for (const z of [-(half - 0.2), 0, 10.2, half - 0.15]) {
+    const pose = cams.placeReplayCamera("broadcast", { x: 0, y: 0.4, z }, -1, { x: 1, z: 0 });
+    const cam = applyPose(pose);
+    const screenUp = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
+    assert.ok(screenUp.y > 0.3, `z ${z} screen up y ${screenUp.y}`);
+    assert.ok(screenUp.z < -0.2, `z ${z} screen up z ${screenUp.z}`);
+  }
+
+  // Defend-zoom lifts the live eye to 12.2 + 4.2. The same z offset still looks across, not down.
+  const raised = new THREE.PerspectiveCamera(44, 16 / 9, 0.15, 220);
+  raised.up.set(0, 1, 0);
+  raised.position.set(0, 12.2 + 4.2, half + 6);
+  raised.lookAt(0, 0.35, half - 0.15);
+  raised.updateMatrixWorld();
+  const raisedUp = new THREE.Vector3().setFromMatrixColumn(raised.matrixWorld, 1);
+  assert.ok(raisedUp.y > 0.2, `raised screen up y ${raisedUp.y}`);
+  assert.ok(raisedUp.z < -0.5, `raised screen up z ${raisedUp.z}`);
+  const view = new THREE.Vector3();
+  raised.getWorldDirection(view);
+  assert.ok(Math.abs(view.y) < 0.96, `view parallel to up, dot ${view.y}`);
 });
 
 test("a high classic look lifts before the attack axis rolls the view", () => {

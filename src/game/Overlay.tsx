@@ -78,7 +78,7 @@ import {
   type ShootoutResult,
 } from "./store";
 import { FormationKits } from "./FormationKits";
-import { kitById, kitWornColors, type UniformKit } from "./uniforms";
+import { kitById, kitIconColors, type UniformKit } from "./uniforms";
 
 function StickPad() {
   const wrap = useRef<HTMLDivElement>(null);
@@ -231,12 +231,12 @@ function AimCompass() {
 }
 
 function UniStripe({ kit }: { kit: UniformKit }) {
-  const worn = kitWornColors(kit);
+  const icon = kitIconColors(kit);
   return (
     <span className="uni-stripe" aria-hidden="true">
-      <i style={{ background: worn.helmet }} />
-      <i style={{ background: worn.jersey }} />
-      <i style={{ background: worn.pants }} />
+      <i style={{ background: icon.top }} />
+      <i style={{ background: icon.mid }} />
+      <i style={{ background: icon.bot }} />
     </span>
   );
 }
@@ -313,23 +313,38 @@ const periodEndBanner = {
   fontSize: "clamp(1.2rem, 5vw, 2.2rem)",
 };
 
-function AbilitySliders() {
+function IceSliders() {
   const gameSpeed = useGame((s) => s.gameSpeed);
   const setGameSpeed = useGame((s) => s.setGameSpeed);
+  const friction = useGame((s) => s.friction);
+  const setFriction = useGame((s) => s.setFriction);
   return (
-    <div className="ability-sliders">
-      <label className="ability-row">
+    <div className="hud-sliders ice-sliders">
+      <label className="hud-slider-row">
         <span>Game Speed</span>
         <input
           type="range"
-          min={0.75}
-          max={1.25}
+          min={0.5}
+          max={1.5}
           step={0.05}
           value={gameSpeed}
           aria-label="Game Speed"
           onChange={(e) => setGameSpeed(Number(e.target.value))}
         />
-        <b>{gameSpeed.toFixed(2) + "x"}</b>
+        <b>{gameSpeed.toFixed(2)}</b>
+      </label>
+      <label className="hud-slider-row">
+        <span>Friction</span>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={friction}
+          aria-label="Friction"
+          onChange={(e) => setFriction(Number(e.target.value))}
+        />
+        <b>{friction.toFixed(2)}</b>
       </label>
     </div>
   );
@@ -746,7 +761,8 @@ function ClockSetup() {
   );
 }
 
-type MenuId = "controller" | "gameplay" | "camera";
+type MenuId = "controller" | "gameplay" | "camera" | "rink";
+type RinkSubId = "brightness" | "logo";
 
 function TargetCountRow({
   label,
@@ -815,7 +831,7 @@ function DrillTargetPick() {
 
 function MainMenus() {
   const [menu, setMenu] = useState<MenuId | null>(null);
-  const [help, setHelp] = useState(false);
+  const [rinkSub, setRinkSub] = useState<RinkSubId | null>(null);
   const controlProfile = useGame((s) => s.controlProfile);
   const setControlProfile = useGame((s) => s.setControlProfile);
   const powerPlay = useGame((s) => s.powerPlay);
@@ -840,11 +856,21 @@ function MainMenus() {
   const setCamMode = useGame((s) => s.setCamMode);
   const arenaLook = useGame((s) => s.arenaLook);
   const setArenaLook = useGame((s) => s.setArenaLook);
+  const centerIceLogo = useGame((s) => s.centerIceLogo);
+  const setCenterIceLogo = useGame((s) => s.setCenterIceLogo);
+  const setCustomLogoDataUrl = useGame((s) => s.setCustomLogoDataUrl);
+  const logoFile = useRef<HTMLInputElement>(null);
+  const jumbotronEnabled = useGame((s) => s.jumbotronEnabled);
+  const setJumbotronEnabled = useGame((s) => s.setJumbotronEnabled);
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
   const replay = useGame((s) => s.replay);
   const replayReady = useReplayFootage();
-  const toggle = (id: MenuId) => setMenu((cur) => (cur === id ? null : id));
+  const toggle = (id: MenuId) => {
+    setMenu((cur) => (cur === id ? null : id));
+    setRinkSub(null);
+  };
+  const toggleRinkSub = (id: RinkSubId) => setRinkSub((cur) => (cur === id ? null : id));
   const blurb =
     controlProfile === "wings"
       ? "LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB defensive skate; hold Select or R for the goalie; RB dives."
@@ -862,28 +888,76 @@ function MainMenus() {
   };
   return (
     <div className="menu-stack">
-      {menu === "camera" ? (
+      {menu === "rink" && rinkSub === "brightness" ? (
         <div className="cam-row menu-sub">
           <button
             type="button"
             className={arenaLook === "light" ? "is-on" : ""}
             onClick={() => setArenaLook("light")}
           >
-            Rink Light
+            Light
           </button>
           <button
             type="button"
             className={arenaLook === "dark" ? "is-on" : ""}
             onClick={() => setArenaLook("dark")}
           >
-            Rink Dark
+            Dark
           </button>
         </div>
       ) : null}
+      {menu === "rink" && rinkSub === "logo" ? (
+        <div className="cam-row menu-sub">
+          <button type="button" className={centerIceLogo === "ee" ? "is-on" : ""} onClick={() => setCenterIceLogo("ee")}>
+            EE
+          </button>
+          <button type="button" className={centerIceLogo === "off" ? "is-on" : ""} onClick={() => setCenterIceLogo("off")}>
+            Off
+          </button>
+          <button
+            type="button"
+            className={centerIceLogo === "custom" ? "is-on" : ""}
+            onClick={() => {
+              setCenterIceLogo("custom");
+              logoFile.current?.click();
+            }}
+          >
+            Custom
+          </button>
+        </div>
+      ) : null}
+      <input
+        ref={logoFile}
+        type="file"
+        accept="image/*"
+        aria-hidden="true"
+        tabIndex={-1}
+        style={{ position: "fixed", width: 1, height: 1, padding: 0, margin: 0, opacity: 0, pointerEvents: "none" }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (!file || !file.type.startsWith("image/")) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            const url = reader.result;
+            if (typeof url !== "string") return;
+            setCustomLogoDataUrl(url);
+            setCenterIceLogo("custom");
+          };
+          reader.readAsDataURL(file);
+        }}
+      />
       {menu === "gameplay" ? (
-        <div className="settings-panel" aria-label="Settings">
-          <SideSliders who="user" />
-          <SideSliders who="cpu" />
+        <div className="settings-row" aria-label="Settings">
+          <div className="settings-panel">
+            <IceSliders />
+          </div>
+          <div className="settings-panel">
+            <SideSliders who="user" />
+          </div>
+          <div className="settings-panel">
+            <SideSliders who="cpu" />
+          </div>
         </div>
       ) : null}
       {menu ? (
@@ -1023,16 +1097,44 @@ function MainMenus() {
               </button>
             ))
           ) : null}
+          {menu === "rink" ? (
+            <>
+              <button
+                type="button"
+                className={rinkSub === "brightness" ? "is-on" : ""}
+                aria-expanded={rinkSub === "brightness"}
+                onClick={() => toggleRinkSub("brightness")}
+              >
+                Brightness
+              </button>
+              <button
+                type="button"
+                className={rinkSub === "logo" ? "is-on" : ""}
+                aria-expanded={rinkSub === "logo"}
+                onClick={() => toggleRinkSub("logo")}
+              >
+                Logo
+              </button>
+              <button
+                type="button"
+                className={jumbotronEnabled ? "is-on" : ""}
+                aria-pressed={jumbotronEnabled}
+                onClick={() => setJumbotronEnabled(!jumbotronEnabled)}
+              >
+                Jumbotron
+              </button>
+            </>
+          ) : null}
         </div>
       ) : null}
       <div className="cam-row">
         <button
           type="button"
-          className={menu === "gameplay" ? "is-on" : ""}
-          aria-expanded={menu === "gameplay"}
-          onClick={() => toggle("gameplay")}
+          className={replay ? "is-on" : ""}
+          disabled={!replay && (!playing || !replayReady)}
+          onClick={startReplay}
         >
-          Settings
+          Replay
         </button>
         <button
           type="button"
@@ -1044,11 +1146,11 @@ function MainMenus() {
         </button>
         <button
           type="button"
-          className={replay ? "is-on" : ""}
-          disabled={!replay && (!playing || !replayReady)}
-          onClick={startReplay}
+          className={menu === "rink" ? "is-on" : ""}
+          aria-expanded={menu === "rink"}
+          onClick={() => toggle("rink")}
         >
-          Replay
+          Rink
         </button>
         <button
           type="button"
@@ -1058,73 +1160,15 @@ function MainMenus() {
         >
           Controller
         </button>
-        <div className="cam-pop">
-          {help ? <ControlsHelp /> : null}
-          <button
-            type="button"
-            className={help ? "is-on" : ""}
-            aria-expanded={help}
-            onClick={() => setHelp((v) => !v)}
-          >
-            Info
-          </button>
-        </div>
+        <button
+          type="button"
+          className={menu === "gameplay" ? "is-on" : ""}
+          aria-expanded={menu === "gameplay"}
+          onClick={() => toggle("gameplay")}
+        >
+          Settings
+        </button>
       </div>
-    </div>
-  );
-}
-
-function ControlsHelp() {
-  const controlProfile = useGame((s) => s.controlProfile);
-  const wings = controlProfile === "wings";
-  const stick = controlProfile === "stick";
-  return (
-    <div className="help-tip">
-      <p className="hint">
-        {wings
-          ? "A / E start · WASD skate · F shot · Q deke/hit · Space burst · G left · Shift right · LB / N skate · Select / R goalie · M / RB dive · P pause"
-          : stick
-            ? "A / E start · WASD skate · right stick shots · F shot · Q deke/hit · Space burst · Shift / RT dive · LB / N skate · Select / R goalie · P pause"
-            : "A / E start · WASD skate · F shot · Q deke/hit · Space burst · Shift / RT dive · LB / N skate · Select / R goalie · P pause"}
-      </p>
-      <dl className="legend">
-        <div>
-          <dt>With puck</dt>
-          <dd>
-            {stick
-              ? "A tap 55 mph, hold 1.5s 95 mph, Select saucer · right stick snap, wrist, backhand, slap · X tap wrist / hold slap · B cancel · Y deke · left stick aims"
-              : "A tap 55 mph, hold 1.5s 95 mph, Select saucer · X wrist / hold slap · B cancel slap · Y deke"}
-          </dd>
-        </div>
-        <div>
-          <dt>No puck</dt>
-          <dd>
-            {wings
-              ? "A switch · X poke / one-timer / hold slap one-timer · Y hit · B burst · G / LT left · Shift / RT right · RB / M dive · frozen puck: Y check"
-              : "A switch · X poke / one-timer / hold slap one-timer · Y hit · B burst · RT / Shift dive · frozen puck: Y check"}
-          </dd>
-        </div>
-        <div>
-          <dt>Skate</dt>
-          <dd>Hold LB, comma, or N — hips to the puck, slower, better hit and intercept</dd>
-        </div>
-        <div>
-          <dt>Net</dt>
-          <dd>Hold Select or R — take your goalie (only if you don't have the puck)</dd>
-        </div>
-        {wings ? (
-          <div>
-            <dt>Wings</dt>
-            <dd>LT/RT claim nearest teammate left/right of you; left stick steers you and them; RB dives.</dd>
-          </div>
-        ) : null}
-        {stick ? (
-          <div>
-            <dt>Skill Stick</dt>
-            <dd>Right stick up snaps, hold right or left keeps the puck on that side and protects it from a poke on the other side, right then up is a wrist, left then up is a backhand, pull back then up is a slap. Without the puck, stick up checks and a sideways push pokes along the blade. Left stick aims. X is tap wrist or hold slap.</dd>
-          </div>
-        ) : null}
-      </dl>
     </div>
   );
 }
@@ -1610,9 +1654,6 @@ export function Overlay() {
       </div>
       <div className="hud-top-stack">
         <header className="hud-top">
-          <div>
-            <AbilitySliders />
-          </div>
           <div className="hud-score-cluster">
           <ShootoutGrid />
           <div className="hud-stats">

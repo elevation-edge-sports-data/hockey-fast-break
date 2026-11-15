@@ -944,7 +944,8 @@ function CameraRig() {
       _look.set(lookX, fyP + 0.16 + zoom * 0.18, fzCam);
       state.camera.up.set(atk, 0, 0);
     } else if (mode === "broadcast") {
-      _desired.set(fxP * 0.16, 12.2 + zoom * 4.2, Math.min(10.2, RINK_W / 2 - 1.6));
+      // Behind the near penalty box. An eye inside the rink can sit over the puck and roll lookAt.
+      _desired.set(fxP * 0.16, 12.2 + zoom * 4.2, RINK_W / 2 + 6);
       _look.set(fxP, fyP, fzP);
       state.camera.up.set(0, 1, 0);
     } else if (mode === "high") {

@@ -13,7 +13,7 @@ import {
 } from "./poseViewFrame";
 import { world } from "./sim";
 import { useGame } from "./store";
-import { kitById, UNIFORMS } from "./uniforms";
+import { kitById, kitIconColors, UNIFORMS } from "./uniforms";
 
 type Seat = "skater" | "goalie";
 
@@ -81,7 +81,7 @@ function PoseStage({ pose, index, kitId, seat }: { pose: string; index: number; 
 }
 
 function KitSwatch({ id, selected, onPick }: { id: number; selected: boolean; onPick: (id: number) => void }) {
-  const u = UNIFORMS[id]!;
+  const icon = kitIconColors(UNIFORMS[id]!);
   return (
     <button
       type="button"
@@ -89,9 +89,9 @@ function KitSwatch({ id, selected, onPick }: { id: number; selected: boolean; on
       onClick={() => onPick(id)}
       className={`uni-swatch${selected ? " is-on" : ""}`}
     >
-      <span style={{ background: u.helmet }} />
-      <span style={{ background: u.jersey }} />
-      <span style={{ background: u.pants }} />
+      <span style={{ background: icon.top }} />
+      <span style={{ background: icon.mid }} />
+      <span style={{ background: icon.bot }} />
     </button>
   );
 }

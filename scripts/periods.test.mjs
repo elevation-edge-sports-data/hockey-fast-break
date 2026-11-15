@@ -839,19 +839,21 @@ test("period end suspends chasing, possession, and zone holds", () => {
 test("the game speed slider does not change the period countdown", () => {
   try {
     useGame.getState().setGameSpeed(0.5);
-    assert.equal(useGame.getState().gameSpeed, 0.75);
+    assert.equal(useGame.getState().gameSpeed, 0.5);
     useGame.getState().setGameSpeed(1.5);
-    assert.equal(useGame.getState().gameSpeed, 1.25);
+    assert.equal(useGame.getState().gameSpeed, 1.5);
+    assert.ok(Math.abs(gameSpeedRate(0.5) - 0.4) < 1e-9);
     assert.ok(Math.abs(gameSpeedRate(0.75) - 0.6) < 1e-9);
     assert.ok(Math.abs(gameSpeedRate(0.8) - 0.64) < 1e-9);
     assert.equal(gameSpeedRate(1), 0.8);
     assert.equal(gameSpeedRate(1.25), 1);
+    assert.ok(Math.abs(gameSpeedRate(1.5) - 1.2) < 1e-9);
     assert.equal(gameSpeedRate(Number.NaN), 0.8);
-    assert.equal(gameSpeedRate(0), 0.6);
-    assert.equal(gameSpeedRate(2), 1);
+    assert.equal(gameSpeedRate(0), 0.4);
+    assert.equal(gameSpeedRate(2), 1.2);
     const drops = [];
-    // These labels apply at 0.6, 0.8, and 1.0, each a whole number of 60 Hz steps.
-    for (const speed of [0.75, 1, 1.25]) {
+    // 0.5–1.5 map to rates 0.4–1.2. Each of these is a whole number of 60 Hz steps.
+    for (const speed of [0.5, 0.75, 1, 1.25, 1.5]) {
       freshGame();
       liveClock();
       resetPlayFrame();
@@ -874,7 +876,7 @@ test("the game speed slider does not change the period countdown", () => {
     resetPlayFrame();
     useGame.getState().setRollerMinutes(1);
     world.periodClock = 18 * 60;
-    for (const speed of [0.75, 1.25]) {
+    for (const speed of [0.5, 0.75, 1.25, 1.5]) {
       useGame.getState().setGameSpeed(speed);
       world.periodClock = 18 * 60;
       resetPlayFrame();

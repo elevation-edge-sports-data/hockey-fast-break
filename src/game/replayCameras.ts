@@ -177,10 +177,10 @@ function placeClassic(subject: CamPoint, atk: 1 | -1): ReplayCamPlacement {
   };
 }
 
-/** Sideline TV camera. z stays on the near side, x eases toward center ice. */
+/** Sideline TV camera, over the lower bowl behind the near penalty box. x eases toward center ice. */
 function placeBroadcast(subject: CamPoint): ReplayCamPlacement {
   return {
-    eye: { x: subject.x * 0.16, y: 12.2, z: Math.min(10.2, RINK_W / 2 - 1.6) },
+    eye: { x: subject.x * 0.16, y: 12.2, z: RINK_W / 2 + 6 },
     look: { x: subject.x, y: subject.y, z: subject.z },
     up: { x: 0, y: 1, z: 0 },
     fov: 44,

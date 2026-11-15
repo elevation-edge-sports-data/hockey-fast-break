@@ -55,7 +55,7 @@ function ndc(cam, x) {
 
 test("default game speed is 0.85x", () => {
   assert.equal(useGame.getState().gameSpeed, 0.85);
-  assert.equal(useGame.getState().gameSpeed.toFixed(2) + "x", "0.85x");
+  assert.equal(useGame.getState().gameSpeed.toFixed(2), "0.85");
   assert.ok(Math.abs(gameSpeedRate(useGame.getState().gameSpeed) - 0.68) < 1e-9);
 });
 

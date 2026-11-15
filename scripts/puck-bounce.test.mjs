@@ -414,28 +414,105 @@ function releaseRim(holdS) {
   return Math.hypot(world.puck.vx, world.puck.vz);
 }
 
+/** Along-board samples once the puck is on the glass. Glide must not bleed speed. */
+function runRim(frames) {
+  const x0 = world.puck.x;
+  const z0 = world.puck.z;
+  const halfW = RINK_W / 2;
+  const speeds = [];
+  for (let i = 0; i < frames; i++) {
+    step(1);
+    if (Math.abs(world.puck.z) > halfW - 0.35) {
+      speeds.push(Math.hypot(world.puck.vx, world.puck.vz));
+    }
+  }
+  return {
+    run: Math.hypot(world.puck.x - x0, world.puck.z - z0),
+    wall: Math.abs(world.puck.z),
+    speeds,
+  };
+}
+
+function assertGlideHoldsSpeed(speeds, label) {
+  assert.ok(speeds.length >= 30, `${label} wall samples ${speeds.length}`);
+  const held = speeds.slice(3);
+  const hi = Math.max(...held);
+  const lo = Math.min(...held);
+  assert.ok(lo > 12, `${label} glide died at ${lo.toFixed(2)} m/s`);
+  assert.ok(lo > hi * 0.985, `${label} slowed ${hi.toFixed(2)} -> ${lo.toFixed(2)}`);
+}
+
 test("a charged board rim is faster and runs farther than a tap", () => {
   const tapLeave = releaseRim(0.05);
   assert.ok(world.puck.owner === null, "tap rim did not leave the stick");
-  const tapX = world.puck.x;
-  const tapZ = world.puck.z;
-  step(45);
-  const tapRun = Math.hypot(world.puck.x - tapX, world.puck.z - tapZ);
-  const tapWall = Math.abs(world.puck.z);
+  const tap = runRim(45);
+  assert.equal(world.puck.owner, null, "tap rim was picked up");
+  assertGlideHoldsSpeed(tap.speeds, "tap");
 
   const fullLeave = releaseRim(1.5);
   assert.ok(world.puck.owner === null, "charged rim did not leave the stick");
-  const fullX = world.puck.x;
-  const fullZ = world.puck.z;
-  step(45);
-  const fullRun = Math.hypot(world.puck.x - fullX, world.puck.z - fullZ);
+  const full = runRim(45);
+  assert.equal(world.puck.owner, null, "charged rim was picked up");
+  assertGlideHoldsSpeed(full.speeds, "charge");
 
   const tapMps = 55 / 2.23694;
   const fullMps = 95 / 2.23694;
   assert.ok(Math.abs(tapLeave - tapMps) < 1.5, `tap left at ${tapLeave.toFixed(2)} m/s`);
   assert.ok(fullLeave > tapLeave * 1.45, `full ${fullLeave.toFixed(2)} vs tap ${tapLeave.toFixed(2)}`);
   assert.ok(Math.abs(fullLeave - fullMps) < 1.5, `full left at ${fullLeave.toFixed(2)} m/s`);
-  assert.ok(fullRun > tapRun * 1.35, `full ran ${fullRun.toFixed(1)} m, tap ${tapRun.toFixed(1)} m`);
-  assert.ok(tapWall > RINK_W / 2 - 2, `tap left the wall at z ${world.puck.z.toFixed(2)}`);
+  assert.ok(full.run > tap.run * 1.35, `full ran ${full.run.toFixed(1)} m, tap ${tap.run.toFixed(1)} m`);
+  assert.ok(tap.wall > RINK_W / 2 - 2, `tap left the wall at z ${world.puck.z.toFixed(2)}`);
   assert.ok(Math.abs(world.puck.z) > RINK_W / 2 - 2, `charge left the wall at z ${world.puck.z.toFixed(2)}`);
+});
+
+test("a fast slide keeps its speed through the corner", () => {
+  boot();
+  const halfW = RINK_W / 2;
+  const innerL = RINK_L / 2 - CORNER_R;
+  const innerW = RINK_W / 2 - CORNER_R;
+  launch(-12, PUCK_Y, halfW - 0.12, -33, 0, 0);
+  const cornerEff = [];
+  let prevX = world.puck.x;
+  let prevZ = world.puck.z;
+  let leftCorner = false;
+  for (let i = 0; i < 80; i++) {
+    step(1);
+    const corner = Math.abs(world.puck.x) > innerL && Math.abs(world.puck.z) > innerW;
+    const eff = Math.hypot(world.puck.x - prevX, world.puck.z - prevZ) / DT;
+    if (corner && !leftCorner) cornerEff.push(eff);
+    else if (cornerEff.length > 0) leftCorner = true;
+    prevX = world.puck.x;
+    prevZ = world.puck.z;
+    if (world.puck.owner !== null) break;
+  }
+  assert.ok(cornerEff.length > 8, "the slide never reached the corner");
+  assert.equal(world.puck.owner, null);
+  const minCorner = Math.min(...cornerEff);
+  assert.ok(minCorner > 26, `corner crawl ${minCorner.toFixed(1)} m/s`);
+});
+
+test("friction slider changes loose-puck drag", () => {
+  const coast = (friction) => {
+    boot();
+    useGame.getState().setFriction(friction);
+    launch(0, PUCK_Y, 0, 20, 0, 0);
+    world.lastPass = -10;
+    world.lastShoot = -10;
+    step(60);
+    assert.equal(world.puck.owner, null, `friction ${friction} picked the puck up`);
+    return Math.hypot(world.puck.vx, world.puck.vz);
+  };
+  try {
+    const light = coast(0);
+    const normal = coast(0.25);
+    const heavy = coast(1);
+    const expectAt = (k) => 20 * Math.exp(-k);
+    assert.ok(Math.abs(light - 20) < 0.35, `zero drag ${light.toFixed(3)}`);
+    assert.ok(Math.abs(normal - expectAt(0.25)) < 0.4, `default drag ${normal.toFixed(3)}`);
+    assert.ok(light > normal + 1, `light ${light.toFixed(3)} vs normal ${normal.toFixed(3)}`);
+    assert.ok(heavy < normal - 4, `heavy ${heavy.toFixed(3)} vs normal ${normal.toFixed(3)}`);
+    assert.ok(Math.abs(heavy - expectAt(1)) < 0.6, `heavy drag ${heavy.toFixed(3)}`);
+  } finally {
+    useGame.getState().setFriction(0.25);
+  }
 });
