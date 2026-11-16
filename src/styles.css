@@ -712,6 +712,11 @@ h2 {
   align-items: center;
 }
 
+.logo-zoom {
+  width: min(220px, 100%);
+  margin: 0;
+}
+
 .menu-blurb {
   flex: 1 1 220px;
   font-size: 0.78rem;

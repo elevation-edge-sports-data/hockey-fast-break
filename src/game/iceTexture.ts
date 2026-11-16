@@ -65,7 +65,13 @@ function fbm(x: number, y: number): number {
   );
 }
 
-export function createIceCanvases(w = 2048, h = 872, blueLines = true, nzDots = true): {
+export function createIceCanvases(
+  w = 2048,
+  h = 872,
+  blueLines = true,
+  nzDots = true,
+  gapCenterLine = true,
+): {
   albedo: HTMLCanvasElement;
   roughness: HTMLCanvasElement;
 } {
@@ -251,13 +257,15 @@ export function createIceCanvases(w = 2048, h = 872, blueLines = true, nzDots = 
   ctx.beginPath();
   ctx.ellipse(wx(0), wz(0), mx(FACEOFF_MARK_R), mz(FACEOFF_MARK_R), 0, 0, Math.PI * 2);
   ctx.fill();
-  const crestZ = Math.sqrt(Math.max(0, FACEOFF_MARK_R * FACEOFF_MARK_R - (CENTER_LINE_W / 2) ** 2));
   ctx.strokeStyle = LINE_RED;
   ctx.lineWidth = mx(CENTER_LINE_W);
   ctx.beginPath();
   ctx.moveTo(wx(0), wz(-RINK_W / 2));
-  ctx.lineTo(wx(0), wz(-crestZ));
-  ctx.moveTo(wx(0), wz(crestZ));
+  if (gapCenterLine) {
+    const crestZ = Math.sqrt(Math.max(0, FACEOFF_MARK_R * FACEOFF_MARK_R - (CENTER_LINE_W / 2) ** 2));
+    ctx.lineTo(wx(0), wz(-crestZ));
+    ctx.moveTo(wx(0), wz(crestZ));
+  }
   ctx.lineTo(wx(0), wz(RINK_W / 2));
   ctx.stroke();
   if (blueLines) {
@@ -299,11 +307,11 @@ export function createIceCanvases(w = 2048, h = 872, blueLines = true, nzDots = 
   return { albedo, roughness };
 }
 
-export function createIceTextures(blueLines = true, nzDots = true): {
+export function createIceTextures(blueLines = true, nzDots = true, gapCenterLine = true): {
   map: THREE.CanvasTexture;
   roughnessMap: THREE.CanvasTexture;
 } {
-  const { albedo, roughness } = createIceCanvases(2048, 872, blueLines, nzDots);
+  const { albedo, roughness } = createIceCanvases(2048, 872, blueLines, nzDots, gapCenterLine);
   const map = new THREE.CanvasTexture(albedo);
   map.colorSpace = THREE.SRGBColorSpace;
   map.anisotropy = 8;

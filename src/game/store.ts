@@ -172,6 +172,8 @@ type GameUi = {
   arenaLook: ArenaLook;
   /** `ee` is the Elevation Edge mark. `off` hides it. `custom` uses customLogoDataUrl, or the EE mark when that is empty. */
   centerIceLogo: CenterIceLogo;
+  /** Scale of the drawn mark on the ice plate. 1 fits the square. */
+  centerIceLogoZoom: number;
   /** Data URL of an uploaded center-ice image. Null until the player picks a file. */
   customLogoDataUrl: string | null;
   /** Overhead board. On unless the player turned it off. */
@@ -262,6 +264,7 @@ type GameUi = {
   setQuality: (q: "high" | "low") => void;
   setArenaLook: (v: ArenaLook) => void;
   setCenterIceLogo: (v: CenterIceLogo) => void;
+  setCenterIceLogoZoom: (n: number) => void;
   setCustomLogoDataUrl: (v: string | null) => void;
   setJumbotronEnabled: (v: boolean) => void;
   setPad: (s: "Keyboard" | "Gamepad") => void;
@@ -345,6 +348,36 @@ function loadCenterIceLogo(): CenterIceLogo {
 function saveCenterIceLogo(v: CenterIceLogo): void {
   try {
     localStorage.setItem("hfb-center-ice-logo", v);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Fit size on the ice plate. The slider and the canvas share this range. */
+export const CENTER_ICE_LOGO_ZOOM_MIN = 0.4;
+export const CENTER_ICE_LOGO_ZOOM_MAX = 2.5;
+export const CENTER_ICE_LOGO_ZOOM_DEFAULT = 1;
+const CENTER_ICE_LOGO_ZOOM_KEY = "hfb-center-ice-logo-zoom";
+
+export function clampCenterIceLogoZoom(n: number): number {
+  if (!Number.isFinite(n)) return CENTER_ICE_LOGO_ZOOM_DEFAULT;
+  const clamped = Math.min(CENTER_ICE_LOGO_ZOOM_MAX, Math.max(CENTER_ICE_LOGO_ZOOM_MIN, n));
+  return Math.round(clamped * 100) / 100;
+}
+
+function loadCenterIceLogoZoom(): number {
+  try {
+    const raw = localStorage.getItem(CENTER_ICE_LOGO_ZOOM_KEY);
+    if (raw === null) return CENTER_ICE_LOGO_ZOOM_DEFAULT;
+    return clampCenterIceLogoZoom(Number(raw));
+  } catch {
+    return CENTER_ICE_LOGO_ZOOM_DEFAULT;
+  }
+}
+
+function saveCenterIceLogoZoom(n: number): void {
+  try {
+    localStorage.setItem(CENTER_ICE_LOGO_ZOOM_KEY, String(n));
   } catch {
     /* ignore */
   }
@@ -908,6 +941,7 @@ export const useGame = create<GameUi>((set, get) => ({
   quality: "high",
   arenaLook: loadLook(),
   centerIceLogo: loadCenterIceLogo(),
+  centerIceLogoZoom: loadCenterIceLogoZoom(),
   customLogoDataUrl: loadCustomLogoDataUrl(),
   jumbotronEnabled: loadFlag("hfb-jumbotron", true),
   pad: "Keyboard",
@@ -1075,6 +1109,11 @@ export const useGame = create<GameUi>((set, get) => ({
   setCenterIceLogo: (v) => {
     saveCenterIceLogo(v);
     set({ centerIceLogo: v });
+  },
+  setCenterIceLogoZoom: (n) => {
+    const v = clampCenterIceLogoZoom(n);
+    saveCenterIceLogoZoom(v);
+    set({ centerIceLogoZoom: v });
   },
   setCustomLogoDataUrl: (v) => {
     const next = v && v.startsWith("data:image/") ? v : null;

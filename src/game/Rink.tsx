@@ -49,7 +49,7 @@ import {
 } from "./rink";
 import { roundedRectShape, rinkPerimeter } from "./rinkGeom";
 import { kitById, kitWornColors } from "./uniforms";
-import { useGame, type DrillTargets } from "./store";
+import { clampCenterIceLogoZoom, useGame, type DrillTargets } from "./store";
 import { defendDir, drillFade, drillGrid, drillTargetList, targetBoard, world } from "./sim";
 
 function extrudeRing(outerInset: number, innerInset: number, depth: number) {
@@ -191,8 +191,40 @@ function CenterIceDot() {
   );
 }
 
+/** Ice albedo. Letterboxed and transparent logo pixels stay this color. */
+const CENTER_LOGO_ICE = "#e4edf4";
+const CENTER_LOGO_TEX = 512;
+
+function centerLogoTexture(img: HTMLImageElement, zoom: number): THREE.CanvasTexture {
+  const size = CENTER_LOGO_TEX;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("center logo canvas");
+  ctx.fillStyle = CENTER_LOGO_ICE;
+  ctx.fillRect(0, 0, size, size);
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  if (iw > 0 && ih > 0) {
+    const fit = Math.min(size / iw, size / ih);
+    const scale = fit * clampCenterIceLogoZoom(zoom);
+    const dw = iw * scale;
+    const dh = ih * scale;
+    ctx.drawImage(img, (size - dw) / 2, (size - dh) / 2, dw, dh);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function CenterIceLogo() {
   const centerIceLogo = useGame((s) => s.centerIceLogo);
+  const centerIceLogoZoom = useGame((s) => s.centerIceLogoZoom);
   const customLogoDataUrl = useGame((s) => s.customLogoDataUrl);
   const src =
     centerIceLogo === "off"
@@ -203,7 +235,7 @@ function CenterIceLogo() {
   const mat = useMemo(
     () =>
       new THREE.MeshBasicMaterial({
-        color: "#e4edf4",
+        color: CENTER_LOGO_ICE,
         toneMapped: false,
         depthWrite: false,
       }),
@@ -211,30 +243,43 @@ function CenterIceLogo() {
   );
   useLayoutEffect(() => {
     if (!src) {
+      mat.map?.dispose();
       mat.map = null;
-      mat.color.set("#e4edf4");
+      mat.color.set(CENTER_LOGO_ICE);
       mat.needsUpdate = true;
       return;
     }
     let alive = true;
-    const tex = new THREE.TextureLoader().load(src, () => {
+    const img = new Image();
+    img.onload = () => {
       if (!alive) return;
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.anisotropy = 8;
-      tex.wrapS = THREE.ClampToEdgeWrapping;
-      tex.wrapT = THREE.ClampToEdgeWrapping;
-      mat.map = tex;
+      const next = centerLogoTexture(img, centerIceLogoZoom);
+      const prev = mat.map;
+      mat.map = next;
       mat.color.set("#ffffff");
       mat.needsUpdate = true;
-    });
+      if (prev && prev !== next) prev.dispose();
+    };
+    img.onerror = () => {
+      if (!alive) return;
+      mat.map?.dispose();
+      mat.map = null;
+      mat.color.set(CENTER_LOGO_ICE);
+      mat.needsUpdate = true;
+    };
+    img.src = src;
     return () => {
       alive = false;
-      mat.map = null;
-      mat.needsUpdate = true;
-      tex.dispose();
     };
-  }, [mat, src]);
-  useLayoutEffect(() => () => mat.dispose(), [mat]);
+  }, [mat, src, centerIceLogoZoom]);
+  useLayoutEffect(
+    () => () => {
+      mat.map?.dispose();
+      mat.map = null;
+      mat.dispose();
+    },
+    [mat],
+  );
   if (centerIceLogo === "off") return null;
   return (
     <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={1}>
@@ -359,6 +404,8 @@ function Crease({ side }: { side: 1 | -1 }) {
 }
 
 function CenterRedLine() {
+  const gap = useGame((s) => s.centerIceLogo) !== "off";
+  if (!gap) return <IceStripe x={0} color={LINE_RED} width={CENTER_LINE_W} />;
   const halfW = CENTER_LINE_W / 2;
   const crest = Math.sqrt(Math.max(0, FACEOFF_MARK_R * FACEOFF_MARK_R - halfW * halfW));
   const halfIce = Math.max(1, iceWidthAtX(0) + ICE_LINE_PAST) / 2;
@@ -808,8 +855,13 @@ export function Rink() {
   const awayWorn = kitWornColors(away);
   const showBlue = clockMode !== "roller";
   const nzDots = clockMode !== "roller";
+  const centerIceLogo = useGame((s) => s.centerIceLogo);
+  const gapCenterLine = centerIceLogo !== "off";
 
-  const ice = useMemo(() => createIceTextures(showBlue, nzDots), [showBlue, nzDots]);
+  const ice = useMemo(
+    () => createIceTextures(showBlue, nzDots, gapCenterLine),
+    [showBlue, nzDots, gapCenterLine],
+  );
   const adsHome = useMemo(
     () => createAdTexture(homeWorn.jersey, homeWorn.helmet),
     [homeWorn.jersey, homeWorn.helmet],

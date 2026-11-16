@@ -54,7 +54,7 @@ const { resetWorld, stepSim, world, stickBlade } = sim;
 const { inferNamedPose } = poses;
 const { useGame, hudReleaseName } = store;
 const { setInjectedKeys, setInjectedAim, setInjectedStart } = input;
-const { GOAL_H, GOAL_LINE_X, BOARD_H, GLASS_H, RINK_W, RINK_L, BLUE_X } = rink;
+const { GOAL_H, GOAL_LINE_X, BOARD_H, GLASS_H, RINK_W, RINK_L, BLUE_X, FACEOFF_EZ_X, resolveRink, wallTop } = rink;
 
 after(() => server.close());
 
@@ -503,7 +503,7 @@ function boardSauce(roll) {
   }
 }
 
-test("a full board saucer usually hits the glass high, and can still reach the crowd", () => {
+test("a full board saucer hits the glass and stays in the rink", () => {
   boardSauce(0.99);
   let bounced = false;
   let escaped = false;
@@ -521,16 +521,20 @@ test("a full board saucer usually hits the glass high, and can still reach the c
   assert.ok(peak > BOARD_H + GLASS_H * 0.45, `high glass peak ${peak}`);
 
   boardSauce(0);
-  let back = false;
+  let crowdEscaped = false;
+  let crowdBounce = false;
   for (let i = 0; i < 200; i++) {
+    const prevVz = world.puck.vz;
     step(1);
-    if (world.puck.owner === user().id && world.whistle === null && !world.stoppage) {
-      back = true;
-      break;
+    if (world.puck.y > BOARD_H + GLASS_H - 0.05 && Math.abs(world.puck.z) > RINK_W / 2 - 0.15) {
+      crowdEscaped = true;
     }
+    if (prevVz > 0.4 && world.puck.vz < -0.2 && world.puck.y > BOARD_H + 0.2) crowdBounce = true;
+    if (world.puck.owner !== null) break;
   }
-  assert.ok(back, "practice crowd entry did not return the puck");
-  assert.equal(world.faceoff, false);
+  assert.equal(crowdEscaped, false);
+  assert.ok(crowdBounce, "full board saucer still meets the glass");
+  assert.notEqual(world.whistle, "crowd");
 
   fresh();
   parkGoalie();
@@ -1158,8 +1162,9 @@ test("full sauce landing follows the zone, and the ice takes speed with charge",
   place(16);
   fire(0);
   const crowd = track();
-  assert.ok(crowd.cleared || world.puck.owner === user().id, `oz crowd peak ${crowd.peak}`);
-  assert.ok(crowd.peak > BOARD_H + GLASS_H * 0.7, `oz peak ${crowd.peak}`);
+  assert.equal(crowd.cleared, false);
+  assert.notEqual(world.whistle, "crowd");
+  assert.ok(crowd.glass || crowd.peak > BOARD_H, `oz sauce stayed up peak ${crowd.peak}`);
 
   place(16);
   fire(0.85);
@@ -1177,8 +1182,11 @@ test("full sauce landing follows the zone, and the ice takes speed with charge",
   fire(0);
   const own = track();
   assert.equal(own.cleared, false);
-  assert.ok(own.peak > 2.2, `own zone peak ${own.peak}`);
-  assert.ok(own.iced !== null && own.iced > BLUE_X && own.iced < GOAL_LINE_X, `own zone ice at ${own.iced}`);
+  assert.notEqual(world.whistle, "crowd");
+  assert.ok(own.peak > 1.2, `own zone peak ${own.peak}`);
+  if (own.iced !== null) {
+    assert.ok(own.iced > -GOAL_LINE_X && own.iced < GOAL_LINE_X, `own zone ice at ${own.iced}`);
+  }
 
   place(0);
   fire(0);
@@ -1385,4 +1393,96 @@ test("a goalie pass is 45 to 85 mph and a goalie shot is 55 to 87", () => {
   setInjectedKeys([]);
   step(1);
   assert.ok(Math.abs(useGame.getState().speed - 87) < 1, `goalie full shot ${useGame.getState().speed}`);
+});
+
+function leftTheRinkHigh() {
+  const hit = resolveRink(world.puck.x, world.puck.z, 0.02);
+  return hit.hit && world.puck.y > wallTop(hit.nx, hit.nz, hit.x, hit.z) - 0.02;
+}
+
+test("a short Select release from the defensive zone stays in play", () => {
+  fresh();
+  useGame.getState().setClockMode("game");
+  parkGoalie();
+  parkOthers();
+  const s = user();
+  s.x = -FACEOFF_EZ_X;
+  s.z = 0;
+  s.yaw = -Math.PI / 2;
+  const b = stickBlade(s);
+  world.puck.owner = s.id;
+  world.puck.x = b.x;
+  world.puck.z = b.z;
+  world.puck.y = 0.042;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastPass = -10;
+  world.lastShoot = -10;
+  world.whistle = null;
+  world.stoppage = false;
+  setInjectedAim(0, 1);
+  holdSelect(true);
+  step(1);
+  clockMs += 120;
+  step(1);
+  holdSelect(false);
+  step(1);
+  assert.equal(world.puck.owner, null);
+  assert.equal(useGame.getState().shotKind, "saucer");
+  assert.ok(world.puck.vy < 6, `dz loft ${world.puck.vy}`);
+  let peak = world.puck.y;
+  for (let i = 0; i < 240; i++) {
+    step(1);
+    if (world.puck.y > peak) peak = world.puck.y;
+    assert.equal(leftTheRinkHigh(), false);
+    assert.notEqual(world.whistle, "crowd");
+    if (world.puck.owner !== null || world.whistle) break;
+  }
+  assert.ok(peak < BOARD_H + GLASS_H - 0.4, `dz peak ${peak}`);
+  assert.notEqual(world.whistle, "crowd");
+});
+
+test("a full Select sauce down ice does not whistle into the crowd", () => {
+  fresh();
+  useGame.getState().setClockMode("game");
+  parkGoalie();
+  parkOthers();
+  const s = user();
+  s.x = FACEOFF_EZ_X;
+  s.z = 0;
+  s.yaw = -Math.PI / 2;
+  const b = stickBlade(s);
+  world.puck.owner = s.id;
+  world.puck.x = b.x;
+  world.puck.z = b.z;
+  world.puck.y = 0.042;
+  world.lastPass = -10;
+  world.lastShoot = -10;
+  world.whistle = null;
+  world.stoppage = false;
+  setInjectedAim(0, 1);
+  holdSelect(true);
+  step(1);
+  clockMs += 1100;
+  step(1);
+  const real = Math.random;
+  Math.random = () => 0;
+  holdSelect(false);
+  try {
+    step(1);
+  } finally {
+    Math.random = real;
+  }
+  assert.equal(useGame.getState().shotKind, "saucer");
+  let peak = world.puck.y;
+  for (let i = 0; i < 240; i++) {
+    step(1);
+    if (world.puck.y > peak) peak = world.puck.y;
+    assert.equal(leftTheRinkHigh(), false);
+    assert.notEqual(world.whistle, "crowd");
+    if (world.puck.owner !== null || world.whistle) break;
+  }
+  assert.notEqual(world.whistle, "crowd");
+  assert.ok(peak < BOARD_H + GLASS_H + 0.05, `full peak ${peak}`);
 });

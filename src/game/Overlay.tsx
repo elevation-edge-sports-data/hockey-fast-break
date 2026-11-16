@@ -67,6 +67,8 @@ import {
   modeLineupCap,
   patchLineup,
   hudReleaseName,
+  CENTER_ICE_LOGO_ZOOM_MAX,
+  CENTER_ICE_LOGO_ZOOM_MIN,
   applyArmedCpuKitCycle,
   useGame,
   type CamMode,
@@ -858,6 +860,8 @@ function MainMenus() {
   const setArenaLook = useGame((s) => s.setArenaLook);
   const centerIceLogo = useGame((s) => s.centerIceLogo);
   const setCenterIceLogo = useGame((s) => s.setCenterIceLogo);
+  const centerIceLogoZoom = useGame((s) => s.centerIceLogoZoom);
+  const setCenterIceLogoZoom = useGame((s) => s.setCenterIceLogoZoom);
   const setCustomLogoDataUrl = useGame((s) => s.setCustomLogoDataUrl);
   const logoFile = useRef<HTMLInputElement>(null);
   const jumbotronEnabled = useGame((s) => s.jumbotronEnabled);
@@ -924,6 +928,21 @@ function MainMenus() {
           >
             Custom
           </button>
+          {centerIceLogo !== "off" ? (
+            <label className="hud-slider-row logo-zoom">
+              <span>Zoom</span>
+              <input
+                type="range"
+                min={CENTER_ICE_LOGO_ZOOM_MIN}
+                max={CENTER_ICE_LOGO_ZOOM_MAX}
+                step={0.05}
+                value={centerIceLogoZoom}
+                aria-label="Center ice logo zoom"
+                onChange={(e) => setCenterIceLogoZoom(Number(e.target.value))}
+              />
+              <b>{centerIceLogoZoom.toFixed(2)}×</b>
+            </label>
+          ) : null}
         </div>
       ) : null}
       <input

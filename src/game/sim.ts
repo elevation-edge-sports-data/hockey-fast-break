@@ -1168,6 +1168,13 @@ function resetSkaters(): void {
   world.oneTimerSlap = false;
   world.oneTimerPass = false;
   world.oneTimerSaucer = false;
+  oneTimerArmedAt = -1;
+  oneTimerShotLatched = false;
+  oneTimerRearmOpen = false;
+  boardPassIntent = null;
+  bankOtFirst = -1;
+  bankOtPass = Number.NaN;
+  boardHitStep = false;
   world.oneTimerMx = 0;
   world.oneTimerMy = 0;
   world.puckOz = 0;
@@ -1285,6 +1292,25 @@ let rimTouched = false;
 let rimOffWall = false;
 let rimX = 0;
 let rimZ = 0;
+/**
+ * World time the shoot button armed this one-timer. -1 when nothing is armed.
+ * The 3s cap is measured from the later of this and lastPass.
+ */
+let oneTimerArmedAt = -1;
+/**
+ * A boards miss or the 3s cap ate the attempt. A held X must come up
+ * before another press can arm. A new edge still counts.
+ */
+let oneTimerShotLatched = false;
+/**
+ * A missed one-timer left the puck loose. A new X press may arm again
+ * until someone claims it, including after the 2.2s tape clock.
+ */
+let oneTimerRearmOpen = false;
+/** Rim, bank, or carom launch. A tape pass that only finds the glass is not this. */
+let boardPassIntent: "rim" | "bank" | "carom" | null = null;
+/** This puck step met the boards on a new contact, not a continued press. */
+let boardHitStep = false;
 let passMeet: { x: number; z: number } | null = null;
 let userWinding = false;
 let skillStickLoading = false;
@@ -10085,6 +10111,36 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
       userPress = null;
     }
   }
+  // Named receiver, or the nearest skater when the rail selector found no one.
+  // Only while the one-timer and the board pass are both still live, so a
+  // cleared latch does not send them and does not change their facing.
+  if (!faceoffDHold && s.id === boardOneTimerChaseId() && cpuCanChase(s)) {
+    const meet = railInterceptSpot(s);
+    if (meet) {
+      c.tx = meet.tx;
+      c.tz = meet.tz;
+    } else {
+      const loose = ontoPassPuck(s);
+      c.tx = loose.x;
+      c.tz = loose.z;
+    }
+    pointReceive = true;
+    loosePassChase = false;
+    matePuckChase = false;
+    shapeHold = false;
+    stackHold = false;
+    depthHold = false;
+    cornerHold = false;
+    breakoutHold = false;
+    rushJoin = false;
+    ozHoldSkate = false;
+    netCrash = false;
+    wallChase = false;
+    retrieving = false;
+    openEnd = 0;
+    wrapDeep = false;
+    userPress = null;
+  }
   const dx = c.tx - s.x;
   const dz = c.tz - s.z;
   const dist = Math.hypot(dx, dz) || 1;
@@ -13521,6 +13577,8 @@ let sauceClean = true;
 let sauceLandCharge = -1;
 // A full saucer has used its one ice bounce. The next ice hit sticks.
 let sauceFlatNext = false;
+// The long Select clear may leave the rink. Other saucers stay under the glass.
+let sauceMayLeave = false;
 
 function resetSauceWindow(): void {
   sauceHold = 0;
@@ -13592,11 +13650,14 @@ function tapePower(travel: number, saucer: boolean, cpuGoalie: boolean): number 
 }
 
 function flightSeconds(travel: number, power: number): number {
-  const asymptote = Math.max(0.5, power) / puckDrag();
+  const drag = puckDrag();
+  // Zero drag has no coast, so the log form is 0/0. Distance over speed stays finite.
+  if (!(drag > 1e-8)) return Math.max(0.16, travel / Math.max(0.5, power));
+  const asymptote = Math.max(0.5, power) / drag;
   const reach = Math.min(Math.max(0.2, travel), asymptote * 0.8);
-  const cover = (puckDrag() * reach) / Math.max(0.5, power);
+  const cover = (drag * reach) / Math.max(0.5, power);
   if (cover >= 0.97) return Math.max(0.16, reach / Math.max(0.5, power));
-  return Math.max(0.16, -Math.log(1 - cover) / puckDrag());
+  return Math.max(0.16, -Math.log(1 - cover) / drag);
 }
 
 function reachPoint(
@@ -13811,6 +13872,10 @@ function launchPuck(s: Skater, vx: number, vz: number, vy = 0): void {
   rimRide = null;
   boardRide = null;
   boardBank = null;
+  boardPassIntent = null;
+  oneTimerRearmOpen = false;
+  bankOtFirst = -1;
+  bankOtPass = Number.NaN;
   passCaromHit = null;
   clearBoardNear();
   overWall.delete(world.puck);
@@ -13821,6 +13886,7 @@ function launchPuck(s: Skater, vx: number, vz: number, vy = 0): void {
   drillPipeHit = false;
   sauceLandCharge = -1;
   sauceFlatNext = false;
+  sauceMayLeave = false;
   const blade = passOrigin(s);
   world.puck.owner = null;
   world.puck.x = blade.x;
@@ -13942,7 +14008,10 @@ function fullSauceLand(s: Skater, ax: number, az: number): FullSauceLand | null 
 function inferSauceAim(s: Skater, ax: number, az: number): SauceAim {
   const from = passOrigin(s);
   const hit = rayBoard(from.x, from.z, ax, az, 70);
-  const board = !!hit && (aimIsBoard(from, ax, az, hit) || alongWallSide(from, ax, az) !== null);
+  // The far end of a length-of-ice aim is not a glass dump. From the defensive
+  // zone that used to mark the saucer over, so a short charge still lofted at it.
+  const farFlatEnd = !!hit && Math.abs(hit.nx) > 0.92 && hit.dist > 12;
+  const board = !!hit && !farFlatEnd && (aimIsBoard(from, ax, az, hit) || alongWallSide(from, ax, az) !== null);
   if (board && hit) {
     return {
       dist: Math.max(0.6, hit.dist),
@@ -13965,11 +14034,15 @@ function inferSauceAim(s: Skater, ax: number, az: number): SauceAim {
  */
 const CPU_CROWD_CLEAR_P = 0.08;
 
-/** True when this release may keep an arc that leaves the rink. */
+/**
+ * True when this release may keep an arc that leaves the rink.
+ * A user saucer stays under the glass. Only the long Select clear is allowed
+ * to carry over, the same as a rare CPU clear.
+ */
 function cpuKeepsCrowdArc(s: Skater): boolean {
+  if (!chargedClear) return false;
   if (s.id === world.userId) return true;
   if (s.kind === "goalie") return false;
-  if (!chargedClear) return false;
   return Math.random() < CPU_CROWD_CLEAR_P;
 }
 
@@ -14012,8 +14085,13 @@ function boardMeetY(
       const xHit = px + (nx - px) * hi;
       const zHit = pz + (nz - pz) * hi;
       const yHit = py + (ny - py) * hi;
+      const vyHit = pvy + (nvy - pvy) * hi;
       const w = nearestBoards(xHit, zHit);
-      return yHit > wallTop(w.nx, w.nz, w.x, w.z) - 0.08 ? yHit : -1;
+      const top = wallTop(w.nx, w.nz, w.x, w.z);
+      // The boards keep vy, so a contact under the cap still sails into the seats
+      // when the puck is climbing. Count that rise as part of the meet.
+      const rise = yHit > BOARD_H && vyHit > 0 ? (vyHit * vyHit) / (2 * Math.max(1, grav)) : 0;
+      return yHit + rise > top - 0.25 ? yHit + rise : -1;
     }
     px = nx;
     pz = nz;
@@ -14097,7 +14175,7 @@ function launchPass(
       const aim = sauceAim ?? inferSauceAim(s, dirx, dirz);
       let want = chargedClear ? sauceClearY() : sauceNetY(sauceNow);
       if (aim.receiveY !== undefined && !chargedClear) want = Math.min(want, aim.receiveY);
-      if (aim.over && !chargedClear) {
+      if (aim.over && !chargedClear && sauceNow >= 0.999) {
         const wall = aim.wall ?? BOARD_H + GLASS_H;
         const intoCrowd = sauceNow >= SAUCE_CROWD_AT && Math.random() < SAUCE_CROWD_P;
         want = intoCrowd ? wall + 0.32 : sauceGlassY(sauceNow, wall);
@@ -14114,6 +14192,7 @@ function launchPass(
   const lvy = holdCpuReleaseInRink(s, scaled.vx * m, scaled.vz * m, useVy * m, flightGrav);
   launchPuck(s, scaled.vx * m, scaled.vz * m, lvy);
   sauceLandCharge = sauceCharge;
+  sauceMayLeave = chargedClear;
   beginPassSpeedTrack(saucer);
 }
 
@@ -15104,6 +15183,7 @@ function launchBank(
     saucer ? { dist: hit.dist, over: false, bank: true } : undefined,
   );
   boardBank = { hx: hit.x, hz: hit.z, vx: ovx, vz: ovz, until: world.time + 1.8, loft: saucer };
+  boardPassIntent = "bank";
   dampCheckedPassRide();
   world.lastPassTo = mate.id;
   world.oneTimerUntil = world.time + 2.2;
@@ -15141,6 +15221,7 @@ function launchBoardRim(
   // 5.2s was the rail for a fixed 19.5 m/s rim. A harder pass keeps it longer.
   const life = Math.min(7.5, 5.2 * (speed / 19.5));
   boardRide = { dir, speed, until: world.time + life, phase: "seek" };
+  boardPassIntent = "rim";
   dampCheckedPassRide();
   world.lastPassTo = null;
   world.oneTimerUntil = world.time + 2.2;
@@ -15156,6 +15237,7 @@ function launchBoardCarom(s: Skater, ax: number, az: number, hit: BoardHit): voi
   const vx = ax * inSpeed;
   const vz = az * inSpeed;
   launchPass(s, vx, vz, bankContactVy(from.x, from.z, vx, vz, 0.03));
+  boardPassIntent = "carom";
   dampCheckedPassRide();
   world.lastPassTo = null;
   world.oneTimerUntil = world.time + 2.2;
@@ -15178,6 +15260,7 @@ function launchSaucerBoard(s: Skater, ax: number, az: number, hit: BoardHit): vo
     bank: false,
     wall: wallTop(hit.nx, hit.nz, hit.x, hit.z),
   });
+  boardPassIntent = "carom";
   dampCheckedPassRide();
   world.lastPassTo = null;
   world.oneTimerUntil = world.time + 2.2;
@@ -15249,6 +15332,9 @@ function userBoardPass(s: Skater, ax: number, az: number, saucer = false, lock =
   const intoNear = !!hit && hit.dist < 9 && ax * hit.nx + az * hit.nz > 0.42;
   if (saucer) {
     if (!hit || (!atWall && !along)) return false;
+    // Straight down the rink at the far end. A saucer there is an ice pass,
+    // not a glass dump, including a short Select release from the own zone.
+    if (Math.abs(hit.nx) > 0.92 && hit.dist > 12) return false;
     const bankMate = steerMate(hit);
     if (bankMate && (atWall || hit.dist < 14)) {
       launchBank(s, ax, az, hit, bankMate, true);
@@ -15339,6 +15425,7 @@ function settleBoardPass(): void {
     noteLooseBoardHit(vx0, vz0, vx, vz, w.nx, w.nz, vx0 * w.nx + vz0 * w.nz);
     boardBank = null;
     boardRide = null;
+    boardHitStep = true;
     return;
   }
   if (boardRide?.phase === "seek" && pressed) {
@@ -16091,12 +16178,131 @@ function oneTimerReceiver(): Skater | null {
 }
 
 /**
- * A tape one-timer ends at 2.2s. A board pass is still running into the wall
- * after that, so a shoot press made on the way in has to survive until the
- * contact window, including the moment just before the rebound.
+ * A tape one-timer ends at 2.2s. A board pass can still be live after that,
+ * until the 3s cap or a boards hit that is not itself the pass.
  */
 function boardOneTimerHeld(): boolean {
   return boardPassLoose();
+}
+
+/** Failed board one-timers drop the shoot latch after this long, even on the glass. */
+const BOARD_ONE_TIMER_CAP = 3;
+
+function boardOneTimerExpired(): boolean {
+  if (!world.oneTimerArmed) return false;
+  const start = oneTimerArmedAt >= 0 ? Math.max(world.lastPass, oneTimerArmedAt) : world.lastPass;
+  return world.time - start > BOARD_ONE_TIMER_CAP;
+}
+
+/** Drop the armed one-timer. clearUntil also kills the pass window so a later shot is not one. */
+function cancelArmedOneTimer(clearUntil: boolean): void {
+  world.oneTimerArmed = false;
+  world.oneTimerSlap = false;
+  world.oneTimerPass = false;
+  world.oneTimerSaucer = false;
+  oneTimerArmedAt = -1;
+  oneTimerShotLatched = true;
+  oneTimerRearmOpen = true;
+  bankOtFirst = -1;
+  if (clearUntil) world.oneTimerUntil = -10;
+}
+
+/** The puck from this pass is still loose, so a new X press may arm again. */
+function oneTimerRearmLive(): boolean {
+  if (!oneTimerRearmOpen || world.oneTimerArmed) return false;
+  if (world.puck.owner !== null) return false;
+  if (world.lastShoot >= world.lastPass) return false;
+  if (world.goalieSaveT >= world.lastPass || world.lastHitTime >= world.lastPass) return false;
+  const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : null;
+  return !!passer && passer.side === "home";
+}
+
+function expireArmedOneTimer(): void {
+  if (!boardOneTimerExpired()) return;
+  cancelArmedOneTimer(true);
+}
+
+/**
+ * A new press arms the one-timer. Holding X does not refresh the 3s clock,
+ * and it does not re-arm after a boards miss until the button comes up.
+ * A rising edge still arms on that same frame.
+ */
+function armUserOneTimer(): void {
+  if (oneTimerShotLatched) return;
+  const rearm = oneTimerRearmOpen && !world.oneTimerArmed;
+  const first = !world.oneTimerArmed || oneTimerArmedAt < 0;
+  world.oneTimerArmed = true;
+  world.oneTimerPass = false;
+  world.oneTimerSaucer = false;
+  if (first) oneTimerArmedAt = world.time;
+  if (rearm) {
+    world.oneTimerUntil = world.time + 2.2;
+    oneTimerRearmOpen = false;
+  }
+}
+
+/**
+ * After the boards step. A rim that is still riding, a bank or carom that
+ * is still that pass, or a fast puck that stays on the wall keeps the latch.
+ * A bounce that ends the ride, or a tape pass that only hit the glass, does not.
+ */
+function boardOneTimerStillLive(): boolean {
+  if (boardRide || boardBank) return true;
+  if (!boardPassLoose()) return false;
+  if (ridingWall(boardVelocity(world.puck))) return true;
+  return boardPassIntent === "bank" || boardPassIntent === "carom";
+}
+
+function cancelOneTimerIfBoardMissed(): void {
+  if (!boardHitStep || !world.oneTimerArmed) return;
+  if (boardOneTimerStillLive()) return;
+  cancelArmedOneTimer(true);
+}
+
+let boardOtChaseFrame = Number.NaN;
+let boardOtChaseId = -1;
+
+/**
+ * Who should still skate at a live board one-timer.
+ * The named receiver keeps going after the 2.2s tape clock.
+ * An unnamed rim already has the rail chaser. If that selector found
+ * nobody, the nearest home skater goes so the puck is not ignored.
+ */
+function boardOneTimerChaseId(): number {
+  if (boardOtChaseFrame === world.time) return boardOtChaseId;
+  boardOtChaseFrame = world.time;
+  boardOtChaseId = -1;
+  if (!world.oneTimerArmed || !boardPassLoose() || boardOneTimerExpired()) return -1;
+  const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : undefined;
+  if (!passer || passer.side !== "home") return -1;
+  if (world.lastPassTo !== null) {
+    const t = world.skaters[world.lastPassTo];
+    if (
+      t &&
+      t.side === "home" &&
+      t.kind !== "goalie" &&
+      t.id !== passer.id &&
+      t.id !== world.userId
+    ) {
+      boardOtChaseId = t.id;
+    }
+    return boardOtChaseId;
+  }
+  if (selectedRailChaser() >= 0) return -1;
+  const puck = world.puck;
+  let best = -1;
+  let bestD = Infinity;
+  for (const s of world.skaters) {
+    if (s.side !== "home" || s.kind === "goalie" || s.id === world.userId || s.id === passer.id) continue;
+    if (!cpuCanChase(s)) continue;
+    const d = Math.hypot(s.x - puck.x, s.z - puck.z);
+    if (d < bestD - 0.001 || (Math.abs(d - bestD) <= 0.001 && (best < 0 || s.id < best))) {
+      bestD = d;
+      best = s.id;
+    }
+  }
+  boardOtChaseId = best;
+  return best;
 }
 
 function userPassInFlight(): boolean {
@@ -16112,11 +16318,14 @@ function userPassInFlight(): boolean {
 
 function tryFireArmedOneTimer(): void {
   if (periodEndLive()) return;
+  expireArmedOneTimer();
   if (!world.oneTimerArmed) return;
   if (world.time - world.lastShoot < 0.08) return;
   const t = oneTimerReceiver();
   if (!t) {
-    if (world.time - world.lastPass > 2.2 && !boardOneTimerHeld()) {
+    const sinceArm = oneTimerArmedAt >= 0 ? world.time - oneTimerArmedAt : world.time - world.lastPass;
+    // A press after the tape clock is a new attempt. Do not drop it on the same frame.
+    if (world.time - world.lastPass > 2.2 && sinceArm > 2.2 && !boardOneTimerHeld()) {
       world.oneTimerArmed = false;
       world.oneTimerSlap = false;
       world.oneTimerPass = false;
@@ -20015,12 +20224,14 @@ function containPuckBoards(puck: Puck): boolean {
     // A loose pass records the hit. Only a real turn becomes a bank.
     if (puck === world.puck && puck.owner === null) {
       noteLooseBoardHit(vx0, vz0, puck.vx, puck.vz, hit.nx, hit.nz, vn);
+      boardHitStep = true;
     }
   } else if (vn > 0) {
     puck.vx -= vn * hit.nx;
     puck.vz -= vn * hit.nz;
     if (puck === world.puck && puck.owner === null && !pressed) {
       noteLooseBoardHit(vx0, vz0, puck.vx, puck.vz, hit.nx, hit.nz, vn);
+      boardHitStep = true;
     }
   }
   boardPress.set(puck, { nx: hit.nx, nz: hit.nz });
@@ -20031,6 +20242,13 @@ function containPuckBoards(puck: Puck): boolean {
       const pop = Math.min(2.6, room * 1.35);
       if (puck.vy < pop) puck.vy = pop;
     }
+  }
+  // The long clear may leave. Every other saucer has to come down inside the rink.
+  if (!sauceMayLeave && useGame.getState().shotKind === "saucer" && puck.vy > 0) {
+    const top = wallTop(hit.nx, hit.nz, hit.x, hit.z);
+    const g = sauceLandCharge >= 0.999 ? SAUCE_GRAV : 12;
+    const room = top - 0.35 - puck.y;
+    puck.vy = room <= 0 ? 0 : Math.min(puck.vy, Math.sqrt(2 * g * room));
   }
   const again = resolveRink(puck.x, puck.z, 0.09);
   if (again.hit && puck.y <= wallTop(again.nx, again.nz, again.x, again.z)) {
@@ -23124,10 +23342,14 @@ function noteUserPossession(nextOwner: number | null): void {
  * Pass Snap's named target, when there is one, is the only skater checked.
  */
 function tryArmedBoardOneTimer(puck: Puck, prevX: number, prevZ: number): boolean {
+  if (boardOneTimerExpired()) {
+    cancelArmedOneTimer(true);
+    return false;
+  }
   if (!world.oneTimerArmed || world.oneTimerPass) return false;
   if (periodEndLive() || world.time - world.lastShoot < 0.05) return false;
   const sincePass = world.time - world.lastPass;
-  // boardPassLoose keeps this pass alive past the 2.2s tape clock.
+  // A live board pass outlives the 2.2s tape clock. The 3s cap is separate.
   if (sincePass < 0.04) return false;
   if (
     !(
@@ -23161,11 +23383,14 @@ function tryArmedBoardOneTimer(puck: Puck, prevX: number, prevZ: number): boolea
   }
 
   const named = world.lastPassTo;
+  const bankOnly = boardPassIntent === "bank" && bankOtFirst >= 0 ? bankOtFirst : null;
   let best: Skater | null = null;
   let bestLat = Infinity;
   for (const s of world.skaters) {
     if (s.side !== "home" || s.kind === "goalie" || s.id === passer.id) continue;
-    if (named !== null && s.id !== named) continue;
+    if (bankOnly !== null) {
+      if (s.id !== bankOnly) continue;
+    } else if (named !== null && s.id !== named) continue;
     if (dekeCommitBlocks(s.id) || s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) continue;
     const blade = stickBlade(s);
     const distPath = Math.min(
@@ -23174,9 +23399,14 @@ function tryArmedBoardOneTimer(puck: Puck, prevX: number, prevZ: number): boolea
     );
     const along = (s.x - puck.x) * ux + (s.z - puck.z) * uz;
     const lat = Math.hypot(s.x - puck.x - ux * along, s.z - puck.z - uz * along);
-    // One stick length off the rail, and only while the puck is beside the
-    // body or about to reach it. Not a full-ice intercept.
-    const inLane = lat <= SKATER_STICK_LEN && along >= -(s.radius + 0.08) && along <= SKATER_STICK_LEN;
+    // On a live rail the catch stands about 1.15 m off the glass, and the
+    // puck arrives a step before it is beside the body. Off the rail the
+    // old stick-length window stays. Neither path re-arms a cleared latch.
+    const onRail = !!boardRide || nearestBoards(puck.x, puck.z).dist <= 1.6;
+    const latMax = onRail ? 1.75 : SKATER_STICK_LEN;
+    const alongBack = onRail ? s.radius + 0.55 : s.radius + 0.08;
+    const alongFront = onRail ? 2.05 : SKATER_STICK_LEN;
+    const inLane = lat <= latMax && along >= -alongBack && along <= alongFront;
     if (!(distPath < 0.55 || inLane)) continue;
     if (lat < bestLat) {
       bestLat = lat;
@@ -23202,10 +23432,15 @@ function tryArmedBoardOneTimer(puck: Puck, prevX: number, prevZ: number): boolea
  * so the 0.55 m plate test never sees that arrival. Short window only.
  */
 function tryArmedReceiverOneTimer(puck: Puck, prevX: number, prevZ: number): boolean {
-  if (!world.oneTimerArmed || world.oneTimerPass || world.lastPassTo === null) return false;
+  const bankFirst = boardPassIntent === "bank" && bankOtFirst >= 0 ? world.skaters[bankOtFirst] : undefined;
+  const named = world.lastPassTo !== null ? world.skaters[world.lastPassTo] : undefined;
+  if (!world.oneTimerArmed || world.oneTimerPass || (!bankFirst && !named)) return false;
   if (periodEndLive() || world.time - world.lastShoot < 0.05) return false;
   const sincePass = world.time - world.lastPass;
-  if (sincePass < 0.04 || sincePass > 2.2 || puck.y >= 0.55) return false;
+  const sinceArm = oneTimerArmedAt >= 0 ? world.time - oneTimerArmedAt : sincePass;
+  // A new press after a miss keeps this window open. An old pass with an old arm does not.
+  if (sincePass < 0.04 || puck.y >= 0.55) return false;
+  if (sincePass > 2.2 && sinceArm > 2.2) return false;
   if (
     !(
       world.lastShoot < world.lastPass &&
@@ -23216,7 +23451,7 @@ function tryArmedReceiverOneTimer(puck: Puck, prevX: number, prevZ: number): boo
     return false;
   }
   const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : null;
-  const s = world.skaters[world.lastPassTo];
+  const s = bankFirst ?? named;
   if (!passer || passer.side !== "home" || !s) return false;
   if (s.side !== "home" || s.kind === "goalie" || s.id === passer.id) return false;
   if (dekeCommitBlocks(s.id) || s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) return false;
@@ -23256,6 +23491,190 @@ function tryArmedReceiverOneTimer(puck: Puck, prevX: number, prevZ: number): boo
   return true;
 }
 
+/**
+ * Named open-ice one-timer. The meet window is the same one tryArmedReceiverOneTimer
+ * uses. Approaching, or still inside that window, is not a miss. Past the body,
+ * or past the 2.2s tape clock, the attempt is over. A live board pass is not this.
+ */
+let bankOtFirst = -1;
+let bankOtPass = Number.NaN;
+
+/** Live banks set this from launchBank. Tests use the same mark. */
+export function setBoardPassIntent(kind: "rim" | "bank" | "carom" | null): void {
+  boardPassIntent = kind;
+}
+
+function puckTravelDir(puck: Puck, prevX: number, prevZ: number): { ux: number; uz: number } | null {
+  const stepX = puck.x - prevX;
+  const stepZ = puck.z - prevZ;
+  const step = Math.hypot(stepX, stepZ);
+  if (step > 0.02) return { ux: stepX / step, uz: stepZ / step };
+  const sp = Math.hypot(puck.vx, puck.vz);
+  if (sp > 0.5) return { ux: puck.vx / sp, uz: puck.vz / sp };
+  return null;
+}
+
+/**
+ * First home teammate a bank has actually reached. Locked for this pass so a
+ * later skater cannot inherit the one-timer.
+ */
+function noteBankOneTimerFirst(puck: Puck, prevX: number, prevZ: number): number {
+  if (boardPassIntent !== "bank" || !world.oneTimerArmed) return -1;
+  if (bankOtPass !== world.lastPass) {
+    bankOtPass = world.lastPass;
+    bankOtFirst = -1;
+  }
+  if (bankOtFirst >= 0) return bankOtFirst;
+  const dir = puckTravelDir(puck, prevX, prevZ);
+  if (!dir) return -1;
+  const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : null;
+  if (!passer || passer.side !== "home") return -1;
+  let best: Skater | null = null;
+  let bestAlong = Infinity;
+  for (const s of world.skaters) {
+    if (s.side !== "home" || s.kind === "goalie" || s.id === passer.id) continue;
+    if (dekeCommitBlocks(s.id) || s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) continue;
+    const along = (s.x - puck.x) * dir.ux + (s.z - puck.z) * dir.uz;
+    const lat = Math.hypot(s.x - puck.x - dir.ux * along, s.z - puck.z - dir.uz * along);
+    const bodyPath = Math.min(
+      Math.hypot(s.x - puck.x, s.z - puck.z),
+      segmentPointDist(prevX, prevZ, puck.x, puck.z, s.x, s.z),
+    );
+    const inWindow = lat <= 0.85 && along <= SKATER_STICK_LEN && along >= -(s.radius + 0.08);
+    if (!(bodyPath <= 1.25 || inWindow) || along < -(s.radius + 0.55)) continue;
+    const sooner = !best || along < bestAlong - 0.05;
+    const tiedNamed = !!best && Math.abs(along - bestAlong) <= 0.05 && s.id === world.lastPassTo;
+    if (sooner || tiedNamed) {
+      best = s;
+      bestAlong = along;
+    }
+  }
+  if (best) bankOtFirst = best.id;
+  return bankOtFirst;
+}
+
+function grantOneTimerFallback(s: Skater): void {
+  const blade = stickBlade(s);
+  const puck = world.puck;
+  noteUserPossession(s.id);
+  puck.owner = s.id;
+  puck.x = blade.x;
+  puck.z = blade.z;
+  puck.y = PUCK_Y;
+  puck.vx = s.vx;
+  puck.vz = s.vz;
+  puck.vy = 0;
+  noteControl(s, "receive");
+  noteChainReception(s);
+  cancelArmedOneTimer(true);
+}
+
+/**
+ * Bank only. The first teammate the puck reaches one-times on the existing
+ * window. If that miss is real, they take the puck and the arm ends.
+ */
+function settleBankOneTimerReceiver(puck: Puck, prevX: number, prevZ: number): boolean {
+  if (boardPassIntent !== "bank" || !world.oneTimerArmed || world.oneTimerPass) return false;
+  if (world.lastShotOneTimer && world.lastShoot === world.time) return false;
+  const id = noteBankOneTimerFirst(puck, prevX, prevZ);
+  if (id < 0) return false;
+  const s = world.skaters[id];
+  if (!s || dekeCommitBlocks(s.id) || s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) return false;
+  const dir = puckTravelDir(puck, prevX, prevZ);
+  if (!dir) return false;
+  const along = (s.x - puck.x) * dir.ux + (s.z - puck.z) * dir.uz;
+  const lat = Math.hypot(s.x - puck.x - dir.ux * along, s.z - puck.z - dir.uz * along);
+  const blade = stickBlade(s);
+  const distPath = Math.min(
+    Math.hypot(blade.x - puck.x, blade.z - puck.z),
+    segmentPointDist(prevX, prevZ, puck.x, puck.z, blade.x, blade.z),
+  );
+  const bodyPath = Math.min(
+    Math.hypot(s.x - puck.x, s.z - puck.z),
+    segmentPointDist(prevX, prevZ, puck.x, puck.z, s.x, s.z),
+  );
+  const yOk = puck.y < 0.55;
+  let meet = yOk && distPath < 0.55;
+  if (!meet && yOk && lat <= 0.85 && along >= -(s.radius + 0.08) && along <= SKATER_STICK_LEN) {
+    meet = lat <= 0.45;
+    if (!meet) {
+      const { fx, fz } = heading(s.yaw);
+      const ahead = (puck.x - s.x) * fx + (puck.z - s.z) * fz;
+      meet = ahead >= -0.08;
+    }
+  }
+  const nearWall = nearestBoards(puck.x, puck.z).dist <= 2.2;
+  if (!meet && yOk && nearWall && lat <= 1.75 && along >= -(s.radius + 0.55) && along <= 2.05) {
+    meet = true;
+  }
+  if (meet) {
+    const x = puck.x;
+    const z = puck.z;
+    const y = puck.y;
+    fireOneTimer(s);
+    if (world.lastShotOneTimer && world.lastShoot === world.time) {
+      puck.x = x;
+      puck.z = z;
+      puck.y = y;
+      return true;
+    }
+  }
+  if (yOk && bodyPath <= 1.25 && along <= SKATER_STICK_LEN) {
+    grantOneTimerFallback(s);
+    return true;
+  }
+  if (along < -(s.radius + 0.55)) cancelArmedOneTimer(true);
+  return false;
+}
+
+function cancelOneTimerIfOpenIceMissed(puck: Puck, prevX: number, prevZ: number): void {
+  if (!world.oneTimerArmed || world.oneTimerPass || world.lastPassTo === null) return;
+  if (boardPassLoose()) return;
+  if (periodEndLive()) return;
+  const sincePass = world.time - world.lastPass;
+  if (sincePass < 0.04) return;
+  if (
+    !(
+      world.lastShoot < world.lastPass &&
+      world.goalieSaveT < world.lastPass &&
+      world.lastHitTime < world.lastPass
+    )
+  ) {
+    return;
+  }
+  const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : null;
+  const s = world.skaters[world.lastPassTo];
+  if (!passer || passer.side !== "home" || !s) return;
+  if (s.side !== "home" || s.kind === "goalie" || s.id === passer.id) return;
+  const sinceArm = oneTimerArmedAt >= 0 ? world.time - oneTimerArmedAt : sincePass;
+  if (sincePass > 2.2 && sinceArm > 2.2) {
+    cancelArmedOneTimer(true);
+    return;
+  }
+  const stepX = puck.x - prevX;
+  const stepZ = puck.z - prevZ;
+  const step = Math.hypot(stepX, stepZ);
+  let ux = 0;
+  let uz = 0;
+  if (step > 0.02) {
+    ux = stepX / step;
+    uz = stepZ / step;
+  } else {
+    const sp = Math.hypot(puck.vx, puck.vz);
+    if (sp > 0.5) {
+      ux = puck.vx / sp;
+      uz = puck.vz / sp;
+    }
+  }
+  // No travel yet. The clock above is the only fail.
+  if (ux === 0 && uz === 0) return;
+  const along = (s.x - puck.x) * ux + (s.z - puck.z) * uz;
+  // Still in front of the back edge of the meet window, including a wide
+  // approach that has not gone past the body. Do not clear.
+  if (along >= -(s.radius + 0.08)) return;
+  cancelArmedOneTimer(true);
+}
+
 /** A buffered shoot holds the catch for the one-timer. A puck in the body still sticks. */
 function armedShootBlocksCatch(s: Skater, puck: Puck, prevX: number, prevZ: number, sincePass: number): boolean {
   if (!world.oneTimerArmed || s.side !== "home") return false;
@@ -23277,7 +23696,9 @@ function armedShootBlocksCatch(s: Skater, puck: Puck, prevX: number, prevZ: numb
 
 function tryPickup(puck: Puck, prevX = puck.x, prevZ = puck.z): void {
   if (periodEndLive()) return;
+  expireArmedOneTimer();
   if (world.time < stickLooseUntil) return;
+  noteBankOneTimerFirst(puck, prevX, prevZ);
   const intended = world.lastPassTo;
   const passer = world.lastPasser;
   const sincePass = world.time - world.lastPass;
@@ -23377,7 +23798,8 @@ function tryPickup(puck: Puck, prevX = puck.x, prevZ = puck.z): void {
         // 3 m away and park the puck on the blade in one frame. The plain catch
         // used the same reach, so the next frame shot from that parked spot.
         const stickMeet = distPath < 0.55 && puck.y < 0.55;
-        if (!tooEarly && stickMeet && world.oneTimerArmed && t.side === "home") {
+        const bankOwns = boardPassIntent === "bank" && bankOtFirst >= 0 && bankOtFirst !== t.id;
+        if (!bankOwns && !tooEarly && stickMeet && world.oneTimerArmed && t.side === "home") {
           const x = puck.x;
           const z = puck.z;
           const y = puck.y;
@@ -23425,11 +23847,17 @@ function tryPickup(puck: Puck, prevX = puck.x, prevZ = puck.z): void {
   }
 
   // Named receiver first, then a rim with nobody named. Neither parks the puck.
+  // A bank already locked the first teammate the puck reached, above.
   if (tryArmedReceiverOneTimer(puck, prevX, prevZ)) return;
+  // The named open-ice attempt is over once the puck is past that window.
+  // A live board pass keeps its own cancel. Clearing here is what stops the
+  // next teammate from inheriting the shot.
+  cancelOneTimerIfOpenIceMissed(puck, prevX, prevZ);
   // A rim leaves lastPassTo empty, and a buffered shoot then skips every home
   // catch, so a stick on the rail never fires. This lane is only that shot.
   // It does not widen ordinary possession.
   if (tryArmedBoardOneTimer(puck, prevX, prevZ)) return;
+  if (settleBankOneTimerReceiver(puck, prevX, prevZ)) return;
 
   if (puck.y > 1.18) return;
   const moving = Math.hypot(puck.vx, puck.vz);
@@ -24224,6 +24652,7 @@ function stepPuck(dt: number): void {
     return;
   }
 
+  boardHitStep = false;
   stepRimRide();
   const prevX = puck.x;
   const prevZ = puck.z;
@@ -24317,6 +24746,7 @@ function stepPuck(dt: number): void {
   maybeCreaseDeflect(puck);
   settleBoardPass();
   if (boardRide?.phase === "glide") placeOnWall(boardRide.dir, boardRide.speed);
+  cancelOneTimerIfBoardMissed();
   rejectPuckYank(puck, prevX, prevZ);
   maybeRedirect(puck);
 
@@ -30201,6 +30631,11 @@ function stepPlay(dt: number, act: Actions): void {
     user.windup = 0;
   }
   const pokePressShot = blockShotFromPokePress(act);
+  // The cap runs before either arm site. A held X does not start a new clock.
+  // A fresh edge, or a button that is already up, may arm again.
+  expireArmedOneTimer();
+  if (act.xEdge || act.xTap) oneTimerShotLatched = false;
+  else if (!act.xDown && !act.xHeld && !act.xHoldRel) oneTimerShotLatched = false;
   if ((!periodEndLive() || periodEndUserPlay) && hasPuck) {
     if (user.kind === "goalie") {
       const aim = shotAim(act);
@@ -30233,9 +30668,7 @@ function stepPlay(dt: number, act: Actions): void {
         passedThis = true;
       }
       if (passedThis && (act.xDown || act.xEdge || act.xTap || act.xHeld || act.xHoldRel)) {
-        world.oneTimerArmed = true;
-        world.oneTimerPass = false;
-        world.oneTimerSaucer = false;
+        armUserOneTimer();
       }
       const snapped = !passedThis && !pokePressShot && tryReboundSnap(user, act);
       const shotWait = ui.clockMode === "drill" ? 0.02 : 0.25;
@@ -30330,11 +30763,9 @@ function stepPlay(dt: number, act: Actions): void {
       changePlayer();
     }
     const shotArm = xGo;
-    if (user.kind !== "goalie" && userPassInFlight() && shotArm) {
-      world.oneTimerArmed = true;
-      world.oneTimerPass = false;
-      world.oneTimerSaucer = false;
-      user.poke = 0;
+    if (user.kind !== "goalie" && (userPassInFlight() || oneTimerRearmLive()) && shotArm) {
+      armUserOneTimer();
+      if (world.oneTimerArmed) user.poke = 0;
     } else if (!pokePressShot && tryReboundSnap(user, act)) {
       user.poke = 0;
     } else if (
