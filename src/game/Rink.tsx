@@ -7,7 +7,7 @@ import {
   createIceTextures,
   createNetTexture,
 } from "./iceTexture";
-import centerIceUrl from "../../logo-center-ice.png";
+import { resolveIceLogoUrl } from "./logoLibrary";
 import {
   BLUE_LINE_W,
   BLUE_X,
@@ -222,16 +222,18 @@ function centerLogoTexture(img: HTMLImageElement, zoom: number): THREE.CanvasTex
   return tex;
 }
 
-function CenterIceLogo() {
-  const centerIceLogo = useGame((s) => s.centerIceLogo);
-  const centerIceLogoZoom = useGame((s) => s.centerIceLogoZoom);
+function useIceLogoUrl(): string | null {
+  const mode = useGame((s) => s.centerIceLogo);
+  const homeKit = useGame((s) => s.homeKit);
   const customLogoDataUrl = useGame((s) => s.customLogoDataUrl);
-  const src =
-    centerIceLogo === "off"
-      ? null
-      : centerIceLogo === "custom" && customLogoDataUrl
-        ? customLogoDataUrl
-        : centerIceUrl;
+  useGame((s) => s.logoLibraryRev);
+  return resolveIceLogoUrl(mode, homeKit, customLogoDataUrl);
+}
+
+function CenterIceLogo() {
+  const centerIceLogoZoom = useGame((s) => s.centerIceLogoZoom);
+  const logoLibraryRev = useGame((s) => s.logoLibraryRev);
+  const src = useIceLogoUrl();
   const mat = useMemo(
     () =>
       new THREE.MeshBasicMaterial({
@@ -271,7 +273,7 @@ function CenterIceLogo() {
     return () => {
       alive = false;
     };
-  }, [mat, src, centerIceLogoZoom]);
+  }, [mat, src, centerIceLogoZoom, logoLibraryRev]);
   useLayoutEffect(
     () => () => {
       mat.map?.dispose();
@@ -280,7 +282,7 @@ function CenterIceLogo() {
     },
     [mat],
   );
-  if (centerIceLogo === "off") return null;
+  if (!src) return null;
   return (
     <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={1}>
       <circleGeometry args={[FACEOFF_MARK_R, 64]} />
@@ -310,7 +312,7 @@ function FaceoffCircles() {
   const map = useMemo(() => createFaceoffDotTexture(), []);
   useLayoutEffect(() => () => map.dispose(), [map]);
   const roller = useGame((s) => s.clockMode) === "roller";
-  const centerIceLogo = useGame((s) => s.centerIceLogo);
+  const iceLogo = useIceLogoUrl();
   const dots: readonly (readonly [number, number])[] = roller
     ? [
         [FACEOFF_EZ_X, FACEOFF_SPOT_Z],
@@ -330,7 +332,7 @@ function FaceoffCircles() {
       ];
   return (
     <group>
-      {centerIceLogo === "off" ? null : <CenterIceLogo />}
+      {iceLogo ? <CenterIceLogo /> : null}
       <CenterLogoGaps />
       <CenterIceDot />
       <FaceoffCircle x={0} z={0} r={FACEOFF_MARK_R} />
@@ -404,7 +406,7 @@ function Crease({ side }: { side: 1 | -1 }) {
 }
 
 function CenterRedLine() {
-  const gap = useGame((s) => s.centerIceLogo) !== "off";
+  const gap = useIceLogoUrl() !== null;
   if (!gap) return <IceStripe x={0} color={LINE_RED} width={CENTER_LINE_W} />;
   const halfW = CENTER_LINE_W / 2;
   const crest = Math.sqrt(Math.max(0, FACEOFF_MARK_R * FACEOFF_MARK_R - halfW * halfW));
@@ -855,8 +857,7 @@ export function Rink() {
   const awayWorn = kitWornColors(away);
   const showBlue = clockMode !== "roller";
   const nzDots = clockMode !== "roller";
-  const centerIceLogo = useGame((s) => s.centerIceLogo);
-  const gapCenterLine = centerIceLogo !== "off";
+  const gapCenterLine = useIceLogoUrl() !== null;
 
   const ice = useMemo(
     () => createIceTextures(showBlue, nzDots, gapCenterLine),

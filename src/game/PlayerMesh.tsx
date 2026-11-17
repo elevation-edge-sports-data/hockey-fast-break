@@ -6,6 +6,7 @@ import { attackDir, burstPoseWeight, checkedCyclePose, defendDir, drillFade, fac
 import { GOALIE_BUTTERFLY_BLADE_LEAD, GOALIE_ICE_CENTER_Z, GOALIE_PADDLE_T, GOALIE_PADDLE_W, GOALIE_STICK_LEN, GOALIE_Z, GOALIE_Z_BLADE_LEAD, bodyToLocal, bodyToWorld, goalieIceGeo, goalieIceHeel, layoutGoalieStick, placeGoalieIceMesh, poseGoalieButterflyArms, poseGoalieButterflyLimbs, poseGoalieHand, poseGoalieButterflyStanceLimbs, poseGoaliePlay, poseGoalieZArms, poseGoalieZLimbs, posedBody, torsoPivotY, torsoPlacedY } from "./goalieStance";
 import { SKATER_GRIP_BOT, SKATER_GRIP_TOP, SKATER_STICK_LEN, SKATER_TAPE_Z0, SKATER_TAPE_Z1, burstCarryStickAim, carryStickAim, dekePull, dekeStickAim, neutralCarryBlend, neutralCarryStickAim, shotStickAim, skaterBladeCurveX, skaterBladeLiePoint, skillCarryStickAim, stickFrame, type StickAim } from "./stickSide";
 import { kitById, type UniformKit } from "./uniforms";
+import { resolveJerseyCrestUrl } from "./logoLibrary";
 import { useGame } from "./store";
 import { BLUE_X, GOAL_H, GOAL_LINE_X } from "./rink";
 import { applyPoseJoints, DEBUG_POSE_FALLBACK, namedPoseFor, poseHasJoint, stampPoseOverride, type PoseJointId } from "./poseOverrides";
@@ -587,6 +588,104 @@ function BackNumber({
     };
   }, [material]);
   return <mesh ref={mesh} geometry={numPlane} material={material} position={position} rotation={[0, Math.PI, 0]} />;
+}
+
+const crestGeo = new THREE.PlaneGeometry(0.16, 0.16);
+/** Jersey box depth is 0.24, so the chest face is local +Z at 0.12. */
+const CREST_Z = 0.122;
+const CREST_Y_LIFT = 0.04;
+
+function jerseyCrestTexture(img: HTMLImageElement): THREE.CanvasTexture {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("jersey crest canvas");
+  ctx.clearRect(0, 0, size, size);
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  if (iw > 0 && ih > 0) {
+    const fit = Math.min(size / iw, size / ih);
+    const dw = iw * fit;
+    const dh = ih * fit;
+    ctx.drawImage(img, (size - dw) / 2, (size - dh) / 2, dw, dh);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** Chest is +Z. The back number is this same plane turned to face -Z. */
+function JerseyCrest({ kitId, y }: { kitId: number; y: number }) {
+  const rev = useGame((s) => s.logoLibraryRev);
+  const homeKit = useGame((s) => s.homeKit);
+  const awayKit = useGame((s) => s.awayKit);
+  const off = useGame((s) => s.jerseyLogoOff);
+  const folderMode = useGame((s) => s.jerseyFolderMode);
+  const homeCustomMode = useGame((s) => s.jerseyCustomHomeMode);
+  const awayCustomMode = useGame((s) => s.jerseyCustomAwayMode);
+  const zoom = useGame((s) => s.jerseyLogoZoom);
+  const url = resolveJerseyCrestUrl(kitId, homeKit, awayKit, off, folderMode, homeCustomMode, awayCustomMode);
+  const mat = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        transparent: true,
+        alphaTest: 0.05,
+        depthWrite: false,
+        toneMapped: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      }),
+    [],
+  );
+  useLayoutEffect(() => {
+    let alive = true;
+    if (!url) {
+      const prev = mat.map;
+      mat.map = null;
+      mat.needsUpdate = true;
+      prev?.dispose();
+      return () => {
+        alive = false;
+      };
+    }
+    const img = new Image();
+    img.onload = () => {
+      if (!alive) return;
+      const tex = jerseyCrestTexture(img);
+      const prev = mat.map;
+      mat.map = tex;
+      mat.needsUpdate = true;
+      if (prev && prev !== tex) prev.dispose();
+    };
+    img.onerror = () => {
+      if (!alive) return;
+      const prev = mat.map;
+      mat.map = null;
+      mat.needsUpdate = true;
+      prev?.dispose();
+    };
+    img.src = url;
+    return () => {
+      alive = false;
+    };
+  }, [mat, url, rev]);
+  useLayoutEffect(
+    () => () => {
+      mat.map?.dispose();
+      mat.map = null;
+      mat.dispose();
+    },
+    [mat],
+  );
+  if (!url) return null;
+  return (
+    <mesh geometry={crestGeo} material={mat} position={[0, y, CREST_Z]} scale={[zoom, zoom, 1]} renderOrder={2} />
+  );
 }
 const shadowGeo = new THREE.CircleGeometry(0.42, 16);
 const puckDiscGeo = new THREE.CircleGeometry(PUCK_MARK_INNER, 28);
@@ -5691,6 +5790,7 @@ export function PlayerMesh({
         <group ref={torso} name="torso" position={[0, torsoShift, 0]}>
         <mesh geometry={torsoGeo} material={mats.jersey} position={[0, 1.116 - torsoShift, 0]} scale={[1, 0.75, 1]} castShadow />
         <BackNumber material={mats.number} position={[0, 1.24 - torsoDrop - torsoShift, -0.13]} />
+        <JerseyCrest kitId={liveKitId} y={torsoMeshCenterY(liveKitId, false) + CREST_Y_LIFT - torsoShift} />
 
         <group ref={shoulders} name="shoulders" position={[0, 1.45 - torsoDrop - torsoShift, 0]}>
         <group name="shoulderFrame" position={[0, -1.45, 0]}>
@@ -6170,6 +6270,7 @@ export function SeatedPlayer({
         <group ref={torso} name="torso" position={[0, torsoShift, 0]}>
         <mesh geometry={torsoGeo} material={mats.jersey} position={[0, 0.456 - torsoShift, 0]} scale={[1, 0.75, 1]} castShadow />
         <BackNumber material={mats.number} position={[0, 0.58 - torsoDrop - torsoShift, -0.13]} />
+        <JerseyCrest kitId={kit.id} y={torsoMeshCenterY(kit.id, true) + CREST_Y_LIFT - torsoShift} />
 
         <group ref={shoulders} name="shoulders" position={[0, 0.8 - torsoDrop - torsoShift, 0.02]}>
         <group name="shoulderFrame" position={[0, -0.8, -0.02]}>

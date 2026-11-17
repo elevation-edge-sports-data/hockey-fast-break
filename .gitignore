@@ -75,3 +75,6 @@ public/function-viewer.html
 # Only the five public pose keys are safe to commit. A fresh checkout can copy
 # src/game/poseOverrides.example.json to src/game/poseOverrides.json.
 src/game/poseOverrides.json
+
+# Local official logos. Dev server only. Never commit.
+/private-logos/

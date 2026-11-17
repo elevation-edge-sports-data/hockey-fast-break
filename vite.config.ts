@@ -1,4 +1,6 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
+import { privateLogoRel } from "./src/game/zipLogos.ts";
+import { UNIFORMS } from "./src/game/uniforms.ts";
 // @ts-expect-error JS helper alongside the TS vite config
 import { deleteFormationFile, saveFormationFile } from "./scripts/formation-save.mjs";
 // @ts-expect-error JS helper alongside the TS vite config
@@ -110,6 +112,47 @@ function formationsSavePlugin(): Plugin {
   };
 }
 
+function privateLogosPlugin(): Plugin {
+  return {
+    name: "hfb-private-logos",
+    apply: "serve",
+    configureServer(server) {
+      const root = join(server.config.root, "private-logos", "logos");
+      server.middlewares.use((req, res, next) => {
+        try {
+          const rel = privateLogoRel(req.url ?? "", UNIFORMS.length);
+          if (rel === null) {
+            const pathOnly = (req.url ?? "").split("?", 1)[0] ?? "";
+            if (pathOnly === "/__private-logos" || pathOnly.startsWith("/__private-logos/")) {
+              res.statusCode = 404;
+              res.end("not found");
+              return;
+            }
+            next();
+            return;
+          }
+          const file = join(root, rel);
+          const fromRoot = relative(root, file);
+          if (fromRoot.startsWith("..") || isAbsolute(fromRoot) || !existsSync(file) || !statSync(file).isFile()) {
+            res.statusCode = 404;
+            res.end("not found");
+            return;
+          }
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "image/png");
+          if (req.method === "HEAD") {
+            res.end();
+            return;
+          }
+          createReadStream(file).pipe(res);
+        } catch {
+          next();
+        }
+      });
+    },
+  };
+}
+
 function versionArchivePlugin(): Plugin {
   return {
     name: "hfb-version-archive",
@@ -165,6 +208,7 @@ export default defineConfig(({ command, isPreview }) => ({
   },
   resolve: { tsconfigPaths: true },
   plugins: [
+    privateLogosPlugin(),
     versionArchivePlugin(),
     formationsSavePlugin(),
     poseOverridesDataPlugin(),

@@ -3,8 +3,8 @@ import { COL_KIT, UNIFORMS } from "./uniforms";
 
 export type CamMode = "classic" | "chase" | "broadcast" | "high" | "freestyle";
 export type ArenaLook = "light" | "dark";
-/** Center-ice crest. `ee` is the Elevation Edge mark. `custom` is selectable and draws nothing yet. */
-export type CenterIceLogo = "ee" | "off" | "custom";
+/** Center-ice crest. `default` is the Elevation Edge mark. `custom` is one image for every kit. `folder` follows the home kit. */
+export type CenterIceLogo = "default" | "custom" | "folder" | "off";
 
 export type Lineup = { g: number; d: number; o: number };
 export type PlayMode = "practice" | "roller" | "scrimmage" | "game" | "drill" | "shootout";
@@ -170,12 +170,24 @@ type GameUi = {
   teamShots: TeamShots;
   quality: "high" | "low";
   arenaLook: ArenaLook;
-  /** `ee` is the Elevation Edge mark. `off` hides it. `custom` uses customLogoDataUrl, or the EE mark when that is empty. */
+  /** `default` is the Elevation Edge mark. `custom` is one image. `folder` follows the home kit. `off` hides it. */
   centerIceLogo: CenterIceLogo;
   /** Scale of the drawn mark on the ice plate. 1 fits the square. */
   centerIceLogoZoom: number;
   /** Data URL of an uploaded center-ice image. Null until the player picks a file. */
   customLogoDataUrl: string | null;
+  /** Hides every jersey crest. Saved images stay. */
+  jerseyLogoOff: boolean;
+  /** Folder pack is the active jersey source. Saved across refresh. */
+  jerseyFolderMode: boolean;
+  /** Custom home crest is the active override for the home kit. */
+  jerseyCustomHomeMode: boolean;
+  /** Custom away crest is the active override for the away kit. */
+  jerseyCustomAwayMode: boolean;
+  /** Scale of every jersey crest. 1 is the original chest size. */
+  jerseyLogoZoom: number;
+  /** Bumps when imported or private logos finish loading. Not persisted. */
+  logoLibraryRev: number;
   /** Overhead board. On unless the player turned it off. */
   jumbotronEnabled: boolean;
   pad: "Keyboard" | "Gamepad";
@@ -266,6 +278,14 @@ type GameUi = {
   setCenterIceLogo: (v: CenterIceLogo) => void;
   setCenterIceLogoZoom: (n: number) => void;
   setCustomLogoDataUrl: (v: string | null) => void;
+  setJerseyLogoOff: (v: boolean) => void;
+  setJerseyFolderMode: (v: boolean) => void;
+  setJerseyCustomHomeMode: (v: boolean) => void;
+  setJerseyCustomAwayMode: (v: boolean) => void;
+  setJerseyLogoZoom: (n: number) => void;
+  bumpLogoLibrary: () => void;
+  /** A folder import: follow the home kit. The single custom image stays stored. */
+  applyLogoImport: () => void;
   setJumbotronEnabled: (v: boolean) => void;
   setPad: (s: "Keyboard" | "Gamepad") => void;
   setHasPuck: (v: boolean) => void;
@@ -335,14 +355,20 @@ function saveLook(v: ArenaLook): void {
   }
 }
 
+/** A missing save is Default. Old `ee` is Default. Old `kit` is Folder. */
+export function normalizeCenterIceLogo(raw: string | null): CenterIceLogo {
+  if (raw === "default" || raw === "ee") return "default";
+  if (raw === "folder" || raw === "kit") return "folder";
+  if (raw === "custom" || raw === "off") return raw;
+  return "default";
+}
+
 function loadCenterIceLogo(): CenterIceLogo {
   try {
-    const raw = localStorage.getItem("hfb-center-ice-logo") ?? localStorage.getItem("hfb-ice-logo");
-    if (raw === "ee" || raw === "off" || raw === "custom") return raw;
+    return normalizeCenterIceLogo(localStorage.getItem("hfb-center-ice-logo") ?? localStorage.getItem("hfb-ice-logo"));
   } catch {
-    /* ignore */
+    return "default";
   }
-  return "ee";
 }
 
 function saveCenterIceLogo(v: CenterIceLogo): void {
@@ -378,6 +404,40 @@ function loadCenterIceLogoZoom(): number {
 function saveCenterIceLogoZoom(n: number): void {
   try {
     localStorage.setItem(CENTER_ICE_LOGO_ZOOM_KEY, String(n));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Larger than the original 0.16 m chest plane. 1 would match that old size. */
+export const JERSEY_LOGO_ZOOM_MIN = 1.75;
+export const JERSEY_LOGO_ZOOM_MAX = 2.75;
+export const JERSEY_LOGO_ZOOM_DEFAULT = 1.75;
+const JERSEY_LOGO_ZOOM_KEY = "hfb-jersey-logo-zoom";
+const JERSEY_LOGO_OFF_KEY = "hfb-jersey-logo-off";
+const JERSEY_LOGO_FOLDER_KEY = "hfb-jersey-logo-folder";
+const JERSEY_LOGO_CUSTOM_HOME_KEY = "hfb-jersey-logo-custom-home";
+const JERSEY_LOGO_CUSTOM_AWAY_KEY = "hfb-jersey-logo-custom-away";
+
+export function clampJerseyLogoZoom(n: number): number {
+  if (!Number.isFinite(n)) return JERSEY_LOGO_ZOOM_DEFAULT;
+  const clamped = Math.min(JERSEY_LOGO_ZOOM_MAX, Math.max(JERSEY_LOGO_ZOOM_MIN, n));
+  return Math.round(clamped * 100) / 100;
+}
+
+function loadJerseyLogoZoom(): number {
+  try {
+    const raw = localStorage.getItem(JERSEY_LOGO_ZOOM_KEY);
+    if (raw === null) return JERSEY_LOGO_ZOOM_DEFAULT;
+    return clampJerseyLogoZoom(Number(raw));
+  } catch {
+    return JERSEY_LOGO_ZOOM_DEFAULT;
+  }
+}
+
+function saveJerseyLogoZoom(n: number): void {
+  try {
+    localStorage.setItem(JERSEY_LOGO_ZOOM_KEY, String(n));
   } catch {
     /* ignore */
   }
@@ -943,6 +1003,12 @@ export const useGame = create<GameUi>((set, get) => ({
   centerIceLogo: loadCenterIceLogo(),
   centerIceLogoZoom: loadCenterIceLogoZoom(),
   customLogoDataUrl: loadCustomLogoDataUrl(),
+  jerseyLogoOff: loadFlag(JERSEY_LOGO_OFF_KEY, false),
+  jerseyFolderMode: loadFlag(JERSEY_LOGO_FOLDER_KEY, false),
+  jerseyCustomHomeMode: loadFlag(JERSEY_LOGO_CUSTOM_HOME_KEY, false),
+  jerseyCustomAwayMode: loadFlag(JERSEY_LOGO_CUSTOM_AWAY_KEY, false),
+  jerseyLogoZoom: loadJerseyLogoZoom(),
+  logoLibraryRev: 0,
   jumbotronEnabled: loadFlag("hfb-jumbotron", true),
   pad: "Keyboard",
   hasPuck: false,
@@ -1119,6 +1185,32 @@ export const useGame = create<GameUi>((set, get) => ({
     const next = v && v.startsWith("data:image/") ? v : null;
     saveCustomLogoDataUrl(next);
     set({ customLogoDataUrl: next });
+  },
+  setJerseyLogoOff: (v) => {
+    saveFlag(JERSEY_LOGO_OFF_KEY, v);
+    set({ jerseyLogoOff: v });
+  },
+  setJerseyFolderMode: (v) => {
+    saveFlag(JERSEY_LOGO_FOLDER_KEY, v);
+    set({ jerseyFolderMode: v });
+  },
+  setJerseyCustomHomeMode: (v) => {
+    saveFlag(JERSEY_LOGO_CUSTOM_HOME_KEY, v);
+    set({ jerseyCustomHomeMode: v });
+  },
+  setJerseyCustomAwayMode: (v) => {
+    saveFlag(JERSEY_LOGO_CUSTOM_AWAY_KEY, v);
+    set({ jerseyCustomAwayMode: v });
+  },
+  setJerseyLogoZoom: (n) => {
+    const v = clampJerseyLogoZoom(n);
+    saveJerseyLogoZoom(v);
+    set({ jerseyLogoZoom: v });
+  },
+  bumpLogoLibrary: () => set((s) => ({ logoLibraryRev: s.logoLibraryRev + 1 })),
+  applyLogoImport: () => {
+    saveCenterIceLogo("folder");
+    set((s) => ({ centerIceLogo: "folder", logoLibraryRev: s.logoLibraryRev + 1 }));
   },
   setJumbotronEnabled: (v) => {
     saveFlag("hfb-jumbotron", v);

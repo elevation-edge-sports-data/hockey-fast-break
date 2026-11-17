@@ -69,6 +69,8 @@ import {
   hudReleaseName,
   CENTER_ICE_LOGO_ZOOM_MAX,
   CENTER_ICE_LOGO_ZOOM_MIN,
+  JERSEY_LOGO_ZOOM_MAX,
+  JERSEY_LOGO_ZOOM_MIN,
   applyArmedCpuKitCycle,
   useGame,
   type CamMode,
@@ -79,6 +81,7 @@ import {
   type ShootoutRounds,
   type ShootoutResult,
 } from "./store";
+import { clearJerseyCustom, importJerseyCustom, importJerseyFileList, importLogoFileList, jerseyCustomSaved } from "./logoLibrary";
 import { FormationKits } from "./FormationKits";
 import { kitById, kitIconColors, type UniformKit } from "./uniforms";
 
@@ -764,7 +767,7 @@ function ClockSetup() {
 }
 
 type MenuId = "controller" | "gameplay" | "camera" | "rink";
-type RinkSubId = "brightness" | "logo";
+type RinkSubId = "brightness" | "logo" | "jersey";
 
 function TargetCountRow({
   label,
@@ -863,7 +866,27 @@ function MainMenus() {
   const centerIceLogoZoom = useGame((s) => s.centerIceLogoZoom);
   const setCenterIceLogoZoom = useGame((s) => s.setCenterIceLogoZoom);
   const setCustomLogoDataUrl = useGame((s) => s.setCustomLogoDataUrl);
-  const logoFile = useRef<HTMLInputElement>(null);
+  const customFile = useRef<HTMLInputElement>(null);
+  const folderFile = useRef<HTMLInputElement>(null);
+  const jerseyHomeFile = useRef<HTMLInputElement>(null);
+  const jerseyAwayFile = useRef<HTMLInputElement>(null);
+  const jerseyFolderFile = useRef<HTMLInputElement>(null);
+  const [logoStatus, setLogoStatus] = useState<string | null>(null);
+  const [jerseyStatus, setJerseyStatus] = useState<string | null>(null);
+  const jerseyLogoOff = useGame((s) => s.jerseyLogoOff);
+  const setJerseyLogoOff = useGame((s) => s.setJerseyLogoOff);
+  const jerseyFolderMode = useGame((s) => s.jerseyFolderMode);
+  const setJerseyFolderMode = useGame((s) => s.setJerseyFolderMode);
+  const jerseyHomeMode = useGame((s) => s.jerseyCustomHomeMode);
+  const setJerseyHomeMode = useGame((s) => s.setJerseyCustomHomeMode);
+  const jerseyAwayMode = useGame((s) => s.jerseyCustomAwayMode);
+  const setJerseyAwayMode = useGame((s) => s.setJerseyCustomAwayMode);
+  const jerseyLogoZoom = useGame((s) => s.jerseyLogoZoom);
+  const setJerseyLogoZoom = useGame((s) => s.setJerseyLogoZoom);
+  const logoLibraryRev = useGame((s) => s.logoLibraryRev);
+  const jerseyHomeOn = logoLibraryRev >= 0 && jerseyCustomSaved("home");
+  const jerseyAwayOn = logoLibraryRev >= 0 && jerseyCustomSaved("away");
+
   const jumbotronEnabled = useGame((s) => s.jumbotronEnabled);
   const setJumbotronEnabled = useGame((s) => s.setJumbotronEnabled);
   const playing = useGame((s) => s.playing);
@@ -912,21 +935,41 @@ function MainMenus() {
       ) : null}
       {menu === "rink" && rinkSub === "logo" ? (
         <div className="cam-row menu-sub">
-          <button type="button" className={centerIceLogo === "ee" ? "is-on" : ""} onClick={() => setCenterIceLogo("ee")}>
-            EE
-          </button>
-          <button type="button" className={centerIceLogo === "off" ? "is-on" : ""} onClick={() => setCenterIceLogo("off")}>
-            Off
+          <button
+            type="button"
+            className={centerIceLogo === "default" ? "is-on" : ""}
+            onClick={() => setCenterIceLogo("default")}
+          >
+            Default
           </button>
           <button
             type="button"
             className={centerIceLogo === "custom" ? "is-on" : ""}
             onClick={() => {
+              if (centerIceLogo === "custom") {
+                customFile.current?.click();
+                return;
+              }
               setCenterIceLogo("custom");
-              logoFile.current?.click();
             }}
           >
             Custom
+          </button>
+          <button
+            type="button"
+            className={centerIceLogo === "folder" ? "is-on" : ""}
+            onClick={() => {
+              if (centerIceLogo === "folder") {
+                folderFile.current?.click();
+                return;
+              }
+              setCenterIceLogo("folder");
+            }}
+          >
+            Folder
+          </button>
+          <button type="button" className={centerIceLogo === "off" ? "is-on" : ""} onClick={() => setCenterIceLogo("off")}>
+            Off
           </button>
           {centerIceLogo !== "off" ? (
             <label className="hud-slider-row logo-zoom">
@@ -943,10 +986,103 @@ function MainMenus() {
               <b>{centerIceLogoZoom.toFixed(2)}×</b>
             </label>
           ) : null}
+          {logoStatus ? <span>{logoStatus}</span> : null}
         </div>
       ) : null}
+      {menu === "rink" && rinkSub === "jersey" ? (
+        <>
+          <div className="cam-row menu-sub" style={{ flexWrap: "nowrap" }}>
+            <button
+              type="button"
+              className={jerseyHomeMode ? "is-on" : ""}
+              onClick={() => {
+                if (!jerseyHomeMode) {
+                  setJerseyLogoOff(false);
+                  setJerseyHomeMode(true);
+                  return;
+                }
+                if (jerseyHomeOn) {
+                  setJerseyStatus("Clearing home crest…");
+                  setJerseyHomeMode(false);
+                  void clearJerseyCustom("home")
+                    .then((result) => setJerseyStatus(result.message))
+                    .catch(() => setJerseyStatus("Could not clear that crest."));
+                  return;
+                }
+                jerseyHomeFile.current?.click();
+              }}
+            >
+              Custom home
+            </button>
+            <button
+              type="button"
+              className={jerseyAwayMode ? "is-on" : ""}
+              onClick={() => {
+                if (!jerseyAwayMode) {
+                  setJerseyLogoOff(false);
+                  setJerseyAwayMode(true);
+                  return;
+                }
+                if (jerseyAwayOn) {
+                  setJerseyStatus("Clearing away crest…");
+                  setJerseyAwayMode(false);
+                  void clearJerseyCustom("away")
+                    .then((result) => setJerseyStatus(result.message))
+                    .catch(() => setJerseyStatus("Could not clear that crest."));
+                  return;
+                }
+                jerseyAwayFile.current?.click();
+              }}
+            >
+              Custom away
+            </button>
+            <button
+              type="button"
+              className={jerseyFolderMode ? "is-on" : ""}
+              onClick={() => {
+                if (jerseyFolderMode) {
+                  jerseyFolderFile.current?.click();
+                  return;
+                }
+                setJerseyLogoOff(false);
+                setJerseyFolderMode(true);
+              }}
+            >
+              Folder
+            </button>
+            <button
+              type="button"
+              className={jerseyLogoOff ? "is-on" : ""}
+              onClick={() => {
+                setJerseyLogoOff(true);
+                setJerseyHomeMode(false);
+                setJerseyAwayMode(false);
+                setJerseyFolderMode(false);
+              }}
+            >
+              Off
+            </button>
+          </div>
+          <div className="cam-row menu-sub">
+            <label className="hud-slider-row logo-zoom">
+              <span>Zoom</span>
+              <input
+                type="range"
+                min={JERSEY_LOGO_ZOOM_MIN}
+                max={JERSEY_LOGO_ZOOM_MAX}
+                step={0.05}
+                value={jerseyLogoZoom}
+                aria-label="Jersey logo zoom"
+                onChange={(e) => setJerseyLogoZoom(Number(e.target.value))}
+              />
+              <b>{jerseyLogoZoom.toFixed(2)}×</b>
+            </label>
+            {jerseyStatus ? <span>{jerseyStatus}</span> : null}
+          </div>
+        </>
+      ) : null}
       <input
-        ref={logoFile}
+        ref={customFile}
         type="file"
         accept="image/*"
         aria-hidden="true"
@@ -964,6 +1100,78 @@ function MainMenus() {
             setCenterIceLogo("custom");
           };
           reader.readAsDataURL(file);
+        }}
+      />
+      <input
+        ref={folderFile}
+        type="file"
+        multiple
+        accept="image/png,image/jpeg,image/webp"
+        {...({ webkitdirectory: "" } as { webkitdirectory: string })}
+        aria-hidden="true"
+        tabIndex={-1}
+        style={{ position: "fixed", width: 1, height: 1, padding: 0, margin: 0, opacity: 0, pointerEvents: "none" }}
+        onChange={(e) => {
+          const picked = e.target.files ? Array.from(e.target.files) : [];
+          e.target.value = "";
+          if (picked.length === 0) return;
+          setLogoStatus("Reading logos…");
+          void importLogoFileList(picked)
+            .then((result) => setLogoStatus(result.message))
+            .catch(() => setLogoStatus("Could not import those logos."));
+        }}
+      />
+      <input
+        ref={jerseyHomeFile}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        aria-hidden="true"
+        tabIndex={-1}
+        style={{ position: "fixed", width: 1, height: 1, padding: 0, margin: 0, opacity: 0, pointerEvents: "none" }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (!file) return;
+          setJerseyStatus("Reading crest…");
+          void importJerseyCustom("home", file)
+            .then((result) => setJerseyStatus(result.message))
+            .catch(() => setJerseyStatus("Could not save that crest."));
+        }}
+      />
+      <input
+        ref={jerseyAwayFile}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        aria-hidden="true"
+        tabIndex={-1}
+        style={{ position: "fixed", width: 1, height: 1, padding: 0, margin: 0, opacity: 0, pointerEvents: "none" }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (!file) return;
+          setJerseyStatus("Reading crest…");
+          void importJerseyCustom("away", file)
+            .then((result) => setJerseyStatus(result.message))
+            .catch(() => setJerseyStatus("Could not save that crest."));
+        }}
+      />
+      <input
+        ref={jerseyFolderFile}
+        type="file"
+        multiple
+        accept="image/png,image/jpeg,image/webp"
+        {...({ webkitdirectory: "" } as { webkitdirectory: string })}
+        aria-hidden="true"
+        tabIndex={-1}
+        style={{ position: "fixed", width: 1, height: 1, padding: 0, margin: 0, opacity: 0, pointerEvents: "none" }}
+        onChange={(e) => {
+          const picked = e.target.files ? Array.from(e.target.files) : [];
+          e.target.value = "";
+          if (picked.length === 0) return;
+          setJerseyStatus("Reading crests…");
+          void importJerseyFileList(picked)
+            .then((result) => setJerseyStatus(result.message))
+            .catch(() => setJerseyStatus("Could not import those crests."));
         }}
       />
       {menu === "gameplay" ? (
@@ -1132,7 +1340,15 @@ function MainMenus() {
                 aria-expanded={rinkSub === "logo"}
                 onClick={() => toggleRinkSub("logo")}
               >
-                Logo
+                Center ice logo
+              </button>
+              <button
+                type="button"
+                className={rinkSub === "jersey" ? "is-on" : ""}
+                aria-expanded={rinkSub === "jersey"}
+                onClick={() => toggleRinkSub("jersey")}
+              >
+                Jersey logo
               </button>
               <button
                 type="button"

@@ -8,6 +8,7 @@ import {
   createScoreboardCanvas,
   mixHex,
 } from "./iceTexture";
+import { iceLogoElement, resolveIceLogoUrl } from "./logoLibrary";
 import { BOARD_H, CORNER_R, FT, GLASS_H, GOAL_LINE_X, RINK_L, RINK_W } from "./rink";
 import { rinkPerimeter } from "./rinkGeom";
 import { crowdPrimaryShare, kitById, kitWornColors } from "./uniforms";
@@ -822,8 +823,16 @@ function Jumbotron() {
       puckZ: replay?.puckZ ?? world.puck.z,
       players: replay?.players ?? world.skaters.map((s) => ({ x: s.x, z: s.z, home: s.side === "home" })),
       centerLogo:
-        useGame.getState().centerIceLogo === "ee" ||
-        (useGame.getState().centerIceLogo === "custom" && !useGame.getState().customLogoDataUrl),
+        resolveIceLogoUrl(
+          useGame.getState().centerIceLogo,
+          useGame.getState().homeKit,
+          useGame.getState().customLogoDataUrl,
+        ) !== null,
+      centerLogoImage: iceLogoElement(
+        useGame.getState().centerIceLogo,
+        useGame.getState().homeKit,
+        useGame.getState().customLogoDataUrl,
+      ),
     };
     wideFace.paint(paintOpts);
     wideFlipFace.paint(paintOpts);

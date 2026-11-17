@@ -27,15 +27,12 @@ import {
   RINK_W,
 } from "./rink";
 import { JUMBO_HH, JUMBO_HL, JUMBO_HW } from "./crowd";
-import centerIceUrl from "../../logo-center-ice.png";
 import scoreboardLogoUrl from "../../logo-scoreboard.png";
 
 export { createNumberTexture } from "./jerseyDigits";
 
 const scoreboardLogo = new Image();
 scoreboardLogo.src = scoreboardLogoUrl;
-const centerIceLogo = new Image();
-centerIceLogo.src = centerIceUrl;
 
 function hash2(ix: number, iy: number): number {
   let n = Math.imul(ix, 374761393) + Math.imul(iy, 668265263);
@@ -669,6 +666,8 @@ export type JumboPaint = RibbonPaint & {
   players: { x: number; z: number; home: boolean }[];
   /** False hides the center-ice crest on the board. Omitted still draws it. */
   centerLogo?: boolean;
+  /** Same image as the ice mesh. Null draws the small dot until the file is ready. */
+  centerLogoImage?: HTMLImageElement | null;
 };
 
 /** Overhead token: head, striped torso, legs, and a short stick. Centered on the ice point. */
@@ -997,12 +996,13 @@ export function createJumboFace(kind: "wide" | "tall" = "wide", flip = false): {
     if (opts.centerLogo !== false) {
       const logoAt = toIce(0, 0);
       const logoR = FACEOFF_MARK_R * pxPerM;
-      if (centerIceLogo.complete && centerIceLogo.naturalWidth > 0) {
+      const logoImg = opts.centerLogoImage;
+      if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
         g.save();
         g.beginPath();
         g.arc(logoAt.x, logoAt.y, logoR, 0, Math.PI * 2);
         g.clip();
-        g.drawImage(centerIceLogo, logoAt.x - logoR, logoAt.y - logoR, logoR * 2, logoR * 2);
+        g.drawImage(logoImg, logoAt.x - logoR, logoAt.y - logoR, logoR * 2, logoR * 2);
         g.restore();
       } else {
         g.fillStyle = LINE_BLUE;
