@@ -103,9 +103,12 @@ function skipRinkside(x: number, z: number): boolean {
   if (Math.abs(x) > RINK_L / 2 - CORNER_R + 0.6) return false;
   const out = Math.abs(z) - RINK_W / 2;
   if (out < 0.15 || out > 3.4) return false;
-  if (z < 0 && Math.abs(x) < 10.6) return true;
+  // Benches clear the first four rinkside rows (through out 2.06). Rows 5 and 6 stay.
+  if (z < 0 && Math.abs(x) < 10.6 && out < 2.2) return true;
   // Penalty boxes end about 2.1 m outside the boards. Rows behind that stay filled.
   if (z > 0 && Math.abs(x) < 4.1 && out < 2.2) return true;
+  // Third-row torso through the away box's outer pane. One seat.
+  if (x < -4.09 && x > -4.13 && z > 14.49 && z < 14.54) return true;
   return false;
 }
 

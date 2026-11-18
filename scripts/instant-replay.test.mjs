@@ -41,11 +41,13 @@ const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
+const rink = await server.ssrLoadModule("/src/game/rink.ts");
 
-const { resetWorld, stepSim, world, installControlsProbe, instantReplayModes, instantReplayCam, instantReplayFrames, instantReplayPose } = sim;
+const { resetWorld, stepSim, world, installControlsProbe, instantReplayModes, instantReplayCam, instantReplayFrames, instantReplayPose, instantReplayCrowdOn, replayBoardNow, replayFrameNow, seekReplay, beginPauseReplay, pauseGame, stopPauseReplay } = sim;
 const { useGame } = store;
 const { setInjectedKeys } = input;
 const { inferNamedPose } = poses;
+const { GOAL_LINE_X } = rink;
 
 installControlsProbe();
 
@@ -348,6 +350,450 @@ function pressR3() {
   pads = [];
   setInjectedKeys([]);
 }
+
+test("instant replay keeps the new score and freezes the clock", () => {
+  sheet("game");
+  fillBuffer();
+  const ui = useGame.getState();
+  ui.setHomeScore(2);
+  ui.setAwayScore(1);
+  ui.setPeriod(2);
+  ui.setPeriodClock(754);
+  world.period = 2;
+  world.periodClock = 754.4;
+  score();
+  assert.equal(useGame.getState().homeScore, 3);
+  assert.equal(useGame.getState().awayScore, 1);
+  assert.equal(useGame.getState().periodClock, 754);
+  edge("KeyE");
+  assert.equal(world.replayKind, "goal");
+  const seen = [];
+  for (let i = 0; i < 500 && world.replayKind === "goal"; i++) {
+    const board = replayBoardNow();
+    assert.ok(board);
+    seen.push(board);
+    assert.equal(board.homeScore, 3);
+    assert.equal(board.awayScore, 1);
+    assert.equal(board.period, 2);
+    assert.equal(board.periodClock, 754);
+    assert.equal(useGame.getState().homeScore, 3);
+    assert.equal(useGame.getState().periodClock, 754);
+    stepSim(DT);
+  }
+  assert.ok(seen.length > 30, `replay frames ${seen.length}`);
+  assert.equal(replayBoardNow(), null);
+  assert.equal(useGame.getState().homeScore, 3);
+  assert.equal(useGame.getState().periodClock, 754);
+});
+
+function showReplayFrame(index, last) {
+  const u = last <= 0 ? 0 : index / last;
+  seekReplay(Math.max(0, Math.min(1, u)));
+  if (replayFrameNow() === index) return;
+  const step = 0.5 / Math.max(1, last);
+  for (let k = 0; k < 4 && replayFrameNow() !== index; k++) {
+    const got = replayFrameNow();
+    seekReplay(Math.max(0, Math.min(1, u + (index - got) * step)));
+  }
+  assert.equal(replayFrameNow(), index);
+}
+
+test("in-game replay changes the score on the goal frame", () => {
+  sheet("game");
+  useGame.getState().setInstantReplay(false);
+  fillBuffer();
+  const ui = useGame.getState();
+  ui.setHomeScore(3);
+  ui.setAwayScore(0);
+  frames(6);
+  score();
+  const goalX = world.puck.x;
+  const goalZ = world.puck.z;
+  frames(12);
+  pauseGame();
+  try {
+    assert.equal(beginPauseReplay(), true);
+    seekReplay(1);
+    const last = replayFrameNow();
+    assert.ok(last > 20, `replay frames ${last}`);
+    let goalAt = -1;
+    for (let i = 0; i <= last; i++) {
+      showReplayFrame(i, last);
+      const board = replayBoardNow();
+      assert.ok(board);
+      const atGoal = Math.abs(world.puck.x - goalX) < 1e-6 && Math.abs(world.puck.z - goalZ) < 1e-6;
+      if (atGoal) {
+        assert.equal(goalAt, -1);
+        goalAt = i;
+        assert.equal(board.homeScore, 4);
+        assert.equal(board.awayScore, 0);
+      } else if (goalAt < 0) {
+        assert.notEqual(board.homeScore, 4, `frame ${i} already shows the goal`);
+      } else {
+        assert.equal(board.homeScore, 4, `frame ${i}`);
+        assert.equal(board.awayScore, 0);
+      }
+    }
+    assert.ok(goalAt > 0, `goal frame ${goalAt}`);
+    showReplayFrame(goalAt - 1, last);
+    assert.equal(replayBoardNow().homeScore, 3);
+    assert.equal(replayBoardNow().awayScore, 0);
+    assert.equal(useGame.getState().homeScore, 4);
+    assert.equal(useGame.getState().awayScore, 0);
+  } finally {
+    stopPauseReplay();
+    setInjectedKeys([]);
+    pads = [];
+  }
+});
+
+test("instant replay clock stays at the goal while a scrimmage clock keeps running", () => {
+  sheet("scrimmage");
+  fillBuffer();
+  useGame.getState().setPeriodClock(40);
+  world.periodClock = 40.2;
+  score();
+  const atGoal = useGame.getState().periodClock;
+  frames(90);
+  assert.ok(useGame.getState().periodClock > atGoal, `live clock ${useGame.getState().periodClock} vs ${atGoal}`);
+  edge("KeyE");
+  assert.equal(world.replayKind, "goal");
+  assert.equal(replayBoardNow()?.periodClock, atGoal);
+  frames(20);
+  assert.equal(world.replayKind, "goal");
+  assert.equal(replayBoardNow()?.periodClock, atGoal);
+  assert.ok(useGame.getState().periodClock > atGoal);
+});
+
+test("the crowd sits until the goal frame, then cheers", () => {
+  sheet("game");
+  fillBuffer();
+  score();
+  // Live celebration still uses goalTicker. The replay gate stays off until the clip plays.
+  assert.equal(instantReplayCrowdOn(), null);
+  assert.ok(world.goalTicker > 0);
+  frames(130);
+  assert.equal(world.replayKind, "goal");
+  assert.ok(world.goalTicker > 0, "goal ticker stays high through the clip");
+  // score() releases 0.5s before the whistle. Broadcast keeps 90 frames before that, the others 60.
+  const pre = { broadcast: 90, classic: 60, chase: 60 };
+  const back = 30;
+  const saw = { broadcast: false, classic: false, chase: false };
+  const cheered = { broadcast: false, classic: false, chase: false };
+  for (let i = 0; i < 500 && world.replayKind === "goal"; i++) {
+    const cam = instantReplayCam();
+    const on = instantReplayCrowdOn();
+    const frame = Math.floor(world.replayT * 60);
+    saw[cam] = true;
+    // Chase stops on the frame before the whistle, so it never plays the cheer.
+    const pastGoal = cam !== "chase" && frame >= back + pre[cam];
+    assert.equal(on, pastGoal, `${cam} frame ${frame}`);
+    if (on) cheered[cam] = true;
+    stepSim(DT);
+  }
+  assert.equal(instantReplayCrowdOn(), null);
+  assert.equal(saw.broadcast && saw.classic && saw.chase, true);
+  assert.equal(cheered.broadcast, true);
+  assert.equal(cheered.classic, true);
+  assert.equal(cheered.chase, false);
+});
+
+function shootoutSheet() {
+  pads = [];
+  setInjectedKeys([]);
+  const ui = useGame.getState();
+  ui.setInstantReplay(true);
+  ui.setClockMode("shootout");
+  ui.setPowerPlay(false);
+  ui.setChaos(false);
+  ui.setOffsides(false);
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  ui.setHomeScore(0);
+  ui.setAwayScore(0);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+}
+
+function pinLiveAttempt(side) {
+  const so = world.shootout;
+  const shooter = world.skaters.find((s) => s.side === side && s.kind !== "goalie");
+  const attempt = so.attempts[so.attempts.length - 1];
+  attempt.side = side;
+  attempt.result = null;
+  so.phase = "live";
+  so.t = 0;
+  so.shooterId = shooter.id;
+  so.startedAt = world.time;
+  so.goalieTouch = false;
+  so.goalieTouchAt = -1;
+  so.backAlong = 0;
+  world.userId = shooter.id;
+  world.whistle = null;
+  world.stoppage = false;
+  world.stoppageT = 0;
+  world.faceoff = false;
+  world.periodOver = false;
+  useGame.getState().setWhistle(null);
+  useGame.getState().setPeriodOver(false);
+  return shooter;
+}
+
+function fillLiveShootout() {
+  const so = world.shootout;
+  const shooter = world.skaters[so.shooterId];
+  const side = so.attempts[so.attempts.length - 1].side;
+  const attack = side === "home" ? world.homeAttack : -world.homeAttack;
+  shooter.x = 0;
+  shooter.z = 0;
+  shooter.vx = 0;
+  shooter.vz = 0;
+  so.backAlong = 0;
+  for (let i = 0; i < 180; i++) {
+    for (const s of world.skaters) s.stun = 30;
+    shooter.vx = 0;
+    shooter.vz = 0;
+    // A test pin must not look like the shooter retreated out of the attempt.
+    const along = shooter.x * attack;
+    if (along < so.backAlong) so.backAlong = along;
+    world.puck.owner = shooter.id;
+    world.puck.x = shooter.x + attack * 0.35;
+    world.puck.z = shooter.z;
+    world.puck.y = 0.05;
+    world.puck.vx = 0;
+    world.puck.vz = 0;
+    world.puck.vy = 0;
+    world.lastShoot = -10;
+    world.lastShooter = null;
+    world.lastPass = -10;
+    world.lastPasser = null;
+    world.goalieSaveT = -10;
+    stepSim(DT);
+    if (so.phase !== "live") break;
+  }
+}
+
+function crossShootoutGoal() {
+  const so = world.shootout;
+  const attempt = so.attempts[so.attempts.length - 1];
+  const attack = attempt.side === "home" ? world.homeAttack : -world.homeAttack;
+  const mouth = attack * GOAL_LINE_X;
+  world.puck.owner = null;
+  world.puck.x = mouth - attack * 0.15;
+  world.puck.y = 0.35;
+  world.puck.z = 0;
+  world.puck.vx = attack * 30;
+  world.puck.vy = 0;
+  world.puck.vz = 0;
+  world.lastShooter = so.shooterId;
+  world.lastShoot = world.time;
+  world.lastPass = -10;
+  world.goalieSaveT = -10;
+  stepSim(DT);
+}
+
+function giveKeeperThePuck() {
+  const so = world.shootout;
+  const attempt = so.attempts[so.attempts.length - 1];
+  const keeperSide = attempt.side === "home" ? "away" : "home";
+  const keeper = world.skaters.find((s) => s.kind === "goalie" && s.side === keeperSide);
+  world.lastShooter = so.shooterId;
+  world.lastShoot = world.time - 0.4;
+  world.lastPass = -10;
+  world.goalieSaveT = -10;
+  world.puck.owner = keeper.id;
+  world.puck.x = keeper.x;
+  world.puck.z = keeper.z;
+  world.puck.y = 0.08;
+  world.puck.vx = 0;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  stepSim(DT);
+}
+
+function playUntilReplayEnds() {
+  let guard = 0;
+  while (world.replayKind === "goal" && guard < 500) {
+    assert.equal(instantReplayCam(), "broadcast");
+    stepSim(DT);
+    guard += 1;
+  }
+  assert.ok(guard < 500, "shootout replay did not finish");
+  assert.equal(world.replayKind, null);
+}
+
+test("a shootout goal replays on the broadcast camera only, then the next attempt", () => {
+  shootoutSheet();
+  const shooter = pinLiveAttempt("home");
+  fillLiveShootout();
+  assert.equal(world.shootout.phase, "live", "attempt ended while filling the replay");
+  crossShootoutGoal();
+  assert.equal(world.shootout.attempts[0].result, "goal");
+  assert.equal(world.whistle, "goal");
+  assert.deepEqual([...instantReplayModes()], ["broadcast"]);
+  assert.equal(world.replay, false);
+  assert.equal(world.faceoff, false);
+  let started = -1;
+  for (let i = 0; i < 140 && started < 0; i++) {
+    stepSim(DT);
+    if (world.replayKind === "goal") started = i;
+  }
+  assert.ok(started >= 100 && started <= 130, `replay started on frame ${started}`);
+  assert.equal(instantReplayCam(), "broadcast");
+  const pose = instantReplayPose();
+  assert.equal(pose.mode, "broadcast");
+  assert.equal(pose.upY, 1);
+  assert.equal(pose.fov, 44);
+  assert.ok(pose.camY > 10);
+  assert.equal(world.userId, shooter.id);
+  assert.equal(useGame.getState().replay, false);
+  assert.equal(useGame.getState().paused, false);
+  const seen = new Set([instantReplayCam()]);
+  let guard = 0;
+  while (world.replayKind === "goal" && guard < 400) {
+    const cam = instantReplayCam();
+    seen.add(cam);
+    assert.notEqual(cam, "chase");
+    assert.notEqual(cam, "classic");
+    stepSim(DT);
+    guard += 1;
+  }
+  assert.deepEqual([...seen], ["broadcast"]);
+  assert.equal(world.faceoff, false);
+  assert.equal(world.whistle, null);
+  assert.equal(world.periodOver, false);
+  assert.equal(world.shootout.phase, "live");
+  assert.equal(world.shootout.attempts.length, 2);
+  assert.equal(world.shootout.attempts[0].result, "goal");
+  assert.equal(world.shootout.attempts[1].result, null);
+  assert.equal(useGame.getState().homeScore, 0);
+  assert.equal(useGame.getState().awayScore, 0);
+});
+
+test("X during a shootout goal skips the broadcast replay and does not face off", () => {
+  shootoutSheet();
+  pinLiveAttempt("home");
+  fillLiveShootout();
+  crossShootoutGoal();
+  assert.deepEqual([...instantReplayModes()], ["broadcast"]);
+  edge("KeyF");
+  assert.equal(world.replay, false);
+  assert.equal(world.replayKind, null);
+  assert.equal(world.faceoff, false);
+  assert.equal(world.whistle, null);
+  assert.equal(world.periodOver, false);
+  assert.equal(instantReplayModes().length, 0);
+  assert.equal(world.shootout.phase, "live");
+  assert.equal(world.shootout.attempts[0].result, "goal");
+  assert.equal(world.shootout.attempts.length, 2);
+});
+
+test("a shootout miss does not replay, and the off switch skips a shootout goal", () => {
+  shootoutSheet();
+  pinLiveAttempt("home");
+  fillLiveShootout();
+  giveKeeperThePuck();
+  assert.equal(world.shootout.attempts[0].result, "save");
+  assert.equal(world.whistle, null);
+  assert.equal(instantReplayModes().length, 0);
+  assert.equal(world.replay, false);
+  frames(50);
+  assert.equal(world.replayKind, null);
+  assert.equal(instantReplayModes().length, 0);
+  assert.notEqual(world.shootout.phase, "result");
+  assert.equal(world.periodOver, false);
+
+  shootoutSheet();
+  useGame.getState().setInstantReplay(false);
+  pinLiveAttempt("home");
+  fillLiveShootout();
+  crossShootoutGoal();
+  assert.equal(world.shootout.attempts[0].result, "goal");
+  assert.equal(instantReplayModes().length, 0);
+  frames(40);
+  assert.equal(world.replay, false);
+  assert.equal(world.whistle, "goal");
+  assert.equal(world.shootout.phase, "result");
+  useGame.getState().setInstantReplay(true);
+});
+
+test("a shootout-winning save replays on broadcast, then the series ends", () => {
+  shootoutSheet();
+  const so = world.shootout;
+  so.first = "away";
+  so.attempts = [
+    { side: "away", number: 9, result: "goal" },
+    { side: "home", number: 8, result: "save" },
+    { side: "away", number: 19, result: "goal" },
+    { side: "home", number: 7, result: null },
+  ];
+  pinLiveAttempt("home");
+  fillLiveShootout();
+  assert.equal(world.shootout.phase, "live");
+  giveKeeperThePuck();
+  assert.equal(world.shootout.attempts[3].result, "save");
+  assert.equal(world.whistle, null);
+  assert.equal(world.periodOver, false);
+  assert.deepEqual([...instantReplayModes()], ["broadcast"]);
+  assert.equal(useGame.getState().homeScore, 0);
+  assert.equal(useGame.getState().awayScore, 0);
+  let started = -1;
+  for (let i = 0; i < 150 && started < 0; i++) {
+    assert.equal(world.whistle, null);
+    stepSim(DT);
+    if (world.replayKind === "goal") started = i;
+  }
+  assert.ok(started >= 100 && started <= 140, `save replay started on frame ${started}`);
+  assert.equal(instantReplayCam(), "broadcast");
+  assert.equal(instantReplayCrowdOn(), false);
+  playUntilReplayEnds();
+  assert.equal(world.faceoff, false);
+  assert.equal(world.whistle, null);
+  assert.equal(world.shootout.phase, "done");
+  assert.equal(world.periodOver, true);
+  assert.equal(useGame.getState().homeScore, 0);
+  assert.equal(useGame.getState().awayScore, 1);
+  assert.equal(instantReplayModes().length, 0);
+  useGame.getState().setClockMode("game");
+});
+
+test("a series-winning shootout goal replays on broadcast, then the win", () => {
+  shootoutSheet();
+  const so = world.shootout;
+  so.first = "home";
+  so.attempts = [
+    { side: "home", number: 8, result: "goal" },
+    { side: "away", number: 9, result: "save" },
+    { side: "home", number: 7, result: "goal" },
+    { side: "away", number: 19, result: "goal" },
+    { side: "home", number: 88, result: null },
+  ];
+  pinLiveAttempt("home");
+  fillLiveShootout();
+  crossShootoutGoal();
+  assert.equal(world.shootout.attempts[4].result, "goal");
+  assert.equal(world.whistle, "goal");
+  assert.deepEqual([...instantReplayModes()], ["broadcast"]);
+  assert.equal(world.periodOver, false);
+  let started = -1;
+  for (let i = 0; i < 150 && started < 0; i++) {
+    stepSim(DT);
+    if (world.replayKind === "goal") started = i;
+  }
+  assert.ok(started >= 100 && started <= 140, `winning goal replay started on frame ${started}`);
+  const crowdAt = instantReplayCrowdOn();
+  playUntilReplayEnds();
+  assert.equal(crowdAt, false);
+  assert.equal(world.faceoff, false);
+  assert.equal(world.shootout.phase, "done");
+  assert.equal(world.periodOver, true);
+  assert.equal(useGame.getState().homeScore, 1);
+  assert.equal(useGame.getState().awayScore, 0);
+  assert.equal(world.whistle, null);
+  useGame.getState().setClockMode("game");
+  useGame.getState().setInstantReplay(true);
+});
 
 test("right stick during instant replay skips it and pauses, same as X then the stick", () => {
   sheet("game");

@@ -54,7 +54,7 @@ const { resetWorld, stepSim, world, stickBlade } = sim;
 const { inferNamedPose } = poses;
 const { useGame, hudReleaseName } = store;
 const { setInjectedKeys, setInjectedAim, setInjectedStart } = input;
-const { GOAL_H, GOAL_LINE_X, BOARD_H, GLASS_H, RINK_W, RINK_L, BLUE_X, FACEOFF_EZ_X, resolveRink, wallTop } = rink;
+const { GOAL_H, GOAL_LINE_X, BOARD_H, SIDE_GLASS_H, END_GLASS_H, RINK_W, RINK_L, BLUE_X, FACEOFF_EZ_X, resolveRink, wallTop } = rink;
 
 after(() => server.close());
 
@@ -513,12 +513,12 @@ test("a full board saucer hits the glass and stays in the rink", () => {
     step(1);
     if (world.puck.owner !== null) break;
     if (world.puck.y > peak) peak = world.puck.y;
-    if (world.puck.y > BOARD_H + GLASS_H - 0.05 && Math.abs(world.puck.z) > RINK_W / 2 - 0.15) escaped = true;
+    if (world.puck.y > BOARD_H + SIDE_GLASS_H - 0.05 && Math.abs(world.puck.z) > RINK_W / 2 - 0.15) escaped = true;
     if (prevVz > 0.4 && world.puck.vz < -0.2 && world.puck.y > BOARD_H + 0.45) bounced = true;
   }
   assert.equal(escaped, false);
   assert.ok(bounced, `glass bounce peak ${peak} z ${world.puck.z}`);
-  assert.ok(peak > BOARD_H + GLASS_H * 0.45, `high glass peak ${peak}`);
+  assert.ok(peak > BOARD_H + SIDE_GLASS_H * 0.45, `high glass peak ${peak}`);
 
   boardSauce(0);
   let crowdEscaped = false;
@@ -526,7 +526,7 @@ test("a full board saucer hits the glass and stays in the rink", () => {
   for (let i = 0; i < 200; i++) {
     const prevVz = world.puck.vz;
     step(1);
-    if (world.puck.y > BOARD_H + GLASS_H - 0.05 && Math.abs(world.puck.z) > RINK_W / 2 - 0.15) {
+    if (world.puck.y > BOARD_H + SIDE_GLASS_H - 0.05 && Math.abs(world.puck.z) > RINK_W / 2 - 0.15) {
       crowdEscaped = true;
     }
     if (prevVz > 0.4 && world.puck.vz < -0.2 && world.puck.y > BOARD_H + 0.2) crowdBounce = true;
@@ -547,12 +547,12 @@ test("a full board saucer hits the glass and stays in the rink", () => {
   for (let i = 0; i < 120; i++) {
     step(1);
     if (world.puck.y > lowPeak) lowPeak = world.puck.y;
-    if (world.puck.y > BOARD_H + GLASS_H - 0.05 && Math.abs(world.puck.z) > RINK_W / 2 - 0.15) {
+    if (world.puck.y > BOARD_H + SIDE_GLASS_H - 0.05 && Math.abs(world.puck.z) > RINK_W / 2 - 0.15) {
       lowEscaped = true;
     }
   }
   assert.equal(lowEscaped, false);
-  assert.ok(lowPeak < BOARD_H + GLASS_H * 0.55, `tap board peak ${lowPeak}`);
+  assert.ok(lowPeak < BOARD_H + SIDE_GLASS_H * 0.55, `tap board peak ${lowPeak}`);
 });
 
 test("B cancels a charged pass and does not release it", () => {
@@ -1149,7 +1149,7 @@ test("full sauce landing follows the zone, and the ice takes speed with charge",
       const prevVx = world.puck.vx;
       step(1);
       if (world.puck.y > peak) peak = world.puck.y;
-      if (world.puck.y > BOARD_H + GLASS_H - 0.02 && Math.abs(world.puck.x) > RINK_L / 2 - 1.2) cleared = true;
+      if (world.puck.y > BOARD_H + END_GLASS_H - 0.02 && Math.abs(world.puck.x) > RINK_L / 2 - 1.2) cleared = true;
       if (prevVx > 0.4 && world.puck.vx < -0.15 && world.puck.y > BOARD_H + 0.8) glass = true;
       if (iced === null && prevY > 0.15 && world.puck.y <= 0.08) {
         iced = world.puck.x;
@@ -1439,7 +1439,7 @@ test("a short Select release from the defensive zone stays in play", () => {
     assert.notEqual(world.whistle, "crowd");
     if (world.puck.owner !== null || world.whistle) break;
   }
-  assert.ok(peak < BOARD_H + GLASS_H - 0.4, `dz peak ${peak}`);
+  assert.ok(peak < BOARD_H + END_GLASS_H - 0.4, `dz peak ${peak}`);
   assert.notEqual(world.whistle, "crowd");
 });
 
@@ -1484,5 +1484,5 @@ test("a full Select sauce down ice does not whistle into the crowd", () => {
     if (world.puck.owner !== null || world.whistle) break;
   }
   assert.notEqual(world.whistle, "crowd");
-  assert.ok(peak < BOARD_H + GLASS_H + 0.05, `full peak ${peak}`);
+  assert.ok(peak < BOARD_H + END_GLASS_H + 0.05, `full peak ${peak}`);
 });

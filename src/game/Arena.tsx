@@ -9,7 +9,21 @@ import {
   mixHex,
 } from "./iceTexture";
 import { iceLogoElement, resolveIceLogoUrl } from "./logoLibrary";
-import { BOARD_H, CORNER_R, FT, GLASS_H, GOAL_LINE_X, RINK_L, RINK_W } from "./rink";
+import {
+  BENCH_INNER_X,
+  BENCH_SIDE_GLASS_T,
+  BENCH_SIDE_X,
+  benchSeatOuterX,
+  BOARD_H,
+  CORNER_R,
+  FT,
+  GOAL_LINE_X,
+  RINK_GLASS_THICK,
+  RINK_L,
+  RINK_W,
+  SIDE_GLASS_H,
+  benchBoardGlassZ,
+} from "./rink";
 import { rinkPerimeter } from "./rinkGeom";
 import { crowdPrimaryShare, kitById, kitWornColors } from "./uniforms";
 import { periodOrdinal, showsPeriodClock, useGame, type ArenaLook } from "./store";
@@ -18,6 +32,7 @@ import {
   HOME_BENCH_NUMS,
   benchGoalieNumber,
   defendDir,
+  instantReplayCrowdOn,
   jumboReplayView,
   penaltyNumbers,
   shootoutBenchRow,
@@ -281,13 +296,19 @@ function SeatDeck() {
     const drill = ui.clockMode === "drill";
     const brawl = world.lineBrawl !== null;
     const shootoutCheer = shootoutDone && world.goalTicker > 0 && !!world.goalSide;
-    const on = drill
-      ? world.drillCheer > 0
-      : shootoutCheer || (world.goalTicker > 0 && !!world.goalSide) || winHome || winAway;
+    // goalTicker stays high for the whole goal replay. Sit until that frame, then hop.
+    const replayCrowd = instantReplayCrowdOn();
+    const on =
+      replayCrowd !== null
+        ? replayCrowd
+        : drill
+          ? world.drillCheer > 0
+          : shootoutCheer || (world.goalTicker > 0 && !!world.goalSide) || winHome || winAway;
     const scoringHome = shootoutCheer
       ? world.goalSide === "home"
       : winHome || (!world.periodOver && world.goalSide === "home");
-    const t = world.time;
+    // Sim time is held during the clip. Replay time keeps the hop moving after the goal.
+    const t = replayCrowd === true ? world.time + world.replayT : world.time;
     updateSight(camera);
     const cx = sightCx;
     const cy = sightCy;
@@ -972,7 +993,7 @@ const BENCH_SEATS = BENCH_SKATERS + 1;
 /** 9 skaters plus one goalie. Index 0 of a −X bench is the end toward −X. */
 function benchXs(end: -1 | 1): number[] {
   const inner = 0.88;
-  const outer = 9.42;
+  const outer = benchSeatOuterX();
   const xs: number[] = [];
   for (let i = 0; i < BENCH_SEATS; i++) xs.push(inner + ((outer - inner) * i) / (BENCH_SEATS - 1));
   if (end < 0) {
@@ -1029,7 +1050,13 @@ function PenaltyBox({
   const n = sitters?.length ?? 0;
   const seats = penaltySeatXs(n);
   const w = PENALTY_BOX_W;
-  const gY = BOARD_H + GLASS_H / 2;
+  const gY = BOARD_H + SIDE_GLASS_H / 2;
+  // Far face of the back glass. Yaw π sends local +z toward the ice.
+  const backLocalZ = -0.52 - 0.03;
+  const glassIceZ = -benchBoardGlassZ() - RINK_GLASS_THICK / 2;
+  const iceLocalZ = z - glassIceZ;
+  const sideDepth = iceLocalZ - backLocalZ;
+  const sideCenterZ = (iceLocalZ + backLocalZ) / 2;
   return (
     <group position={[x, 0, z]} rotation={[0, Math.PI, 0]}>
       <mesh position={[0, 0.56, -0.12]} material={wood}>
@@ -1039,13 +1066,13 @@ function PenaltyBox({
         <boxGeometry args={[w, 0.56, 0.22]} />
       </mesh>
       <mesh position={[0, gY, -0.52]} material={glass}>
-        <boxGeometry args={[w - 0.05, GLASS_H, 0.06]} />
+        <boxGeometry args={[w - 0.05, SIDE_GLASS_H, 0.06]} />
       </mesh>
-      <mesh position={[-(w / 2 - 0.05), gY, 0]} material={glass}>
-        <boxGeometry args={[0.06, GLASS_H, 1.1]} />
+      <mesh position={[-(w / 2 - 0.05), gY, sideCenterZ]} material={glass}>
+        <boxGeometry args={[0.06, SIDE_GLASS_H, sideDepth]} />
       </mesh>
-      <mesh position={[w / 2 - 0.05, gY, 0]} material={glass}>
-        <boxGeometry args={[0.06, GLASS_H, 1.1]} />
+      <mesh position={[w / 2 - 0.05, gY, sideCenterZ]} material={glass}>
+        <boxGeometry args={[0.06, SIDE_GLASS_H, sideDepth]} />
       </mesh>
       {seats.map((seatX, i) => {
         const s = sitters![i]!;
@@ -1178,14 +1205,37 @@ function Benches() {
     () => new THREE.MeshStandardMaterial({ color: "#c8102e", roughness: 0.42, metalness: 0.08 }),
     [],
   );
+  const boxGlass = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: "#c8d8e8",
+        transparent: true,
+        opacity: 0.28,
+        roughness: 0.12,
+        metalness: 0.08,
+      }),
+    [],
+  );
   const zBench = -RINK_W / 2 - 1.58;
   const zBox = RINK_W / 2 + 1.55;
-  const gY = BOARD_H + GLASS_H / 2;
-  const benchOuter = 9.8;
-  const benchInner = 0.52;
+  // Each back pane is 2.5 cm short of the box edge, and the boxes sit 5 cm off center.
+  const boxBackGap = (PENALTY_BOX_W / 2 + 0.05 - (PENALTY_BOX_W - 0.05) / 2) * 2;
+  const gY = BOARD_H + SIDE_GLASS_H / 2;
+  const benchOuter = BENCH_SIDE_X;
+  const benchInner = BENCH_INNER_X;
+  // Rear face of the back glass (center zBench-0.62, thickness 0.06).
+  // Side panes end on that face and do not stick out behind it.
+  const sideBackZ = zBench - 0.62 - 0.06 / 2;
+  const sideFrontZ = benchBoardGlassZ() + RINK_GLASS_THICK / 2;
+  const sideDepth = sideFrontZ - sideBackZ;
+  const sideCenterZ = (sideBackZ + sideFrontZ) / 2;
+  // Kick outer inset is -0.22. Reporter panes stop on that bench-side face.
+  const reporterFrontZ = -(RINK_W / 2 + 0.22);
+  const reporterDepth = reporterFrontZ - sideBackZ;
+  const reporterCenterZ = (sideBackZ + reporterFrontZ) / 2;
   const benchSpan = benchOuter - benchInner;
   const benchMid = (benchOuter + benchInner) / 2;
-  const postH = BOARD_H + GLASS_H - 4 * FT;
+  const postH = BOARD_H + SIDE_GLASS_H - 4 * FT;
   const postW = 0.18;
   const postX = benchInner - 0.04 - postW / 2;
   const zPost = zBench + 0.37;
@@ -1203,15 +1253,25 @@ function Benches() {
             <boxGeometry args={[benchSpan, 0.22, 0.12]} />
           </mesh>
           <mesh position={[0, gY, -0.62]} material={glass}>
-            <boxGeometry args={[benchSpan, GLASS_H, 0.06]} />
+            <boxGeometry args={[benchSpan, SIDE_GLASS_H, 0.06]} />
           </mesh>
         </group>
       ))}
-      <mesh position={[-benchOuter, gY, zBench - 0.18]} material={glass}>
-        <boxGeometry args={[0.06, GLASS_H, 1.05]} />
+      <mesh position={[-benchOuter, gY, sideCenterZ]} material={glass}>
+        <boxGeometry args={[BENCH_SIDE_GLASS_T, SIDE_GLASS_H, sideDepth]} />
       </mesh>
-      <mesh position={[benchOuter, gY, zBench - 0.18]} material={glass}>
-        <boxGeometry args={[0.06, GLASS_H, 1.05]} />
+      <mesh position={[benchOuter, gY, sideCenterZ]} material={glass}>
+        <boxGeometry args={[BENCH_SIDE_GLASS_T, SIDE_GLASS_H, sideDepth]} />
+      </mesh>
+      <mesh position={[-postX, gY, reporterCenterZ]} material={glass}>
+        <boxGeometry args={[BENCH_SIDE_GLASS_T, SIDE_GLASS_H, reporterDepth]} />
+      </mesh>
+      <mesh position={[postX, gY, reporterCenterZ]} material={glass}>
+        <boxGeometry args={[BENCH_SIDE_GLASS_T, SIDE_GLASS_H, reporterDepth]} />
+      </mesh>
+      {/* Behind the benches, across the reporter gap. Overlaps each back pane by 2 cm. */}
+      <mesh position={[0, gY, zBench - 0.62]} material={glass}>
+        <boxGeometry args={[benchInner * 2 + 0.04, SIDE_GLASS_H, 0.06]} />
       </mesh>
       {([-1, 1] as const).map((side) => (
         <mesh key={`post${side}`} position={[side * postX, postH / 2, zPost]} material={postMat}>
@@ -1277,6 +1337,10 @@ function Benches() {
         z={zBox}
         sitters={awayBox.map((number) => ({ kit: away, number }))}
       />
+      {/* Overlaps each back pane by 2 cm. */}
+      <mesh position={[0, gY, zBox + 0.52]} material={boxGlass}>
+        <boxGeometry args={[boxBackGap + 0.04, SIDE_GLASS_H, 0.06]} />
+      </mesh>
     </group>
   );
 }

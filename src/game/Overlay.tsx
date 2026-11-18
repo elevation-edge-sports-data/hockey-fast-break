@@ -1063,22 +1063,26 @@ function MainMenus() {
               Off
             </button>
           </div>
-          <div className="cam-row menu-sub">
-            <label className="hud-slider-row logo-zoom">
-              <span>Zoom</span>
-              <input
-                type="range"
-                min={JERSEY_LOGO_ZOOM_MIN}
-                max={JERSEY_LOGO_ZOOM_MAX}
-                step={0.05}
-                value={jerseyLogoZoom}
-                aria-label="Jersey logo zoom"
-                onChange={(e) => setJerseyLogoZoom(Number(e.target.value))}
-              />
-              <b>{jerseyLogoZoom.toFixed(2)}×</b>
-            </label>
-            {jerseyStatus ? <span>{jerseyStatus}</span> : null}
-          </div>
+          {!jerseyLogoOff || jerseyStatus ? (
+            <div className="cam-row menu-sub">
+              {jerseyLogoOff ? null : (
+                <label className="hud-slider-row logo-zoom">
+                  <span>Zoom</span>
+                  <input
+                    type="range"
+                    min={JERSEY_LOGO_ZOOM_MIN}
+                    max={JERSEY_LOGO_ZOOM_MAX}
+                    step={0.05}
+                    value={jerseyLogoZoom}
+                    aria-label="Jersey logo zoom"
+                    onChange={(e) => setJerseyLogoZoom(Number(e.target.value))}
+                  />
+                  <b>{jerseyLogoZoom.toFixed(2)}×</b>
+                </label>
+              )}
+              {jerseyStatus ? <span>{jerseyStatus}</span> : null}
+            </div>
+          ) : null}
         </>
       ) : null}
       <input

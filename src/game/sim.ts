@@ -18,7 +18,8 @@ import {
   BLUE_X,
   BLUE_LINE_W,
   BOARD_H,
-  GLASS_H,
+  END_GLASS_H,
+  SIDE_GLASS_H,
   cageDepthAt,
   cageBaseStrike,
   GOAL_PIPE_R,
@@ -28,6 +29,7 @@ import {
   resolveRink,
   RINK_L,
   RINK_W,
+  benchSeatOuterX,
 } from "./rink";
 import { BUTTERFLY_STANCE_DROP, GOALIE_STICK_LEN, GOALIE_Z, goalieRaisedHandCovers } from "./goalieStance";
 import { readActions, setInjectedKeys, windowHasInputFocus, type Actions } from "./input";
@@ -2447,11 +2449,14 @@ function scrimmageGone(team: "home" | "away"): boolean[] {
   return team === "home" ? world.scrimmageHomeGone : world.scrimmageAwayGone;
 }
 
-function scrimmageWinner(): "home" | "away" | null {
+function scrimmageWinner(
+  homeGone: readonly boolean[] = world.scrimmageHomeGone,
+  awayGone: readonly boolean[] = world.scrimmageAwayGone,
+): "home" | "away" | null {
   const ui = useGame.getState();
   if (ui.clockMode !== "scrimmage") return null;
-  const homeScored = world.scrimmageAwayGone.filter(Boolean).length;
-  const awayScored = world.scrimmageHomeGone.filter(Boolean).length;
+  const homeScored = awayGone.filter(Boolean).length;
+  const awayScored = homeGone.filter(Boolean).length;
   if (ui.scrimmageAwayTargets > 0 && homeScored >= ui.scrimmageAwayTargets) return "home";
   if (ui.scrimmageHomeTargets > 0 && awayScored >= ui.scrimmageHomeTargets) return "away";
   return null;
@@ -2494,7 +2499,22 @@ function applyScrimmageProgress(): void {
 }
 
 function endScrimmageMatch(): boolean {
-  const winner = scrimmageWinner();
+  let winner = scrimmageWinner();
+  // Instant replay rewinds the live boards. Chase, and a skip, can stop on
+  // the frame before the knockdown. The hold is the post-goal set from when
+  // the replay started, so the last target still counts.
+  if (!winner && goalBoardHold) {
+    const heldHome = goalBoardHold.scrimmageHomeGone;
+    const heldAway = goalBoardHold.scrimmageAwayGone;
+    winner = scrimmageWinner(heldHome, heldAway);
+    if (winner) {
+      world.scrimmageHomeGone = heldHome.slice();
+      world.scrimmageAwayGone = heldAway.slice();
+      const homeScored = heldAway.filter(Boolean).length;
+      const awayScored = heldHome.filter(Boolean).length;
+      useGame.getState().setScrimmageDown(homeScored, awayScored);
+    }
+  }
   if (!winner) return false;
   const fresh = !world.periodOver;
   world.periodOver = true;
@@ -2559,7 +2579,7 @@ function tickScrimmage(
   return false;
 }
 
-/** Scrimmage misses treat the goal mouth as a tarp. A non-target hit comes back out. */
+/** Scrimmage misses treat the goal mouth as a solid board. A non-target hit comes back out. */
 function bounceScrimmageFace(
   mouth: 1 | -1,
   prevX: number,
@@ -2583,12 +2603,12 @@ function bounceScrimmageFace(
   puck.x = line + mouth * (fromIce ? -0.07 : 0.07);
   puck.y = Math.max(PUCK_Y, Math.min(hy, GOAL_H - 0.04));
   puck.z = Math.max(-hw + 0.04, Math.min(hw - 0.04, hz));
-  const cap = Math.hypot(puck.vx, puck.vy, puck.vz);
-  const into = puck.vx * mouth;
-  let vx = puck.vx;
-  if (fromIce && into > 0) vx = puck.vx - 1.35 * into * mouth;
-  else if (!fromIce && into < 0) vx = puck.vx - 1.35 * into * mouth;
-  writeRebound(puck, vx, Math.min(puck.vy, 0) * 0.25, puck.vz * 0.45, cap * 0.25);
+  // Outward normal points toward the ice. reflectBoard damps only an inbound
+  // normal, so pass the approach direction. vy and vz stay tangential.
+  const inbound = fromIce ? mouth : -mouth;
+  const refl = reflectBoard(puck.vx, puck.vz, inbound, 0);
+  puck.vx = refl.vx;
+  puck.vz = refl.vz;
   return true;
 }
 
@@ -13966,7 +13986,7 @@ function fullSauceLand(s: Skater, ax: number, az: number): FullSauceLand | null 
   const attack = attackDir(s.side);
   const from = passOrigin(s);
   const hit = rayBoard(from.x, from.z, ax, az, 90);
-  const wall = hit ? wallTop(hit.nx, hit.nz, hit.x, hit.z) : BOARD_H + GLASS_H;
+  const wall = hit ? wallTop(hit.nx, hit.nz, hit.x, hit.z) : BOARD_H + END_GLASS_H;
   const zone = sauceZone(s);
   const distToX = (x: number): number | null => {
     if (ax * attack < 0.12) return null;
@@ -14176,7 +14196,7 @@ function launchPass(
       let want = chargedClear ? sauceClearY() : sauceNetY(sauceNow);
       if (aim.receiveY !== undefined && !chargedClear) want = Math.min(want, aim.receiveY);
       if (aim.over && !chargedClear && sauceNow >= 0.999) {
-        const wall = aim.wall ?? BOARD_H + GLASS_H;
+        const wall = aim.wall ?? BOARD_H + SIDE_GLASS_H;
         const intoCrowd = sauceNow >= SAUCE_CROWD_AT && Math.random() < SAUCE_CROWD_P;
         want = intoCrowd ? wall + 0.32 : sauceGlassY(sauceNow, wall);
       }
@@ -20293,7 +20313,7 @@ function boardArrival(
 
 function vyForBank(x: number, z: number, vx: number, vz: number, high: boolean): number {
   if (!high) return 0.08;
-  const glass = BOARD_H + GLASS_H * 0.42;
+  const glass = BOARD_H + SIDE_GLASS_H * 0.42;
   let lo = 0.3;
   let hi = 14;
   let best = 0.3;
@@ -21719,6 +21739,7 @@ function startStoppage(kind: "goal" | "cover" | "offside" | "crowd" | "frozen", 
     if (!targetGoal && !liveSo) {
       if (homeScored) ui.setHomeScore(ui.homeScore + 1);
       else ui.setAwayScore(ui.awayScore + 1);
+      stampReplayGoalScore();
     }
     world.goalSide = homeScored ? "home" : "away";
     world.goalTicker = liveSo ? SHOOTOUT_TRY_CHEER_S : 6.5;
@@ -21774,6 +21795,7 @@ function startStoppage(kind: "goal" | "cover" | "offside" | "crowd" | "frozen", 
     }
     beginJumboReplay();
     armInstantReplay(homeScored);
+    holdGoalReplayHud();
     const otMode = ui.clockMode === "roller" || ui.clockMode === "game";
     const otFormat = ui.clockMode === "roller" ? ui.rollerOtFormat : ui.otFormat;
     const pastRegulation =
@@ -25196,7 +25218,14 @@ function stepPause(dt: number, act: Actions): boolean {
     world.stoppageT = 0;
     ui.setPeriodOver(true);
   }
-  if (world.goalTicker <= 0 && world.goalSide && !world.stoppage && !world.drillWon) {
+  if (
+    world.goalTicker <= 0 &&
+    world.goalSide &&
+    !world.stoppage &&
+    !world.drillWon &&
+    !instantWait &&
+    !instantOn
+  ) {
     world.goalSide = null;
     ui.setGoalSide(null);
   }
@@ -25551,6 +25580,13 @@ let goalBoardHold: {
   scrimmageHomeGone: boolean[];
   scrimmageAwayGone: boolean[];
 } | null = null;
+/** Score and clock at the whistle. A goal replay keeps both on the HUD. */
+let goalReplayHud: {
+  homeScore: number;
+  awayScore: number;
+  period: number;
+  periodClock: number;
+} | null = null;
 type ReplayScrub = "lt" | "rt" | "lb" | "rb";
 type ReplayLock = { kind: "free" } | { kind: "puck" } | { kind: "skater"; index: number };
 let replayScrub: ReplayScrub | null = null;
@@ -25866,6 +25902,21 @@ function restoreGoalBoards(): void {
   world.scrimmageAwayGone = hold.scrimmageAwayGone.slice();
 }
 
+/** Read after the goal is on the live board, so the replay cannot take it off. */
+function holdGoalReplayHud(): void {
+  const ui = useGame.getState();
+  goalReplayHud = {
+    homeScore: ui.homeScore,
+    awayScore: ui.awayScore,
+    period: ui.period,
+    periodClock: ui.periodClock,
+  };
+}
+
+function clearGoalReplayHud(): void {
+  goalReplayHud = null;
+}
+
 function snapHud(): ReplayHud {
   const ui = useGame.getState();
   const shots = ui.teamShots;
@@ -25906,14 +25957,32 @@ function publishReplayBoard(next: ReplayHud | null): void {
 
 function noteReplayBoard(snap: ReplaySnap): void {
   if (!world.replay) return;
-  publishReplayBoard(snap.hud ?? null);
+  const hud = snap.hud ?? null;
+  // Pause replay still follows the frame. A goal replay keeps the whistle's score and clock.
+  const held = world.replayKind === "goal" ? goalReplayHud : null;
+  if (!held) {
+    publishReplayBoard(hud);
+    return;
+  }
+  const shots = useGame.getState().teamShots;
+  publishReplayBoard({
+    homeScore: held.homeScore,
+    awayScore: held.awayScore,
+    period: held.period,
+    periodClock: held.periodClock,
+    homeOnGoal: hud?.homeOnGoal ?? shots.home.onGoal,
+    awayOnGoal: hud?.awayOnGoal ?? shots.away.onGoal,
+    homeAttempts: hud?.homeAttempts ?? shots.home.attempts,
+    awayAttempts: hud?.awayAttempts ?? shots.away.attempts,
+  });
 }
 
 function clearReplayBoard(): void {
   publishReplayBoard(null);
 }
 
-/** Score, clock, and shots for the replay frame on screen. Null in live play. */
+/** Score, clock, and shots for the replay frame on screen. Null in live play.
+ *  A goal replay keeps the post-goal score and the clock from the whistle. */
 export function replayBoardNow(): ReplayHud | null {
   return replayBoard;
 }
@@ -25969,6 +26038,21 @@ function recordReplay(force = false): void {
     if (replayN === 12) noteReplayFootage();
   }
   pushInstantTail(replayBuf[(replayW + REPLAY_CAP - 1) % REPLAY_CAP]!);
+}
+
+/**
+ * The goal whistle is stored before the score increments, so that frame still
+ * has the old total. In-game replay should change the score on that frame.
+ * Instant replay keeps its own board and does not read this stamp.
+ */
+function stampReplayGoalScore(): void {
+  if (world.replay || replayN <= 0) return;
+  const snap = replayBuf[(replayW + REPLAY_CAP - 1) % REPLAY_CAP];
+  const hud = snap?.hud;
+  if (!hud) return;
+  const ui = useGame.getState();
+  hud.homeScore = ui.homeScore;
+  hud.awayScore = ui.awayScore;
 }
 
 function applyReplaySnap(snap: ReplaySnap): void {
@@ -26522,6 +26606,8 @@ export type InstantCam = "broadcast" | "chase" | "classic";
 const INSTANT_PRE: Record<InstantCam, number> = { broadcast: 90, classic: 60, chase: 60 };
 
 function shuffleInstantModes(): InstantCam[] {
+  // Shootout clips use the broadcast angle only. Chase and classic stay on other goals.
+  if (world.shootout) return ["broadcast"];
   const modes: InstantCam[] = ["broadcast", "classic", "chase"];
   for (let i = modes.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -26546,6 +26632,8 @@ let instantModeI = 0;
 let instantT = 0;
 let instantChaseX = 1;
 let instantChaseZ = 0;
+/** Live world at the cut to a shootout clip, restored when that clip ends. */
+let instantResumeSnap: ReplaySnap | null = null;
 
 function dropInstantReplay(): void {
   instantClip = [];
@@ -26558,13 +26646,17 @@ function dropInstantReplay(): void {
   instantModes = [];
   instantModeI = 0;
   instantT = 0;
+  instantResumeSnap = null;
   replayPoseById = null;
+  clearGoalReplayHud();
   clearReplayBoard();
 }
 
 function instantModesOk(): boolean {
   const ui = useGame.getState();
-  if (!ui.instantReplay || world.shootout) return false;
+  if (!ui.instantReplay) return false;
+  // Live shootout goals and series-winning saves. A scripted roll keeps its own clock.
+  if (world.shootout) return !shootoutScripted();
   return ui.clockMode === "game" || ui.clockMode === "roller" || ui.clockMode === "scrimmage";
 }
 
@@ -26596,13 +26688,28 @@ function armInstantReplay(userScored: boolean): void {
   instantModes = shuffleInstantModes();
 }
 
+function instantShownIndex(): number {
+  const mode = instantModes[instantModeI];
+  if (!mode || instantClip.length < 2) return 0;
+  const start = instantModeStart(mode);
+  const end = instantModeEnd(mode);
+  return Math.min(end, start + Math.max(0, Math.floor(instantT * 60)));
+}
+
 function instantShownSnap(): ReplaySnap | null {
   const mode = instantModes[instantModeI];
   if (!mode || instantClip.length < 2) return null;
-  const start = instantModeStart(mode);
-  const end = instantModeEnd(mode);
-  const i = Math.min(end, start + Math.max(0, Math.floor(instantT * 60)));
-  return instantClip[i] ?? null;
+  return instantClip[instantShownIndex()] ?? null;
+}
+
+/**
+ * Crowd hop during a goal replay. The clip rewinds while goalTicker stays high,
+ * so the stands would celebrate the whole time. Null outside that replay.
+ * True from the goal frame on, including the tail chase does not play.
+ */
+export function instantReplayCrowdOn(): boolean | null {
+  if (!instantOn || !instantModes[instantModeI] || instantClip.length < 2) return null;
+  return instantShownIndex() >= instantGoalAt;
 }
 
 function instantModeDur(): number {
@@ -26632,6 +26739,10 @@ function beginInstantReplay(): void {
   if (!instantWait || instantClip.length < 2) {
     if (instantWait && instantClip.length < 2) dropInstantReplay();
     return;
+  }
+  if (world.shootout && replayN > 0) {
+    const last = replayBuf[(replayW + REPLAY_CAP - 1) % REPLAY_CAP];
+    instantResumeSnap = last ? cloneReplaySnap(last) : null;
   }
   instantWait = false;
   instantTail = 0;
@@ -26668,12 +26779,21 @@ function advanceInstantReplay(): void {
 }
 
 function finishInstantReplay(): void {
+  const resume = instantResumeSnap;
+  const resumeShootout = !!world.shootout && world.shootout.phase !== "done";
   dropInstantReplay();
   world.replay = false;
   world.replayKind = null;
   world.replayT = 0;
   world.replayPlaying = false;
   world.replayHardCut = true;
+  if (resumeShootout) {
+    restoreGoalBoards();
+    if (resume) applyReplaySnap(resume);
+    // The attempt is already decided. Same handoff the result hold used to make.
+    beginAttempt();
+    return;
+  }
   if (world.shootout) {
     restoreGoalBoards();
     return;
@@ -29320,6 +29440,22 @@ function noteShootoutContacts(): void {
   if (skaterHas || shotAfter || passAfter) failShootoutRebound();
 }
 
+/** A save that ends the series. Other misses keep the short result hold. */
+function shootoutSaveDecides(): boolean {
+  const so = world.shootout;
+  if (!so || so.phase === "done" || shootoutScripted()) return false;
+  const attempt = so.attempts[so.attempts.length - 1];
+  if (attempt?.result !== "save") return false;
+  return !shootoutStillGoing(so.attempts, so.rounds);
+}
+
+function armShootoutSaveReplay(): void {
+  if (instantWait || instantOn) return;
+  if (!shootoutSaveDecides()) return;
+  armInstantReplay(false);
+  if (instantWait) holdGoalReplayHud();
+}
+
 function failShootoutRebound(): void {
   const so = world.shootout;
   if (!so || so.phase !== "live") return;
@@ -29336,6 +29472,7 @@ function failShootoutRebound(): void {
   }
   cheerShootoutSave(attempt.side);
   publishShootout();
+  armShootoutSaveReplay();
 }
 
 function settleLiveShootout(): void {
@@ -29359,6 +29496,7 @@ function settleLiveShootout(): void {
     so.t = 0;
     cheerShootoutSave(attempt.side);
     publishShootout();
+    armShootoutSaveReplay();
     return;
   }
   const deflected =
@@ -29394,6 +29532,7 @@ function settleLiveShootout(): void {
   so.t = 0;
   if (result === "save") cheerShootoutSave(attempt.side);
   publishShootout();
+  if (result === "save") armShootoutSaveReplay();
 }
 
 function shootoutScores(side: "home" | "away"): boolean {
@@ -29744,8 +29883,8 @@ function stepShootout(dt: number): void {
 /** Decorative shootout bench numbers. The arena draws these, then any real extras that fit. */
 export const HOME_BENCH_NUMS = [84, 62, 42, 25, 11, 10, 15, 18, 21];
 export const AWAY_BENCH_NUMS = [2, 4, 9, 14, 17, 19, 22, 27, 31];
-const SHOOTOUT_BENCH_INNER = 0.8;
-const SHOOTOUT_BENCH_OUTER = 9.52;
+const SHOOTOUT_BENCH_INNER = 0.88;
+const SHOOTOUT_BENCH_OUTER = benchSeatOuterX();
 const SHOOTOUT_BENCH_GAP = 0.64;
 
 /** One bench row. The goalie stays at the net-side end. Numbers past the shoulder gap are left off. */
@@ -30062,14 +30201,34 @@ function stepPlay(dt: number, act: Actions): void {
     const so = world.shootout;
     // A live decision keeps the puck and players moving. Scripted attempts stay kinematic.
     if (so.phase === "result" && !shootoutScripted()) {
-      parkShootoutBench();
-      so.t += dt;
-      const attempt = so.attempts[so.attempts.length - 1];
-      const userGoal = attempt?.side === "home" && attempt.result === "goal";
-      const hold = userGoal ? SHOOTOUT_USER_CHEER_S : SHOOTOUT_RESULT_S;
-      if (so.t >= hold) {
-        if (!shootoutStillGoing(so.attempts, so.rounds)) finishShootout();
-        else beginAttempt();
+      // A goal waits on the whistle clock. A series-winning save uses the same 2s delay.
+      if (instantWait && world.whistle !== "goal") {
+        if (act.xEdge) {
+          finishInstantReplay();
+          return;
+        }
+        if (act.aEdge) {
+          beginInstantReplay();
+          return;
+        }
+        so.t += dt;
+        if (so.t >= INSTANT_DELAY_S) {
+          beginInstantReplay();
+          return;
+        }
+        parkShootoutBench();
+      } else if (!instantWait) {
+        parkShootoutBench();
+        so.t += dt;
+        const attempt = so.attempts[so.attempts.length - 1];
+        const userGoal = attempt?.side === "home" && attempt.result === "goal";
+        const hold = userGoal ? SHOOTOUT_USER_CHEER_S : SHOOTOUT_RESULT_S;
+        if (so.t >= hold) {
+          if (!shootoutStillGoing(so.attempts, so.rounds)) finishShootout();
+          else beginAttempt();
+        }
+      } else {
+        parkShootoutBench();
       }
     }
     if (!world.shootout || world.shootout.phase === "done") return;
@@ -30457,7 +30616,7 @@ function stepPlay(dt: number, act: Actions): void {
     updateCoverPose(dt);
     if (world.whistle === "goal" || offsideTailLive()) recordReplay();
     if (instantWait && world.whistle === "goal" && world.stoppageT >= INSTANT_DELAY_S) beginInstantReplay();
-    if (world.shootout) parkShootoutBench();
+    if (world.shootout && !instantOn) parkShootoutBench();
     if (instantWait && world.whistle === "goal") {
       /* Hold the celebration until the replay starts or X skips it. */
     } else if (world.whistle === "crowd") {

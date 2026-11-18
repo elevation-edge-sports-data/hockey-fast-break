@@ -4,7 +4,15 @@ export const RINK_L = 200 * FT;
 export const RINK_W = 85 * FT;
 export const CORNER_R = 28 * FT;
 export const BOARD_H = (42 / 12) * FT;
-export const GLASS_H = 7.5 * FT;
+/** Glass above the boards on the straight side boards, past the 30° drop. */
+export const SIDE_GLASS_H = 6 * FT;
+/** Glass above the boards on the end boards and the whole corner arc. */
+export const END_GLASS_H = 8 * FT;
+/**
+ * Horizontal run of the drop from END_GLASS_H to SIDE_GLASS_H.
+ * The top edge falls at 30° to horizontal, along the straight side after the corner.
+ */
+export const GLASS_RAMP_RUN = (END_GLASS_H - SIDE_GLASS_H) / Math.tan(Math.PI / 6);
 export const KICK_H = 0.18;
 export const RIBBON_H = 0.14;
 
@@ -142,13 +150,187 @@ export function resolveRink(
   return { x: px, z: pz, nx, nz, hit };
 }
 
+/** Outer end of each player bench. The end pane is centered on this |x|. */
+export const BENCH_SIDE_X = 9.8;
+/** Inner end of each player bench. The gap between the benches is inside this |x|. */
+export const BENCH_INNER_X = 0.52;
+/** Thickness of a bench end pane, along the rink length. */
+export const BENCH_SIDE_GLASS_T = 0.06;
+/**
+ * Outer bench seat. The goalie bench pose reaches 0.71 m toward +X
+ * (glove and blocker). 2 cm stays clear of the side-glass inner face.
+ */
+export function benchSeatOuterX(): number {
+  return BENCH_SIDE_X - BENCH_SIDE_GLASS_T / 2 - 0.71 - 0.02;
+}
+/** Centerline inset of the rink glass. Negative places it outside the ice edge. */
+export const RINK_GLASS_INSET = -0.06;
+/** Thickness of a rink glass pane. Flat panels and the bench end panes meet through this slab. */
+export const RINK_GLASS_THICK = 0.07;
+/** Extra length on a flat rink pane so neighboring panels overlap. Half hangs off each end. */
+export const RINK_GLASS_SEAM = 0.04;
+/** Bench-side boards below this z are the bench wall. */
+export const BENCH_GLASS_OPEN_Z = -RINK_W / 2 + 0.85;
+
+/**
+ * Inner face of an outer bench end pane.
+ * Board glass continues through that face, so the two panes overlap.
+ */
+export function benchDoorX(): number {
+  return BENCH_SIDE_X - BENCH_SIDE_GLASS_T / 2;
+}
+
+/**
+ * True across the bench doors and the reporter opening, where players step onto the ice.
+ * The outer end panes stay up. There is no board glass across the reporter front.
+ */
 export function benchGlassOpen(x: number, z: number): boolean {
-  return z < -RINK_W / 2 + 0.85 && Math.abs(x) < 9.95;
+  return z < BENCH_GLASS_OPEN_Z && Math.abs(x) < benchDoorX();
+}
+
+/** World z of the rink-glass centerline on the bench side. */
+export function benchBoardGlassZ(): number {
+  return -(RINK_W / 2 - RINK_GLASS_INSET);
+}
+
+/** |x| where the straight side boards meet the corner arc. Inset cancels, so the glass samples share it. */
+export function glassSideJoinX(): number {
+  return RINK_L / 2 - CORNER_R;
+}
+
+/**
+ * Glass pane height above the boards.
+ * Ends and every corner-arc sample stay at END_GLASS_H.
+ * On the straight side, the top stays at END_GLASS_H at the corner, then falls at 30°
+ * until SIDE_GLASS_H and holds that height through center ice.
+ */
+export function glassHeightAt(x: number, _z: number): number {
+  const join = glassSideJoinX();
+  const ax = Math.abs(x);
+  if (ax >= join - 1e-4) return END_GLASS_H;
+  const along = join - ax;
+  if (along >= GLASS_RAMP_RUN) return SIDE_GLASS_H;
+  return END_GLASS_H - (END_GLASS_H - SIDE_GLASS_H) * (along / GLASS_RAMP_RUN);
+}
+
+export type GlassWallSpan = {
+  x: number;
+  z: number;
+  len: number;
+  rot: number;
+  /** Pane height at the start of the segment. That end is local −x after `rot`. */
+  h0: number;
+  /** Pane height at the end of the segment. That end is local +x after `rot`. */
+  h1: number;
+};
+
+type GlassXZ = { x: number; z: number };
+
+/**
+ * Keep the parts of a perimeter edge that are not the bench doors or the reporter opening.
+ * The opening is cut on the outer end-pane face so the board glass meets that pane.
+ */
+function glassEdgePieces(a: GlassXZ, b: GlassXZ): [GlassXZ, GlassXZ][] {
+  if (a.z >= BENCH_GLASS_OPEN_Z || b.z >= BENCH_GLASS_OPEN_Z) return [[a, b]];
+  // Flat panes hang RINK_GLASS_SEAM/2 past each end. The cut sits that far
+  // into the end pane so the drawn edge lands on the pane's inner face.
+  const outer = benchDoorX() + RINK_GLASS_SEAM / 2;
+  const lo = Math.min(a.x, b.x);
+  const hi = Math.max(a.x, b.x);
+  if (hi <= -outer + 1e-6 || lo >= outer - 1e-6) return [[a, b]];
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  if (Math.abs(dx) < 1e-8) {
+    return benchGlassOpen((a.x + b.x) / 2, (a.z + b.z) / 2) ? [] : [[a, b]];
+  }
+  const ts: number[] = [];
+  for (const cut of [-outer, outer]) {
+    if (lo < cut && hi > cut) ts.push((cut - a.x) / dx);
+  }
+  ts.sort((p, q) => p - q);
+  const pieces: [GlassXZ, GlassXZ][] = [];
+  let prevT = 0;
+  let prev = a;
+  const at = (t: number): GlassXZ => ({ x: a.x + dx * t, z: a.z + dz * t });
+  const keep = (p: GlassXZ, q: GlassXZ, tMid: number) => {
+    if (benchGlassOpen(a.x + dx * tMid, a.z + dz * tMid)) return;
+    if (Math.hypot(q.x - p.x, q.z - p.z) < 0.02) return;
+    pieces.push([p, q]);
+  };
+  for (const t of ts) {
+    const cut = at(t);
+    keep(prev, cut, (prevT + t) / 2);
+    prev = cut;
+    prevT = t;
+  }
+  keep(prev, b, (prevT + 1) / 2);
+  return pieces;
+}
+
+function pushGlassSpan(
+  out: GlassWallSpan[],
+  a: GlassXZ,
+  b: GlassXZ,
+  join: number,
+  flatAt: number,
+) {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  if (Math.hypot(dx, dz) < 0.08) return;
+  const far = Math.max(Math.abs(a.x), Math.abs(b.x));
+  const near = Math.min(Math.abs(a.x), Math.abs(b.x));
+  const crossesFlat = far <= join + 1e-4 && near < flatAt - 1e-4 && far > flatAt + 1e-4;
+  if (crossesFlat && Math.abs(dx) > 1e-6) {
+    const sign = Math.abs(a.x) >= Math.abs(b.x) ? Math.sign(a.x) : Math.sign(b.x);
+    const kinkX = sign * flatAt;
+    const t = (kinkX - a.x) / dx;
+    if (t > 0.02 && t < 0.98) {
+      const kink = { x: kinkX, z: a.z + dz * t };
+      out.push(glassSpan(a, kink));
+      out.push(glassSpan(kink, b));
+      return;
+    }
+  }
+  out.push(glassSpan(a, b));
+}
+
+/**
+ * One mesh span per perimeter sample, split where the 30° drop meets the flat side glass
+ * so a taper follows the slope instead of averaging it across the whole panel.
+ * The bench doors and the reporter opening are omitted. A sample that crosses
+ * that opening is cut at the outer end pane.
+ * `rot` is the yaw that sends local +x from the start point toward the end.
+ */
+export function glassWallLayout(ring: readonly { x: number; z: number }[]): GlassWallSpan[] {
+  const out: GlassWallSpan[] = [];
+  const join = glassSideJoinX();
+  const flatAt = join - GLASS_RAMP_RUN;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i]!;
+    const b = ring[(i + 1) % ring.length]!;
+    if (Math.hypot(b.x - a.x, b.z - a.z) < 0.08) continue;
+    for (const [p, q] of glassEdgePieces(a, b)) pushGlassSpan(out, p, q, join, flatAt);
+  }
+  return out;
+}
+
+function glassSpan(a: { x: number; z: number }, b: { x: number; z: number }): GlassWallSpan {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const len = Math.hypot(dx, dz);
+  return {
+    x: (a.x + b.x) / 2,
+    z: (a.z + b.z) / 2,
+    len,
+    rot: Math.atan2(-dz, dx),
+    h0: glassHeightAt(a.x, a.z),
+    h1: glassHeightAt(b.x, b.z),
+  };
 }
 
 export function wallTop(nx: number, nz: number, x: number, z: number): number {
   if (nz < -0.65 && Math.abs(nx) < 0.45 && benchGlassOpen(x, z)) return BOARD_H;
-  return BOARD_H + GLASS_H;
+  return BOARD_H + glassHeightAt(x, z);
 }
 
 /**

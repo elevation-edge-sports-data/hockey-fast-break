@@ -367,32 +367,6 @@ export function createNetTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-export function createAdTexture(pri: string, sec: string): THREE.CanvasTexture {
-  const c = document.createElement("canvas");
-  c.width = 1024;
-  c.height = 128;
-  const g = c.getContext("2d")!;
-  g.fillStyle = "#0d1218";
-  g.fillRect(0, 0, 1024, 128);
-  g.fillStyle = pri;
-  g.fillRect(0, 0, 1024, 8);
-  g.fillRect(0, 120, 1024, 8);
-  g.font = "700 52px 'Barlow Condensed', sans-serif";
-  g.textAlign = "center";
-  g.textBaseline = "middle";
-  const labels = ["FAST BREAK", "ELEVATION EDGE", "v0", "FAST BREAK"];
-  for (let i = 0; i < 4; i++) {
-    g.fillStyle = i % 2 === 0 ? "#e8ece6" : pri;
-    g.fillText(labels[i] ?? "", 128 + i * 256, 64);
-  }
-  void sec;
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
-  tex.wrapS = THREE.RepeatWrapping;
-  return tex;
-}
-
 export function createJumboTexture(): THREE.CanvasTexture {
   const c = document.createElement("canvas");
   c.width = 1024;

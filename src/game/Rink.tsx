@@ -1,12 +1,7 @@
 import { useFrame } from "@react-three/fiber";
 import { useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
-import {
-  createAdTexture,
-  createFaceoffDotTexture,
-  createIceTextures,
-  createNetTexture,
-} from "./iceTexture";
+import { createFaceoffDotTexture, createIceTextures, createNetTexture } from "./iceTexture";
 import { resolveIceLogoUrl } from "./logoLibrary";
 import {
   BLUE_LINE_W,
@@ -29,8 +24,11 @@ import {
   L_INSET,
   L_STEM,
   MARK_W,
-  GLASS_H,
-  benchGlassOpen,
+  glassWallLayout,
+  type GlassWallSpan,
+  RINK_GLASS_INSET,
+  RINK_GLASS_SEAM,
+  RINK_GLASS_THICK,
   cageOutlinePoint,
   GOAL_D,
   GOAL_D_TOP,
@@ -48,7 +46,7 @@ import {
   RINK_W,
 } from "./rink";
 import { roundedRectShape, rinkPerimeter } from "./rinkGeom";
-import { kitById, kitWornColors } from "./uniforms";
+import { kitById } from "./uniforms";
 import { clampCenterIceLogoZoom, useGame, type DrillTargets } from "./store";
 import { defendDir, drillFade, drillGrid, drillTargetList, targetBoard, world } from "./sim";
 
@@ -847,14 +845,67 @@ function ScrimmageTargets() {
   );
 }
 
+/** Bottom sits on y = 0. Local +x runs from the start height `h0` to the end height `h1`. */
+function taperedGlassGeometry(len: number, h0: number, h1: number): THREE.BufferGeometry {
+  const hx = len / 2;
+  const tz = RINK_GLASS_THICK / 2;
+  const position = new Float32Array([
+    -hx, 0, -tz,
+    hx, 0, -tz,
+    hx, 0, tz,
+    -hx, 0, tz,
+    -hx, h0, -tz,
+    hx, h1, -tz,
+    hx, h1, tz,
+    -hx, h0, tz,
+  ]);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(position, 3));
+  geo.setIndex([
+    3, 2, 6, 3, 6, 7, 0, 4, 5, 0, 5, 1, 0, 3, 7, 0, 7, 4, 1, 5, 6, 1, 6, 2, 0, 1, 2, 0, 2, 3, 4, 7, 6,
+    4, 6, 5,
+  ]);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function GlassPanel({ wall }: { wall: GlassWallSpan }) {
+  const flat = Math.abs(wall.h0 - wall.h1) < 1e-4;
+  const geo = useMemo(
+    () => (flat ? null : taperedGlassGeometry(wall.len, wall.h0, wall.h1)),
+    [flat, wall.len, wall.h0, wall.h1],
+  );
+  useLayoutEffect(() => () => geo?.dispose(), [geo]);
+  const material = (
+    <meshPhysicalMaterial
+      color="#cfe0ee"
+      transparent
+      opacity={0.07}
+      roughness={0.08}
+      metalness={0.08}
+      depthWrite={false}
+      side={THREE.DoubleSide}
+    />
+  );
+  if (flat) {
+    return (
+      <mesh position={[wall.x, BOARD_H + wall.h0 / 2, wall.z]} rotation={[0, wall.rot, 0]}>
+        <boxGeometry args={[wall.len + RINK_GLASS_SEAM, wall.h0, RINK_GLASS_THICK]} />
+        {material}
+      </mesh>
+    );
+  }
+  return (
+    <mesh geometry={geo ?? undefined} position={[wall.x, BOARD_H, wall.z]} rotation={[0, wall.rot, 0]}>
+      {material}
+    </mesh>
+  );
+}
+
 export function Rink() {
   const homeKit = useGame((s) => s.homeKit);
-  const awayKit = useGame((s) => s.awayKit);
   const clockMode = useGame((s) => s.clockMode);
   const home = kitById(homeKit);
-  const away = kitById(awayKit);
-  const homeWorn = kitWornColors(home);
-  const awayWorn = kitWornColors(away);
   const showBlue = clockMode !== "roller";
   const nzDots = clockMode !== "roller";
   const gapCenterLine = useIceLogoUrl() !== null;
@@ -863,23 +914,12 @@ export function Rink() {
     () => createIceTextures(showBlue, nzDots, gapCenterLine),
     [showBlue, nzDots, gapCenterLine],
   );
-  const adsHome = useMemo(
-    () => createAdTexture(homeWorn.jersey, homeWorn.helmet),
-    [homeWorn.jersey, homeWorn.helmet],
-  );
-  const adsAway = useMemo(
-    () => createAdTexture(awayWorn.jersey, awayWorn.helmet),
-    [awayWorn.jersey, awayWorn.helmet],
-  );
-
   useLayoutEffect(
     () => () => {
       ice.map.dispose();
       ice.roughnessMap.dispose();
-      adsHome.dispose();
-      adsAway.dispose();
     },
-    [ice, adsHome, adsAway],
+    [ice],
   );
 
   const iceGeo = useMemo(() => {
@@ -912,23 +952,7 @@ export function Rink() {
     capMat.needsUpdate = true;
     return () => capMat.dispose();
   }, [capMat, homeRibbon]);
-  const glassWalls = useMemo(() => {
-    const ring = rinkPerimeter(-0.06, 96);
-    const out: { x: number; z: number; len: number; rot: number }[] = [];
-    for (let i = 0; i < ring.length; i++) {
-      const a = ring[i]!;
-      const b = ring[(i + 1) % ring.length]!;
-      const mx = (a.x + b.x) / 2;
-      const mz = (a.z + b.z) / 2;
-      if (benchGlassOpen(mx, mz)) continue;
-      const dx = b.x - a.x;
-      const dz = b.z - a.z;
-      const len = Math.hypot(dx, dz);
-      if (len < 0.08) continue;
-      out.push({ x: mx, z: mz, len, rot: Math.atan2(-dz, dx) });
-    }
-    return out;
-  }, []);
+  const glassWalls = useMemo(() => glassWallLayout(rinkPerimeter(RINK_GLASS_INSET, 96)), []);
 
   const iceMat = useMemo(
     () =>
@@ -957,32 +981,8 @@ export function Rink() {
       <mesh geometry={ribbonGeo} position={[0, BOARD_H - RIBBON_H + 0.008, 0]} material={capMat} />
       <BoardLines blue={showBlue} />
       {glassWalls.map((w, i) => (
-        <mesh key={`gw${i}`} position={[w.x, BOARD_H + GLASS_H / 2, w.z]} rotation={[0, w.rot, 0]}>
-          <boxGeometry args={[w.len + 0.04, GLASS_H, 0.07]} />
-          <meshPhysicalMaterial
-            color="#cfe0ee"
-            transparent
-            opacity={0.07}
-            roughness={0.08}
-            metalness={0.08}
-            depthWrite={false}
-            side={THREE.DoubleSide}
-          />
-        </mesh>
+        <GlassPanel key={`gw${i}`} wall={w} />
       ))}
-
-      <mesh position={[0, BOARD_H * 0.55, RINK_W / 2 + 0.22]}>
-        <boxGeometry args={[RINK_L * 0.42, 0.7, 0.06]} />
-        <meshStandardMaterial map={adsHome} roughness={0.55} />
-      </mesh>
-      <mesh position={[RINK_L * 0.12, BOARD_H * 0.55, -RINK_W / 2 - 0.22]} rotation={[0, Math.PI, 0]}>
-        <boxGeometry args={[RINK_L * 0.2, 0.7, 0.06]} />
-        <meshStandardMaterial map={adsHome} roughness={0.55} />
-      </mesh>
-      <mesh position={[-RINK_L * 0.12, BOARD_H * 0.55, -RINK_W / 2 - 0.22]} rotation={[0, Math.PI, 0]}>
-        <boxGeometry args={[RINK_L * 0.2, 0.7, 0.06]} />
-        <meshStandardMaterial map={adsAway} roughness={0.55} />
-      </mesh>
 
       <Goal side={1} />
       <Goal side={-1} />
