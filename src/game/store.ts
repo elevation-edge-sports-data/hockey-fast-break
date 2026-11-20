@@ -103,7 +103,7 @@ export const MODE_LINEUPS: Record<PlayMode, { home: Lineup; away: Lineup }> = {
 };
 
 export function modeLineupCap(mode: PlayMode): number {
-  return mode === "roller" || mode === "scrimmage" ? 5 : 6;
+  return mode === "roller" ? 5 : 6;
 }
 
 export const DEFAULT_HOME: Lineup = { ...MODE_LINEUPS.roller.home };
@@ -229,6 +229,7 @@ type GameUi = {
   scrimmageHomeDown: number;
   scrimmageAwayDown: number;
   checkRefs: boolean;
+  showRefs: boolean;
   checkGoalies: boolean;
   lineBrawl: boolean;
   /** Goal clips in Game, Roller, and Scrimmage. On unless the player turned it off. */
@@ -240,6 +241,12 @@ type GameUi = {
   ignoreAutoFind: boolean;
   /** Aimed passes snap onto a teammate in the cone. The pause button is Snap Pass. */
   passLock: boolean;
+  /** Length-clear loft stays under the far crossbar. Off leaves that vy alone. */
+  capLengthClearVy: boolean;
+  /** A wide length lob dies short of the far goal line. Off keeps its coast. */
+  holdLobInFront: boolean;
+  /** A saucer crest stays under the glass on its aim. Off keeps the uncapped peak. */
+  sauceBoardClamp: boolean;
   offsides: boolean;
   gameSpeed: number;
   /** Live puck ice drag. Default 0.25 matches the old PUCK_DRAG constant. */
@@ -321,11 +328,15 @@ type GameUi = {
   setScrimmageAwayTargets: (n: DrillTargets) => void;
   setScrimmageDown: (home: number, away: number) => void;
   setCheckRefs: (v: boolean) => void;
+  setShowRefs: (v: boolean) => void;
   setCheckGoalies: (v: boolean) => void;
   setLineBrawl: (v: boolean) => void;
   setInstantReplay: (v: boolean) => void;
   setIgnoreAutoFind: (v: boolean) => void;
   setPassLock: (v: boolean) => void;
+  setCapLengthClearVy: (v: boolean) => void;
+  setHoldLobInFront: (v: boolean) => void;
+  setSauceBoardClamp: (v: boolean) => void;
   setOffsides: (v: boolean) => void;
   setGameSpeed: (n: number) => void;
   setFriction: (n: number) => void;
@@ -635,7 +646,7 @@ export function clampRollerMinutes(n: number): number {
 }
 
 function openingPeriodClock(mode: PlayMode): number {
-  if (mode === "drill") return 60;
+  if (mode === "drill") return 0;
   if (mode === "scrimmage" || mode === "shootout") return 0;
   if (mode === "roller") return ROLLER_CLOCK_DISPLAY_MINUTES * 60;
   return GAME_CLOCK_DISPLAY_MINUTES * 60;
@@ -867,9 +878,7 @@ function loadAwayKit(home: number): number {
 }
 
 function lineupFits(l: Lineup, mode: PlayMode): boolean {
-  const cap = modeLineupCap(mode);
-  if (mode === "scrimmage") return l.g <= 1 && l.d + l.o <= cap;
-  return lineupTotal(l) <= cap;
+  return lineupTotal(l) <= modeLineupCap(mode);
 }
 
 function loadLineup(key: string, fallback: Lineup, mode: PlayMode): Lineup {
@@ -1043,11 +1052,15 @@ export const useGame = create<GameUi>((set, get) => ({
   scrimmageHomeDown: 0,
   scrimmageAwayDown: 0,
   checkRefs: loadFlag("hfb-check-refs", true),
+  showRefs: loadFlag("hfb-show-refs", true),
   checkGoalies: loadFlag("hfb-check-goalies", true),
   lineBrawl: loadFlag("hfb-line-brawl", false),
   instantReplay: loadFlag("hfb-instant-replay", true),
   ignoreAutoFind: loadFlag("hfb-ignore-auto-find", false),
   passLock: loadFlag("hfb-pass-lock", true),
+  capLengthClearVy: loadFlag("hfb-cap-length-clear-vy", true),
+  holdLobInFront: loadFlag("hfb-hold-lob-in-front", true),
+  sauceBoardClamp: loadFlag("hfb-sauce-board-clamp", true),
   offsides: false,
   gameSpeed: loadSlider(GAME_SPEED_KEY, GAME_SPEED_MIN, GAME_SPEED_MAX, GAME_SPEED_DEFAULT),
   friction: loadSlider(FRICTION_KEY, FRICTION_MIN, FRICTION_MAX, FRICTION_DEFAULT),
@@ -1234,9 +1247,22 @@ export const useGame = create<GameUi>((set, get) => ({
   setClockMode: (m) => {
     saveClockMode(m);
     const prev = get().clockMode;
-    const lu = MODE_LINEUPS[m];
-    const homeLineup = { ...lu.home };
-    const awayLineup = { ...lu.away };
+    const persistModes = new Set(["game", "scrimmage", "practice"]);
+    const persist = persistModes.has(prev) && persistModes.has(m);
+
+    let homeLineup: Lineup;
+    let awayLineup: Lineup;
+    if (persist) {
+      homeLineup = { ...get().homeLineup };
+      awayLineup = { ...get().awayLineup };
+      // Keep them only if they still fit the new mode; otherwise fall back to the mode default.
+      if (!lineupFits(homeLineup, m)) homeLineup = { ...MODE_LINEUPS[m].home };
+      if (!lineupFits(awayLineup, m)) awayLineup = { ...MODE_LINEUPS[m].away };
+    } else {
+      const lu = MODE_LINEUPS[m];
+      homeLineup = { ...lu.home };
+      awayLineup = { ...lu.away };
+    }
     saveLineup(HOME_LINEUP_KEY, homeLineup);
     saveLineup(AWAY_LINEUP_KEY, awayLineup);
     const enterPractice = m === "practice" && prev !== "practice";
@@ -1317,6 +1343,10 @@ export const useGame = create<GameUi>((set, get) => ({
     saveFlag("hfb-check-refs", v);
     set({ checkRefs: v });
   },
+  setShowRefs: (v) => {
+    saveFlag("hfb-show-refs", v);
+    set({ showRefs: v });
+  },
   setCheckGoalies: (v) => {
     saveFlag("hfb-check-goalies", v);
     set({ checkGoalies: v });
@@ -1336,6 +1366,18 @@ export const useGame = create<GameUi>((set, get) => ({
   setPassLock: (v) => {
     saveFlag("hfb-pass-lock", v);
     set({ passLock: v });
+  },
+  setCapLengthClearVy: (v) => {
+    saveFlag("hfb-cap-length-clear-vy", v);
+    set({ capLengthClearVy: v });
+  },
+  setHoldLobInFront: (v) => {
+    saveFlag("hfb-hold-lob-in-front", v);
+    set({ holdLobInFront: v });
+  },
+  setSauceBoardClamp: (v) => {
+    saveFlag("hfb-sauce-board-clamp", v);
+    set({ sauceBoardClamp: v });
   },
   setOffsides: (v) => {
     saveFlag("hfb-offsides", v);

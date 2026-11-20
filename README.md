@@ -14,7 +14,7 @@ Pose Editor: https://elevation-edge-sports-data.github.io/hockey-fast-break/pose
 
 ## Modes
 
-- **Drill**: 4, 8, 12, or 16 targets. One minute.
+- **Drill**: 4, 8, 12, or 16 targets.
 - **Practice**: skater vs goalie. Power play starts off.
 - **Scrimmage**: no goalies. Home and away targets, 4, 8, 12, or 16. Untimed. First team to knock down the other team's targets wins.
 - **Roller**: 4-on-4, no offsides, roller skates. Two 18:00 periods. Each period is 1, 1.5, 2, 3, 4, or 5 real minutes (opens at 1.5). Teams switch ends after the first period, and the attack net stays at the top of the screen.

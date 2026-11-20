@@ -45,8 +45,8 @@ const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const { resetWorld, stepSim, world, defendDir, faceYaw } = sim;
 const { inferNamedPose } = poses;
 const { useGame } = store;
-const { setInjectedKeys, setInjectedStart } = input;
-const { GOAL_LINE_X } = rink;
+const { setInjectedKeys, setInjectedAim, setInjectedStart } = input;
+const { GOAL_LINE_X, BLUE_X } = rink;
 
 const DT = 1 / 60;
 const FULL = { g: 1, d: 2, o: 3 };
@@ -379,5 +379,168 @@ test("user goalie dive picks stick or blocker side from the goalie's left and ri
   assert.ok(wing.dive > 1, `wings dive ${wing.dive}`);
   assert.equal(inferNamedPose(wing, wing.id), "goalieDivingGloveSave");
   useGame.getState().setControlProfile("classic");
+  setInjectedKeys([]);
+});
+
+function freshPassGame() {
+  setInjectedKeys([]);
+  setInjectedAim(0, 0);
+  setInjectedStart(false);
+  const ui = useGame.getState();
+  ui.setClockMode("game");
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  ui.setControlProfile("classic");
+  ui.setHomeLineup(FULL);
+  ui.setAwayLineup(FULL);
+  resetWorld();
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.faceoffA = false;
+  world.stoppage = false;
+  world.whistle = null;
+  world.replay = false;
+}
+
+function homeEnd() {
+  return defendDir("home") >= 0 ? 1 : -1;
+}
+
+function placeCreaseGoalie(g) {
+  const end = homeEnd();
+  g.x = end * (GOAL_LINE_X - 0.85);
+  g.z = 0;
+  g.vx = 0;
+  g.vz = 0;
+  g.yaw = faceYaw("home");
+  g.stun = 0;
+  g.struck = 0;
+  g.tumble = 0;
+  g.dive = 0;
+  g.poke = 0;
+}
+
+function releaseIcePass(passer, x, holdS) {
+  const end = homeEnd();
+  const prevNow = performance.now;
+  let clock = 8_000_000;
+  performance.now = () => clock;
+  const ui = useGame.getState();
+  const savedFind = ui.ignoreAutoFind;
+  ui.setIgnoreAutoFind(true);
+  try {
+    world.userId = passer.id;
+    world.userPossessedAt = -10;
+    world.lastShoot = -10;
+    world.lastPass = -10;
+    world.lastPasser = null;
+    world.lastPassTo = null;
+    world.goalieSaveT = -10;
+    world.lastHitTime = -10;
+    passer.stun = 0;
+    passer.struck = 0;
+    passer.dive = 0;
+    passer.hit = 0;
+    passer.vx = 0;
+    passer.vz = 0;
+    passer.x = x;
+    passer.z = 0;
+    passer.yaw = end > 0 ? -Math.PI / 2 : Math.PI / 2;
+    world.puck.owner = passer.id;
+    world.puck.x = x;
+    world.puck.z = 0;
+    world.puck.y = 0.042;
+    world.puck.vx = 0;
+    world.puck.vz = 0;
+    world.puck.vy = 0;
+    for (const s of world.skaters) {
+      if (s.id === passer.id) continue;
+      s.stun = 30;
+      s.vx = 0;
+      s.vz = 0;
+      s.x = -end * 4;
+      s.z = 12;
+    }
+    setInjectedStart(false);
+    setInjectedAim(0, 0);
+    setInjectedKeys(["KeyE"]);
+    stepSim(DT);
+    passer.x = x;
+    passer.z = 0;
+    passer.yaw = end > 0 ? -Math.PI / 2 : Math.PI / 2;
+    passer.vx = 0;
+    passer.vz = 0;
+    clock += holdS * 1000;
+    setInjectedKeys([]);
+    stepSim(DT);
+  } finally {
+    performance.now = prevNow;
+    ui.setIgnoreAutoFind(savedFind);
+    setInjectedAim(0, 0);
+    setInjectedKeys([]);
+  }
+}
+
+function playPassToUserGoalie() {
+  const g = homeGoalie();
+  const end = homeEnd();
+  const spd = Math.max(12, Math.hypot(world.puck.vx, world.puck.vz));
+  world.puck.owner = null;
+  world.puck.x = end * (GOAL_LINE_X - 2.15);
+  world.puck.z = 0;
+  world.puck.y = 0.042;
+  world.puck.vx = end * spd;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  placeCreaseGoalie(g);
+  world.userId = g.id;
+  setInjectedStart(true);
+  for (let i = 0; i < 100; i++) {
+    placeCreaseGoalie(g);
+    world.userId = g.id;
+    const passer = world.lastPasser;
+    stepSim(DT);
+    if (world.puck.owner === g.id) return "possess";
+    if (world.lastPasser === g.id && passer !== g.id) return "poke";
+  }
+  return "none";
+}
+
+test("user goalie holds an ordinary ice pass and pokes a hard own-zone pass", () => {
+  const end = homeEnd();
+  const ownX = end * (BLUE_X + 4);
+
+  freshPassGame();
+  const mate = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie");
+  releaseIcePass(mate, ownX, 0.05);
+  assert.equal(world.puck.owner, null);
+  assert.equal(world.lastPasser, mate.id);
+  assert.ok(world.puck.vx * end > 8, `tap pass vx ${world.puck.vx}`);
+  assert.equal(playPassToUserGoalie(), "possess");
+  setInjectedStart(false);
+
+  freshPassGame();
+  const bomber = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie");
+  releaseIcePass(bomber, ownX, 1);
+  assert.equal(world.puck.owner, null);
+  assert.equal(world.lastPasser, bomber.id);
+  assert.ok(Math.hypot(world.puck.vx, world.puck.vz) * 2.23694 > 70, "hard pass is above half charge");
+  assert.equal(playPassToUserGoalie(), "poke");
+  setInjectedStart(false);
+
+  freshPassGame();
+  const neutral = world.skaters.find((s) => s.side === "home" && s.kind !== "goalie");
+  releaseIcePass(neutral, 0, 1);
+  assert.equal(world.puck.owner, null);
+  assert.equal(playPassToUserGoalie(), "possess");
+  setInjectedStart(false);
+
+  freshPassGame();
+  const foe = world.skaters.find((s) => s.side === "away" && s.kind !== "goalie");
+  releaseIcePass(foe, 0, 0.05);
+  assert.equal(world.puck.owner, null);
+  assert.equal(world.lastPasser, foe.id);
+  assert.equal(playPassToUserGoalie(), "poke");
+  setInjectedStart(false);
   setInjectedKeys([]);
 });

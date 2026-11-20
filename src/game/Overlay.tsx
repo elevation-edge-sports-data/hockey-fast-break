@@ -182,22 +182,17 @@ function Stepper({
   const total = lineupTotal(lineup);
   const mode = useGame((s) => s.clockMode);
   const cap = modeLineupCap(mode);
-  const goalieExtra = mode === "scrimmage";
-  const skaters = lineup.d + lineup.o;
-  const canInc =
-    !disabled &&
-    val < max &&
-    (goalieExtra ? (slot === "g" ? true : skaters < cap) : total < cap);
+  const canInc = !disabled && val < max && total < cap;
   const canDec = !disabled && val > 0;
   return (
     <div className="stepper">
       <span>{label}</span>
       <div className="stepper-row">
-        <button type="button" aria-label={`${label} down`} disabled={!canDec} onClick={() => onChange(patchLineup(lineup, slot, val - 1, cap, goalieExtra))}>
+        <button type="button" aria-label={`${label} down`} disabled={!canDec} onClick={() => onChange(patchLineup(lineup, slot, val - 1, cap))}>
           −
         </button>
         <b>{val}</b>
-        <button type="button" aria-label={`${label} up`} disabled={!canInc} onClick={() => onChange(patchLineup(lineup, slot, val + 1, cap, goalieExtra))}>
+        <button type="button" aria-label={`${label} up`} disabled={!canInc} onClick={() => onChange(patchLineup(lineup, slot, val + 1, cap))}>
           +
         </button>
       </div>
@@ -535,6 +530,15 @@ function ReplayBar() {
 
 function chooseMode(m: PlayMode): void {
   previewPausedMode(m);
+  const ui = useGame.getState();
+  if (!ui.playing) {
+    // Title screen: mode is already applied and world reset; just begin play.
+    ui.setPlaying(true);
+  } else if (ui.paused) {
+    // Paused: the draft was written; start the new game now.
+    startPausedNewGame();
+  }
+  // If already playing and not paused, previewPausedMode already set the mode and reset the world.
 }
 
 function PeriodMinutes({ kind }: { kind: "game" | "roller" }) {
@@ -684,20 +688,10 @@ function ClockSetup() {
         </button>
         {clockMode === "drill" ? (
           <>
-            <p className="clock-untimed">1:00</p>
+            <p className="clock-untimed">Untimed</p>
             <DrillTargetPick />
           </>
         ) : null}
-      </div>
-      <div className="clock-col">
-        <button
-          type="button"
-          className={clockMode === "shootout" ? "is-on" : ""}
-          onClick={() => chooseMode("shootout")}
-        >
-          Shootout
-        </button>
-        {clockMode === "shootout" ? <ShootoutRoundsPick /> : null}
       </div>
       <div className="clock-col">
         <button
@@ -762,11 +756,30 @@ function ClockSetup() {
           </>
         ) : null}
       </div>
+      <div className="clock-col">
+        <button
+          type="button"
+          className={clockMode === "shootout" ? "is-on" : ""}
+          onClick={() => chooseMode("shootout")}
+        >
+          Shootout
+        </button>
+        {clockMode === "shootout" ? <ShootoutRoundsPick /> : null}
+      </div>
     </div>
   );
 }
 
-type MenuId = "controller" | "gameplay" | "camera" | "rink";
+type MenuId = "controller" | "gameplay" | "camera" | "rink" | "mode";
+
+const MODE_MENU: { id: PlayMode; label: string }[] = [
+  { id: "drill", label: "Drill" },
+  { id: "practice", label: "Practice" },
+  { id: "scrimmage", label: "Scrimmage" },
+  { id: "roller", label: "Roller" },
+  { id: "game", label: "Game" },
+  { id: "shootout", label: "Shootout" },
+];
 type RinkSubId = "brightness" | "logo" | "jersey";
 
 function TargetCountRow({
@@ -847,6 +860,8 @@ function MainMenus() {
   const setOffsides = useGame((s) => s.setOffsides);
   const checkRefs = useGame((s) => s.checkRefs);
   const setCheckRefs = useGame((s) => s.setCheckRefs);
+  const showRefs = useGame((s) => s.showRefs);
+  const setShowRefs = useGame((s) => s.setShowRefs);
   const checkGoalies = useGame((s) => s.checkGoalies);
   const setCheckGoalies = useGame((s) => s.setCheckGoalies);
   const lineBrawl = useGame((s) => s.lineBrawl);
@@ -857,6 +872,12 @@ function MainMenus() {
   const setIgnoreAutoFind = useGame((s) => s.setIgnoreAutoFind);
   const passLock = useGame((s) => s.passLock);
   const setPassLock = useGame((s) => s.setPassLock);
+  const capLengthClearVy = useGame((s) => s.capLengthClearVy);
+  const setCapLengthClearVy = useGame((s) => s.setCapLengthClearVy);
+  const holdLobInFront = useGame((s) => s.holdLobInFront);
+  const setHoldLobInFront = useGame((s) => s.setHoldLobInFront);
+  const sauceBoardClamp = useGame((s) => s.sauceBoardClamp);
+  const setSauceBoardClamp = useGame((s) => s.setSauceBoardClamp);
   const camMode = useGame((s) => s.camMode);
   const setCamMode = useGame((s) => s.setCamMode);
   const arenaLook = useGame((s) => s.arenaLook);
@@ -891,6 +912,9 @@ function MainMenus() {
   const setJumbotronEnabled = useGame((s) => s.setJumbotronEnabled);
   const playing = useGame((s) => s.playing);
   const paused = useGame((s) => s.paused);
+  const storeMode = useGame((s) => s.clockMode);
+  const draft = usePauseDraft();
+  const clockMode = playing && paused && draft ? draft.clockMode : storeMode;
   const replay = useGame((s) => s.replay);
   const replayReady = useReplayFootage();
   const toggle = (id: MenuId) => {
@@ -1193,6 +1217,22 @@ function MainMenus() {
       ) : null}
       {menu ? (
         <div className="cam-row menu-sub">
+          {menu === "mode"
+            ? MODE_MENU.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className={clockMode === m.id ? "is-on" : ""}
+                  onClick={() => {
+                    if (playing && !paused) pauseGame();
+                    chooseMode(m.id);
+                    setMenu(null);
+                  }}
+                >
+                  {m.label}
+                </button>
+              ))
+            : null}
           {menu === "controller" ? (
             <>
               <button
@@ -1260,6 +1300,15 @@ function MainMenus() {
               </button>
               <button
                 type="button"
+                className={showRefs ? "is-on" : ""}
+                aria-pressed={showRefs}
+                onClick={() => setShowRefs(!showRefs)}
+                title="Show or hide the referees on the ice"
+              >
+                Refs
+              </button>
+              <button
+                type="button"
                 className={checkRefs ? "is-on" : ""}
                 aria-pressed={checkRefs}
                 onClick={() => setCheckRefs(!checkRefs)}
@@ -1308,6 +1357,33 @@ function MainMenus() {
                 onClick={() => setPassLock(!passLock)}
               >
                 Pass Snap
+              </button>
+              <button
+                type="button"
+                className={capLengthClearVy ? "is-on" : ""}
+                title="On keeps a length clear under the far crossbar."
+                aria-pressed={capLengthClearVy}
+                onClick={() => setCapLengthClearVy(!capLengthClearVy)}
+              >
+                capLengthClearVy
+              </button>
+              <button
+                type="button"
+                className={holdLobInFront ? "is-on" : ""}
+                title="On stops a wide lob from coasting past the far goal line."
+                aria-pressed={holdLobInFront}
+                onClick={() => setHoldLobInFront(!holdLobInFront)}
+              >
+                holdLobInFront
+              </button>
+              <button
+                type="button"
+                className={sauceBoardClamp ? "is-on" : ""}
+                title="On holds a saucer under the glass along its aim."
+                aria-pressed={sauceBoardClamp}
+                onClick={() => setSauceBoardClamp(!sauceBoardClamp)}
+              >
+                sauce board clamp
               </button>
             </>
           ) : null}
@@ -1367,6 +1443,14 @@ function MainMenus() {
         </div>
       ) : null}
       <div className="cam-row">
+        <button
+          type="button"
+          className={menu === "mode" ? "is-on" : ""}
+          aria-expanded={menu === "mode"}
+          onClick={() => toggle("mode")}
+        >
+          Mode
+        </button>
         <button
           type="button"
           className={replay ? "is-on" : ""}
@@ -1867,27 +1951,31 @@ export function Overlay() {
           <p className="eyebrow">Elevation Edge Sports Data</p>
           <h1>Hockey Fast Break (V4)</h1>
         </div>
-        {(playing && !paused) || replay ? null : hudReady ? (
+        {hudReady ? (
           <>
             <span className="play-gap" aria-hidden="true" />
             <FormationKits />
-            <span className={`play-gap play-gap-lineup${lineupsFit ? "" : " is-hidden"}`} aria-hidden="true" />
-            <div className={`play-lineups${lineupsFit ? "" : " is-hidden"}`}>
-              <div className="play-lineup">
-                <div className="play-lineup-head">
-                  <span className="formation-kit-tag">YOU</span>
-                  <AimCompass />
+            {!replay && (
+              <>
+                <span className={`play-gap play-gap-lineup${lineupsFit ? "" : " is-hidden"}`} aria-hidden="true" />
+                <div className={`play-lineups${lineupsFit ? "" : " is-hidden"}`}>
+                  <div className="play-lineup">
+                    <div className="play-lineup-head">
+                      <span className="formation-kit-tag">YOU</span>
+                      <AimCompass />
+                    </div>
+                    <LineupStrip lineup={playing ? liveHome : homeLineup} onChange={applyHome} disabled={false} />
+                  </div>
+                  <div className="play-lineup">
+                    <div className="play-lineup-head">
+                      <span className="formation-kit-tag">CPU</span>
+                    </div>
+                    <LineupStrip lineup={playing ? liveAway : awayLineup} onChange={applyAway} disabled={false} />
+                  </div>
                 </div>
-                <LineupStrip lineup={playing ? liveHome : homeLineup} onChange={applyHome} disabled={false} />
-              </div>
-              <div className="play-lineup">
-                <div className="play-lineup-head">
-                  <span className="formation-kit-tag">CPU</span>
-                </div>
-                <LineupStrip lineup={playing ? liveAway : awayLineup} onChange={applyAway} disabled={false} />
-              </div>
-            </div>
-            <span className={`play-gap play-gap-lineup${lineupsFit ? "" : " is-hidden"}`} aria-hidden="true" />
+                <span className={`play-gap play-gap-lineup${lineupsFit ? "" : " is-hidden"}`} aria-hidden="true" />
+              </>
+            )}
           </>
         ) : null}
       </div>

@@ -516,3 +516,111 @@ test("friction slider changes loose-puck drag", () => {
     useGame.getState().setFriction(0.25);
   }
 });
+
+function boardGap(x, z) {
+  const halfL = RINK_L / 2;
+  const halfW = RINK_W / 2;
+  const innerL = halfL - CORNER_R;
+  const innerW = halfW - CORNER_R;
+  if (Math.abs(x) <= innerL) return halfW - Math.abs(z);
+  if (Math.abs(z) <= innerW) return halfL - Math.abs(x);
+  const cx = Math.sign(x || 1) * innerL;
+  const cz = Math.sign(z || 1) * innerW;
+  return CORNER_R - Math.hypot(x - cx, z - cz);
+}
+
+function nearCorner(x, z) {
+  return Math.abs(x) > RINK_L / 2 - CORNER_R - 1.4 && Math.abs(z) > RINK_W / 2 - CORNER_R - 1.4;
+}
+
+/** What straight the puck was on just before it left the rail. */
+function approachKind(hist) {
+  const on = hist.filter((s) => s.gap < 0.9);
+  const endish = (s) => Math.abs(s.x) > GOAL_LINE_X - 0.5 && Math.abs(s.z) < 8;
+  const sideish = (s) => Math.abs(s.z) > RINK_W / 2 - 1.6 && Math.abs(s.x) < RINK_L / 2 - CORNER_R + 1.2;
+  let i = on.length - 1;
+  while (i >= 0 && !endish(on[i]) && !sideish(on[i])) i--;
+  if (i < 0) return "other";
+  const mode = endish(on[i]) ? "net" : "side";
+  const stretch = [];
+  while (i >= 0) {
+    const s = on[i];
+    if (mode === "net" ? !endish(s) : !sideish(s)) break;
+    stretch.push(s);
+    i--;
+  }
+  if (mode === "net" && stretch.length > 3) return "net";
+  if (mode === "side" && stretch.length > 3) {
+    const xs = stretch.map((s) => s.x);
+    if (Math.min(...xs) < -1 && Math.max(...xs) > 1) return "center";
+  }
+  return "other";
+}
+
+function rideRim(roll, seconds) {
+  releaseRim(0.05);
+  for (const s of world.skaters) {
+    s.stun = 40;
+    s.vx = 0;
+    s.vz = 0;
+    s.hit = 0;
+    s.poke = 0;
+  }
+  const real = Math.random;
+  Math.random = () => roll;
+  const hist = [];
+  let left = null;
+  let straightLate = false;
+  let glideAt = null;
+  try {
+    const n = Math.round(seconds / DT);
+    for (let i = 0; i < n; i++) {
+      step(1);
+      const p = world.puck;
+      const gap = boardGap(p.x, p.z);
+      if (glideAt === null && gap < 0.45) glideAt = world.time;
+      const age = glideAt === null ? 0 : world.time - glideAt;
+      hist.push({ x: p.x, z: p.z, gap, age });
+      if (hist.length > 220) hist.shift();
+      const onSide = Math.abs(p.x) < RINK_L / 2 - CORNER_R - 2 && gap < 0.55;
+      if (age > 5 && onSide) straightLate = true;
+      if (glideAt !== null && !left && gap > 1.15) {
+        left = {
+          age,
+          x: p.x,
+          z: p.z,
+          corner: nearCorner(p.x, p.z),
+          kind: approachKind(hist),
+        };
+        break;
+      }
+    }
+  } finally {
+    Math.random = real;
+  }
+  return { left, straightLate };
+}
+
+test("an ice board glide leaves only at a corner after 5s", () => {
+  const held = rideRim(0.99, 8);
+  assert.equal(held.left, null, `roll 0.99 left at ${held.left?.age.toFixed(2)}s`);
+  assert.equal(held.straightLate, true, "the straight after 5s did not keep the puck");
+
+  const sure = rideRim(0, 9);
+  assert.ok(sure.left, "a certain roll never left");
+  assert.ok(sure.left.age >= 5, `left at ${sure.left.age.toFixed(2)}s`);
+  assert.equal(sure.left.corner, true, `left off a straight at ${sure.left.x.toFixed(1)}, ${sure.left.z.toFixed(1)}`);
+  assert.equal(sure.left.kind, "net", `certain roll left on ${sure.left.kind}`);
+
+  // 0.40 is under the center-line 50% and over the behind-net 25%.
+  const center = rideRim(0.4, 10);
+  assert.ok(center.left, "center-line roll never left");
+  assert.ok(center.left.age >= 5, `center left at ${center.left.age.toFixed(2)}s`);
+  assert.equal(center.left.kind, "center", `0.40 left on ${center.left.kind}`);
+
+  // 0.20 is under both, so the first eligible corner can be the one behind the net.
+  const net = rideRim(0.2, 10);
+  assert.ok(net.left, "behind-net roll never left");
+  assert.ok(net.left.age >= 5, `net left at ${net.left.age.toFixed(2)}s`);
+  assert.equal(net.left.kind, "net", `0.20 left on ${net.left.kind}`);
+});

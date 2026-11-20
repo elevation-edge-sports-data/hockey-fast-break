@@ -1171,6 +1171,7 @@ export function World() {
   const quality = useGame((s) => s.quality);
   const lineupRev = useGame((s) => s.lineupRev);
   const clockMode = useGame((s) => s.clockMode);
+  const showRefs = useGame((s) => s.showRefs);
   const arenaLook = useGame((s) => s.arenaLook);
   const dark = arenaLook === "dark";
 
@@ -1196,12 +1197,16 @@ export function World() {
           kitId={s.side === "home" ? homeKit : awayKit}
         />
       ))}
-      <RefereeMesh slot={0} />
-      {clockMode === "practice" ? null : <RefereeMesh slot={1} />}
-      {clockMode === "game" ? (
+      {showRefs ? (
         <>
-          <RefereeMesh slot={2} />
-          <RefereeMesh slot={3} />
+          <RefereeMesh slot={0} />
+          {clockMode === "practice" ? null : <RefereeMesh slot={1} />}
+          {clockMode === "game" ? (
+            <>
+              <RefereeMesh slot={2} />
+              <RefereeMesh slot={3} />
+            </>
+          ) : null}
         </>
       ) : null}
       <PuckMesh />

@@ -421,7 +421,7 @@ export function gamepadFaceDown(face: "a" | "y"): boolean {
 // Select (gamepad View, button 8, also KeyR) is the saucer. It does not take the goalie.
 // Start (gamepad button 9, Enter, and the touch Goalie button) holds the home goalie.
 // selectHoldFor is that button's own clock, not aHoldFor. Held at the A release it makes a saucer.
-// It does not change pass speed. Start (button 9) does not. There is no separate saucer key.
+// It does not change pass speed. A Select release with A never down is a tap. Start (button 9) does not.
 // Sauce used to read aHoldFor, so the meter stayed off until A went down, and a pass that was
 // already full snapped sauce to full. The meter fills from the moment Select is down, even if A is up.
 // bEdge is gamepad B, or Space on the keyboard. It already cancels a shot windup.
