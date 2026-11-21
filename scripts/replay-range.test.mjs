@@ -40,6 +40,8 @@ after(() => server.close());
 const sim = await server.ssrLoadModule("/src/game/sim.ts");
 const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
+const formations = await server.ssrLoadModule("/src/game/formationLibrary.ts");
+const uniforms = await server.ssrLoadModule("/src/game/uniforms.ts");
 const {
   resetWorld,
   stepSim,
@@ -57,6 +59,8 @@ const {
 } = sim;
 const { useGame } = store;
 const { setInjectedKeys } = input;
+const { parseFormationJson } = formations;
+const { kitById } = uniforms;
 
 const DT = 1 / 60;
 
@@ -136,11 +140,13 @@ test("marks export the inclusive span and leave the scrubber free", () => {
       range.map((frame) => frame.frame),
       [2, 3, 4, 5],
     );
-    for (const frame of range) {
+    for (const [i, frame] of range.entries()) {
       assert.equal(frame.time, frame.frame / 60);
       assert.deepEqual(frame.original, frame.adjusted);
       assert.ok(frame.original.players.length > 0);
-      assert.deepEqual(Object.keys(frame).sort(), ["adjusted", "frame", "original", "time", "userId"]);
+      const keys = ["adjusted", "frame", "original", "time", "userId"];
+      if (i === 0) keys.push("settings");
+      assert.deepEqual(Object.keys(frame).sort(), keys.sort());
       assert.equal(frame.userId, world.userId);
       assert.ok(frame.original.players.some((p) => p.id === frame.userId));
       assert.deepEqual(Object.keys(frame.original.puck).sort(), ["owner", "x", "y", "z"]);
@@ -279,5 +285,189 @@ test("leaving replay clears the marks", () => {
     assert.ok(next.last >= 8);
   } finally {
     stopPauseReplay();
+  }
+});
+
+test("a downloaded replay keeps one settings snapshot from the start of the clip", () => {
+  const ui = useGame.getState();
+  ui.setClockMode("practice");
+  ui.setHomeLineup({ g: 0, d: 1, o: 1 });
+  ui.setAwayLineup({ g: 1, d: 0, o: 1 });
+  ui.setHomeKit(0);
+  ui.setAwayKit(2);
+  ui.setFriction(0.2);
+  ui.setCapLengthClearVy(false);
+  ui.setHoldLobInFront(true);
+  ui.setSauceBoardClamp(false);
+  ui.setShowRefs(false);
+  ui.setInstantReplay(false);
+  ui.setUserOffense(1.2);
+  ui.setCpuOffense(2);
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  resetWorld();
+  ui.setPlaying(true);
+  ui.setPaused(false);
+  world.faceoff = false;
+  world.faceoffPhase = "live";
+  world.stoppage = false;
+  world.whistle = null;
+  world.puck.owner = null;
+  world.puck.vx = 3;
+  world.puck.vz = 0;
+  setInjectedKeys([]);
+  for (let i = 0; i < 20; i++) stepSim(DT);
+  ui.setPaused(true);
+  try {
+    assert.equal(beginPauseReplay(), true);
+    world.replayPlaying = false;
+    const maxT = world.replayT;
+    const last = Math.floor(maxT * 60);
+    markFrame(0, last, maxT);
+    markFrame(last, last, maxT);
+    const full = exportReplayRange();
+    assert.ok(full.length > 8);
+    const settings = full[0].settings;
+    assert.ok(settings);
+    assert.equal(
+      full.slice(1).some((frame) => Object.prototype.hasOwnProperty.call(frame, "settings")),
+      false,
+    );
+    assert.deepEqual(Object.keys(settings).sort(), [
+      "checkedPass",
+      "clamps",
+      "cover",
+      "friction",
+      "iceDrag",
+      "instantReplay",
+      "kits",
+      "lineup",
+      "mode",
+      "multipliers",
+      "pass",
+      "sauce",
+      "shot",
+      "showRefs",
+    ]);
+    assert.equal(settings.mode, "practice");
+    assert.equal(settings.friction, 0.2);
+    assert.equal(settings.iceDrag, 0.85);
+    assert.deepEqual(settings.clamps, {
+      capLengthClearVy: false,
+      holdLobInFront: true,
+      sauceBoardClamp: false,
+    });
+    assert.equal(settings.showRefs, false);
+    assert.equal(settings.instantReplay, false);
+    assert.deepEqual(settings.lineup, {
+      home: { g: 0, d: 1, o: 1 },
+      away: { g: 1, d: 0, o: 1 },
+    });
+    const home = kitById(0);
+    const away = kitById(2);
+    assert.equal(settings.kits.home.id, 0);
+    assert.equal(settings.kits.away.id, 2);
+    assert.equal(settings.kits.home.jersey, home.jersey);
+    assert.equal(settings.kits.home.helmet, home.helmet);
+    assert.equal(settings.kits.home.pants, home.pants);
+    assert.equal(settings.kits.home.stripe, home.pantStripe ?? home.stripe);
+    assert.equal(settings.kits.away.jersey, away.jersey);
+    assert.equal(settings.kits.away.yoke, away.yoke);
+    assert.equal(settings.kits.away.sleeves, away.sleeves);
+    assert.equal(settings.pass.hold, 1.5);
+    assert.equal(settings.pass.mphPerMps, 2.23694);
+    assert.deepEqual(settings.pass.skater, { tapMph: 55, fullMph: 95 });
+    assert.deepEqual(settings.pass.goalie, { tapMph: 45, fullMph: 85 });
+    assert.equal(settings.shot.hold, 1.5);
+    assert.deepEqual(settings.shot.skater, { tapMph: 73, fullMph: 105 });
+    assert.deepEqual(settings.shot.goalie, { tapMph: 55, fullMph: 87 });
+    assert.deepEqual(settings.shot.backhand, { loMph: 58, hiMph: 68 });
+    assert.deepEqual(settings.shot.speedAdd, { perMps: 0.08, capMph: 1.6 });
+    assert.equal(settings.sauce.fullHold, 1);
+    assert.equal(settings.sauce.clearChargeAt, 0.9);
+    assert.equal(settings.sauce.lowY, 0.38);
+    assert.equal(settings.sauce.crowdAt, 0.8);
+    assert.equal(settings.sauce.crowdP, 0.2);
+    assert.equal(settings.sauce.fallS, 1);
+    assert.equal(settings.sauce.moderateAt, 0.35);
+    assert.equal(settings.sauce.plateauPassAt, 0.5);
+    assert.equal(settings.sauce.plateauFullS, 0.5);
+    assert.equal(settings.sauce.grav, 46);
+    assert.equal(settings.sauce.boardClampBelowWall, 0.28);
+    assert.equal(settings.sauce.landKeepLoss, 0.62);
+    assert.deepEqual(settings.cover, { hold: 2, goalieReleaseExtra: 2, goalieHold: 0.5 });
+    assert.deepEqual(settings.checkedPass, { before: 0.32, start: 0.2, scale: 0.5 });
+    const userOff = useGame.getState().userOffense;
+    const cpuOff = useGame.getState().cpuOffense;
+    assert.equal(settings.multipliers.user.offense, userOff);
+    assert.equal(settings.multipliers.cpu.offense, cpuOff);
+    assert.ok(Math.abs(settings.multipliers.user.offenseMul - (0.55 + Math.min(1.2, userOff) * 0.9)) < 1e-9);
+    assert.ok(Math.abs(settings.multipliers.cpu.offenseMul - (0.55 + Math.min(2, cpuOff * 0.5) * 0.9)) < 1e-9);
+
+    const parsed = parseFormationJson(JSON.stringify(full));
+    assert.ok(Array.isArray(parsed), parsed);
+    assert.equal(parsed.length, full.length);
+    assert.equal(parsed[0].frame, full[0].frame);
+    assert.equal(parsed[0].settings, undefined);
+    assert.equal(parsed[0].original.players.length, full[0].original.players.length);
+
+    ui.setFriction(0.9);
+    ui.setCapLengthClearVy(true);
+    ui.setShowRefs(true);
+    ui.setInstantReplay(true);
+    ui.setHomeKit(4);
+    ui.setAwayKit(6);
+    ui.setUserOffense(0);
+    const held = exportReplayRange();
+    assert.deepEqual(held[0].settings, settings);
+    assert.equal(held[0].settings.kits.home.id, 0);
+    assert.equal(held[0].settings.friction, 0.2);
+
+    seekReplay(1);
+    assert.equal(toggleReplayFrameLock(), true);
+    const shot = exportReplayFrame();
+    assert.equal(shot.settings.friction, 0.2);
+    assert.equal(shot.settings.kits.away.id, 2);
+    assert.equal(shot.settings.showRefs, false);
+    assert.equal(toggleReplayFrameLock(), false);
+
+    const head = full.length;
+    stopPauseReplay();
+    ui.setPaused(false);
+    ui.setFriction(0.8);
+    ui.setCapLengthClearVy(true);
+    world.faceoff = false;
+    world.faceoffPhase = "live";
+    world.stoppage = false;
+    world.whistle = null;
+    world.puck.vx = 4;
+    for (let i = 0; i < 16; i++) stepSim(DT);
+    ui.setPaused(true);
+    assert.equal(beginPauseReplay(), true);
+    world.replayPlaying = false;
+    const tailMax = world.replayT;
+    const tailLast = Math.floor(tailMax * 60);
+    assert.ok(tailLast > head);
+    markFrame(head, tailLast, tailMax);
+    markFrame(tailLast, tailLast, tailMax);
+    const tail = exportReplayRange();
+    assert.ok(tail.length > 1);
+    assert.equal(tail[0].settings.friction, 0.8);
+    assert.equal(tail[0].settings.clamps.capLengthClearVy, true);
+    assert.equal(tail[0].settings.kits.home.id, 4);
+    assert.equal(
+      tail.slice(1).some((frame) => Object.prototype.hasOwnProperty.call(frame, "settings")),
+      false,
+    );
+    markFrame(0, tailLast, tailMax);
+    markFrame(head - 1, tailLast, tailMax);
+    const opening = exportReplayRange();
+    assert.equal(opening[0].frame, 0);
+    assert.deepEqual(opening[0].settings, settings);
+  } finally {
+    if (replayFrameLocked()) toggleReplayFrameLock();
+    stopPauseReplay();
+    setInjectedKeys([]);
+    useGame.getState().setPaused(false);
   }
 });

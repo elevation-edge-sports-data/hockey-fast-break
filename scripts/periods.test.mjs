@@ -1308,9 +1308,16 @@ test("shootout mode starts on the first shot and ends with a winner", () => {
   assert.ok(world.time > winTime, "win celebration clock is frozen");
   assert.ok(world.goalTicker > 4.5, `win cheer after a step ${world.goalTicker}`);
   assert.ok(useGame.getState().shootout, "shootout grid record cleared");
-  const stayed = world.skaters.find((s) => s.kind !== "goalie" && s.id !== world.shootout.shooterId);
-  assert.ok(stayed && stayed.z < -RINK_W / 2, `skater joined the ice at z ${stayed?.z}`);
-  const skater = world.skaters[world.userId];
+  for (const s of world.skaters) {
+    if (s.kind === "goalie" || s.id === world.shootout.shooterId) continue;
+    assert.ok(s.z < -RINK_W / 2, `skater joined the ice at z ${s.z}`);
+  }
+  const skateId =
+    world.skaters[world.userId]?.kind === "goalie" || world.userId === world.shootout.shooterId
+      ? world.userId
+      : world.shootout.shooterId;
+  world.userId = skateId;
+  const skater = world.skaters[skateId];
   const x0 = skater.x;
   const z0 = skater.z;
   world.camFx = 1;
@@ -1320,9 +1327,12 @@ test("shootout mode starts on the first shot and ends with a winner", () => {
   setInjectedKeys(["KeyW"]);
   step(10);
   const moved = world.skaters[world.userId];
+  assert.equal(moved.id, skateId);
   assert.ok(Math.hypot(moved.x - x0, moved.z - z0) > 0.08, `user froze at ${moved.x},${moved.z}`);
-  const still = world.skaters.find((s) => s.kind !== "goalie" && s.id !== world.shootout.shooterId && s.id !== moved.id);
-  if (still) assert.ok(still.z < -RINK_W / 2, `teammate joined at z ${still.z}`);
+  for (const s of world.skaters) {
+    if (s.kind === "goalie" || s.id === world.shootout.shooterId) continue;
+    assert.ok(s.z < -RINK_W / 2, `teammate joined at z ${s.z}`);
+  }
   setInjectedKeys([]);
   const done = useGame.getState().shootout.attempts;
   assert.equal(done.length, 8);
@@ -2587,8 +2597,9 @@ test("a user shootout goal stays open for 3 seconds, and a win still dives and c
     guard++;
   }
   assert.equal(world.shootout.phase, "done");
-  const user = world.skaters[world.userId];
+  const user = world.skaters[world.shootout.shooterId];
   assert.ok(user && user.kind !== "goalie");
+  world.userId = user.id;
   user.dive = 0;
   user.x = 0;
   user.z = 0;
