@@ -31,7 +31,7 @@ import {
   RINK_W,
   benchSeatOuterX,
 } from "./rink";
-import { BUTTERFLY_STANCE_DROP, GOALIE_STICK_LEN, GOALIE_Z, goalieRaisedHandCovers } from "./goalieStance";
+import { BUTTERFLY_STANCE_DROP, GOALIE_CORNER_Y0, GOALIE_STICK_LEN, GOALIE_Z, goalieRaisedHandCovers } from "./goalieStance";
 import { readActions, setInjectedKeys, windowHasInputFocus, type Actions } from "./input";
 import { clampIceMark, cycleMarkLock } from "./iceMark";
 import { burstCarryLocal, dekePuckLocal, neutralCarryBlend, neutralCarryLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal, SKATER_STICK_LEN } from "./stickSide";
@@ -68,6 +68,7 @@ import {
   type ShotKind,
   type WhistleKind,
 } from "./store";
+import { clearIceWear, noteSkateWear, type WearClock, type WearSkater } from "./iceWear";
 import { CROWD_PUCK_R, outsideStandFootprint, sweepCrowd } from "./crowd";
 import { kitById } from "./uniforms";
 
@@ -2918,6 +2919,7 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
     ui.setPeriod(1);
     ui.setPeriodOver(false);
     ui.setPeriodClock(openingClock);
+    clearIceWear();
     if (!opts?.keepReplay) clearReplayBuf();
     else clearReplaySession();
     world.ppRelease = null;
@@ -11995,7 +11997,7 @@ function thinkGoalie(s: Skater, dt: number): void {
   const gMul = home ? 1 : cpuMul("g");
   const lead = home ? 0.18 : 0.04 + 0.08 * Math.min(1, gMul);
   const reverse = home ? 14 : 5 + 6 * Math.min(1, gMul);
-  const zMax = home ? 0.84 : 0.7;
+  const zMax = home ? GOAL_W / 2 - 0.18 : GOAL_W / 2 - 0.32;
   const mouth = defendDir(s.side) * GOAL_LINE_X;
   const depth = Math.max(0.5, Math.abs(s.x - mouth));
   const angleZ = (tx: number, tz0: number) => {
@@ -19312,8 +19314,8 @@ function goalieHandContactsPuck(g: Skater, hand: "glove" | "blocker"): boolean {
   const side = goalieHandZ(g, hand);
   if ((puck.z - g.z) * side < -0.15) return false;
   if (Math.hypot(puck.x - g.x, puck.z - g.z) > 1.45) return false;
-  if (hand === "glove") return puck.y > 0.35 && puck.y < 1.35;
-  return puck.y < 1.15;
+  if (hand === "glove") return puck.y > 0.35 && puck.y < GOAL_H - 0.02;
+  return puck.y < GOALIE_CORNER_Y0;
 }
 
 function userGoalieHandSave(user: Skater, hand: "glove" | "blocker", dive: boolean): void {
@@ -23119,7 +23121,7 @@ function butterflyHandSave(g: Skater, puckY: number, puckZ: number): boolean {
 
 function equipmentHits(g: Skater, x: number, y: number, z: number): boolean {
   if (Math.abs(x - g.x) > 0.62) return false;
-  if (Math.abs(x - g.x) < 0.36 && Math.abs(z - g.z) < 0.3 && y < 1.28 && y > 0.05) return true;
+  if (Math.abs(x - g.x) < 0.36 && Math.abs(z - g.z) < 0.3 && y < GOAL_H - 0.02 && y > 0.05) return true;
   const blade = stickBlade(g);
   if (Math.hypot(x - blade.x, z - blade.z) < 0.22 && y < 0.55) return true;
   return equipmentCovers(g, y, z);
@@ -31069,6 +31071,7 @@ function startNextPeriod(): void {
   ui.setPeriod(world.period);
   ui.setPeriodClock(seconds);
   ui.setPeriodOver(false);
+  clearIceWear();
 }
 
 /** Viewable CPU drill with no home skater. The away shooter is held and released as usual. */
@@ -32281,6 +32284,59 @@ export function resetPlayFrame(): void {
   playAcc = 0;
 }
 
+const wearRows: WearSkater[] = [];
+
+function wearClockNow(): WearClock {
+  const ui = useGame.getState();
+  const mode = ui.clockMode;
+  if (mode === "game" || mode === "roller") {
+    const roller = mode === "roller";
+    const periods = roller ? ROLLER_PERIODS : GAME_PERIODS;
+    const format = roller ? ui.rollerOtFormat : ui.otFormat;
+    const regOt = format === "reg" && world.period > periods;
+    const periodLength = regOt ? REG_OT_SECONDS : roller ? ROLLER_PERIOD_SECONDS : PERIOD_SECONDS;
+    return { mode, periodClock: world.periodClock, periodLength };
+  }
+  return { mode, periodClock: world.periodClock, periodLength: null };
+}
+
+function wearSkatersNow(): readonly WearSkater[] {
+  const src = world.skaters;
+  wearRows.length = src.length;
+  for (let i = 0; i < src.length; i++) {
+    const s = src[i]!;
+    let row = wearRows[i];
+    if (!row) {
+      row = {
+        id: s.id,
+        side: s.side,
+        number: s.number,
+        kind: s.kind,
+        x: s.x,
+        z: s.z,
+        vx: s.vx,
+        vz: s.vz,
+        yaw: s.yaw,
+        stride: s.stride,
+        dive: s.dive,
+      };
+      wearRows[i] = row;
+    }
+    row.id = s.id;
+    row.side = s.side;
+    row.number = s.number;
+    row.kind = s.kind;
+    row.x = s.x;
+    row.z = s.z;
+    row.vx = s.vx;
+    row.vz = s.vz;
+    row.yaw = s.backskate ? faceYaw(s.side) : s.yaw;
+    row.stride = s.stride;
+    row.dive = s.dive;
+  }
+  return wearRows;
+}
+
 export function stepSim(dt: number): void {
   const act = readActions();
   trackSkillStick(act);
@@ -32289,7 +32345,10 @@ export function stepSim(dt: number): void {
   const ui = useGame.getState();
   if (!ui.playing) return;
   stepPlay(dt, act);
-  if (!world.replay) settleSkaterBoards();
+  if (!world.replay) {
+    settleSkaterBoards();
+    noteSkateWear(dt, wearSkatersNow(), wearClockNow());
+  }
 }
 
 export function installControlsProbe(): void {

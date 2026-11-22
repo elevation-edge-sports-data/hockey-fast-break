@@ -18,9 +18,8 @@ export const RIBBON_H = 0.14;
 
 export const GOAL_LINE_FROM_END = 11 * FT;
 export const BLUE_FROM_GOAL = 64 * FT;
-const NET_FACE = Math.sqrt(1.25);
-export const GOAL_W = 6 * FT * NET_FACE;
-export const GOAL_H = 4 * FT * NET_FACE;
+export const GOAL_W = 6 * FT;
+export const GOAL_H = 4 * FT;
 export const GOAL_D = (44 / 12) * FT;
 export const GOAL_D_TOP = (22 / 12) * FT;
 export const GOAL_PIPE_R = 0.042;

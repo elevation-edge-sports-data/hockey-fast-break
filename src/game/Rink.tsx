@@ -48,6 +48,7 @@ import {
 import { roundedRectShape, rinkPerimeter } from "./rinkGeom";
 import { kitById } from "./uniforms";
 import { clampCenterIceLogoZoom, useGame, type DrillTargets } from "./store";
+import { flushIceWear, iceWearTexture } from "./iceWear";
 import { defendDir, drillFade, drillGrid, drillTargetList, targetBoard, world } from "./sim";
 
 function extrudeRing(outerInset: number, innerInset: number, depth: number) {
@@ -70,17 +71,27 @@ function IceStripe({
   x,
   color,
   width,
+  y = 0.024,
 }: {
   x: number;
   color: string;
   width: number;
+  y?: number;
 }) {
   // Past the nominal edge so both sides of the stripe meet the kick, including the goal line on the arc.
   const span = Math.max(1, iceWidthAtX(x) + ICE_LINE_PAST);
+  // The goal line shares the ice top. The offset keeps that coplanar stripe visible.
+  const onIce = y <= 0.012;
   return (
-    <mesh position={[x, 0.024, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+    <mesh position={[x, y, 0]} rotation={[-Math.PI / 2, 0, 0]}>
       <planeGeometry args={[width, span]} />
-      <meshBasicMaterial color={color} toneMapped={false} />
+      <meshBasicMaterial
+        color={color}
+        toneMapped={false}
+        polygonOffset={onIce}
+        polygonOffsetFactor={onIce ? -2 : 0}
+        polygonOffsetUnits={onIce ? -2 : 0}
+      />
     </mesh>
   );
 }
@@ -366,24 +377,83 @@ function creaseGeo(side: 1 | -1) {
   return g;
 }
 
+/** Same centerline as the old crease loop, drawn as wide as the goal line. */
+function creaseOutlineGeo(side: 1 | -1) {
+  const gx = GOAL_LINE_X * side;
+  const dir = -side;
+  const hw = Math.max(GOAL_W / 2, CREASE_R * 0.66);
+  const r = CREASE_R;
+  const path: { x: number; z: number }[] = [];
+  const steps = 22;
+  for (let i = 0; i <= steps; i++) {
+    const z = -hw + (2 * hw * i) / steps;
+    const xOff = Math.sqrt(Math.max(0, r * r - z * z));
+    path.push({ x: gx + dir * xOff, z });
+  }
+  path.push({ x: gx, z: hw });
+  path.push({ x: gx, z: -hw });
+
+  const n = path.length;
+  const half = GOAL_LINE_W / 2;
+  const y = 0.012;
+  const pos: number[] = [];
+  const idx: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const prev = path[(i + n - 1) % n]!;
+    const curr = path[i]!;
+    const next = path[(i + 1) % n]!;
+    let t1x = curr.x - prev.x;
+    let t1z = curr.z - prev.z;
+    let t2x = next.x - curr.x;
+    let t2z = next.z - curr.z;
+    const l1 = Math.hypot(t1x, t1z) || 1;
+    const l2 = Math.hypot(t2x, t2z) || 1;
+    t1x /= l1;
+    t1z /= l1;
+    t2x /= l2;
+    t2z /= l2;
+    const n1x = -t1z;
+    const n1z = t1x;
+    const n2x = -t2z;
+    const n2z = t2x;
+    let mx = n1x + n2x;
+    let mz = n1z + n2z;
+    const ml = Math.hypot(mx, mz);
+    if (ml < 1e-6) {
+      mx = n2x;
+      mz = n2z;
+    } else {
+      mx /= ml;
+      mz /= ml;
+    }
+    const denom = mx * n2x + mz * n2z;
+    const scale = half / Math.max(0.35, Math.abs(denom));
+    let ox = mx * scale;
+    let oz = mz * scale;
+    // The goal-line corners are square joints on the stripe edge, not a long bisector.
+    if (Math.abs(curr.x - gx) < 1e-4) {
+      ox = Math.sign(ox) * half;
+      oz = Math.sign(oz) * half;
+    }
+    pos.push(curr.x + ox, y, curr.z + oz);
+    pos.push(curr.x - ox, y, curr.z - oz);
+  }
+  for (let i = 0; i < n; i++) {
+    const a = i * 2;
+    const b = a + 1;
+    const c = ((i + 1) % n) * 2;
+    const d = c + 1;
+    idx.push(a, c, d, a, d, b);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  return g;
+}
+
 function Crease({ side }: { side: 1 | -1 }) {
   const geo = useMemo(() => creaseGeo(side), [side]);
-  const outline = useMemo(() => {
-    const gx = GOAL_LINE_X * side;
-    const dir = -side;
-    const hw = Math.max(GOAL_W / 2, CREASE_R * 0.66);
-    const r = CREASE_R;
-    const pts: THREE.Vector3[] = [];
-    const steps = 22;
-    for (let i = 0; i <= steps; i++) {
-      const z = -hw + (2 * hw * i) / steps;
-      const xOff = Math.sqrt(Math.max(0, r * r - z * z));
-      pts.push(new THREE.Vector3(gx + dir * xOff, 0.029, z));
-    }
-    pts.push(new THREE.Vector3(gx, 0.029, hw));
-    pts.push(new THREE.Vector3(gx, 0.029, -hw));
-    return new THREE.BufferGeometry().setFromPoints(pts);
-  }, [side]);
+  const outline = useMemo(() => creaseOutlineGeo(side), [side]);
   useLayoutEffect(
     () => () => {
       geo.dispose();
@@ -393,12 +463,28 @@ function Crease({ side }: { side: 1 | -1 }) {
   );
   return (
     <group>
-      <mesh geometry={geo} position={[0, 0.02, 0]}>
-        <meshBasicMaterial color="#5eb6ff" transparent opacity={0.55} toneMapped={false} depthWrite={false} />
+      <mesh geometry={geo} position={[0, 0.012, 0]}>
+        <meshBasicMaterial
+          color="#5eb6ff"
+          transparent
+          opacity={0.55}
+          toneMapped={false}
+          depthWrite={false}
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-1}
+        />
       </mesh>
-      <lineLoop geometry={outline}>
-        <lineBasicMaterial color={LINE_RED} toneMapped={false} />
-      </lineLoop>
+      <mesh geometry={outline}>
+        <meshBasicMaterial
+          color={LINE_RED}
+          toneMapped={false}
+          side={THREE.DoubleSide}
+          polygonOffset
+          polygonOffsetFactor={-2}
+          polygonOffsetUnits={-2}
+        />
+      </mesh>
     </group>
   );
 }
@@ -428,8 +514,8 @@ function IceLines({ blue }: { blue: boolean }) {
     <group>
       <Crease side={-1} />
       <Crease side={1} />
-      <IceStripe x={-GOAL_LINE_X} color={LINE_RED} width={GOAL_LINE_W} />
-      <IceStripe x={GOAL_LINE_X} color={LINE_RED} width={GOAL_LINE_W} />
+      <IceStripe x={-GOAL_LINE_X} color={LINE_RED} width={GOAL_LINE_W} y={0.012} />
+      <IceStripe x={GOAL_LINE_X} color={LINE_RED} width={GOAL_LINE_W} y={0.012} />
       {blue ? (
         <>
           <IceStripe x={-BLUE_X} color={LINE_BLUE} width={BLUE_LINE_W} />
@@ -518,6 +604,65 @@ class CageOutlineCurve extends THREE.Curve<THREE.Vector3> {
   }
 }
 
+/**
+ * White top iron butts the back of the red elbow and runs straight into the
+ * cage. Overhead, that meeting is perpendicular to the red frame. The rear
+ * bar is narrower than the posts (the outline's 6-in top inset) so the sides
+ * can stay straight. The net still uses the full top outline.
+ */
+const SHELF_REAR = GOAL_PIPE_R * 2;
+const SHELF_Z = GOAL_W / 2 - SHELF_REAR;
+const SHELF_BACK_Z = GOAL_W / 2 - (GOAL_W / 2) * (6 / 36);
+const SHELF_CORNER = SHELF_Z - SHELF_BACK_Z;
+
+type IronPiece = { len: number; at: (f: number, target: THREE.Vector3) => THREE.Vector3 };
+
+class TopShelfIronCurve extends THREE.Curve<THREE.Vector3> {
+  private readonly pieces: IronPiece[];
+  private readonly total: number;
+  readonly cap0: THREE.Vector3;
+  readonly cap1: THREE.Vector3;
+
+  constructor(dir: 1 | -1) {
+    super();
+    const back = GOAL_D_TOP;
+    const corner = SHELF_CORNER;
+    const xTurn = back - corner;
+    const sideLen = xTurn - SHELF_REAR;
+    const pieces: IronPiece[] = [];
+    const put = (len: number, at: IronPiece["at"]) => pieces.push({ len, at });
+    put(sideLen, (f, target) => target.set(dir * (SHELF_REAR + sideLen * f), GOAL_H, SHELF_Z));
+    put(corner * (Math.PI / 2), (f, target) => {
+      const phi = f * (Math.PI / 2);
+      return target.set(dir * (xTurn + corner * Math.sin(phi)), GOAL_H, SHELF_BACK_Z + corner * Math.cos(phi));
+    });
+    put(SHELF_BACK_Z * 2, (f, target) => target.set(dir * back, GOAL_H, SHELF_BACK_Z - SHELF_BACK_Z * 2 * f));
+    put(corner * (Math.PI / 2), (f, target) => {
+      const phi = f * (Math.PI / 2);
+      return target.set(dir * (back - corner * (1 - Math.cos(phi))), GOAL_H, -(SHELF_BACK_Z + corner * Math.sin(phi)));
+    });
+    put(sideLen, (f, target) => target.set(dir * (xTurn - sideLen * f), GOAL_H, -SHELF_Z));
+    this.pieces = pieces;
+    this.total = pieces.reduce((sum, piece) => sum + piece.len, 0);
+    this.cap0 = pieces[0].at(0, new THREE.Vector3());
+    this.cap1 = pieces[pieces.length - 1].at(1, new THREE.Vector3());
+  }
+
+  getPoint(t: number, optionalTarget?: THREE.Vector3) {
+    const target = optionalTarget ?? new THREE.Vector3();
+    let dist = Math.min(1, Math.max(0, t)) * this.total;
+    for (let i = 0; i < this.pieces.length; i++) {
+      const piece = this.pieces[i];
+      if (dist <= piece.len || i === this.pieces.length - 1) {
+        const f = piece.len > 1e-8 ? Math.min(1, dist / piece.len) : 0;
+        return piece.at(f, target);
+      }
+      dist -= piece.len;
+    }
+    return target;
+  }
+}
+
 function goalMesh(dir: 1 | -1) {
   const h = GOAL_H;
   const r = GOAL_PIPE_R;
@@ -573,16 +718,14 @@ function goalMesh(dir: 1 | -1) {
   top.setIndex(tIdx);
   top.computeVertexNormals();
 
-  const basePts: THREE.Vector3[] = [];
-  const topPts: THREE.Vector3[] = [];
-  for (let i = 0; i <= segs; i++) {
-    const t = i / segs;
-    basePts.push(cagePoint(dir, t, r, GOAL_D));
-    topPts.push(cagePoint(dir, t, h, GOAL_D_TOP));
-  }
   const baseTube = new THREE.TubeGeometry(new CageOutlineCurve(dir, r, GOAL_D), 64, r, 8, false);
-  const topTube = new THREE.TubeGeometry(new CageOutlineCurve(dir, h, GOAL_D_TOP), 64, r, 8, false);
-  return { shell, top, baseTube, topTube, basePts, topPts };
+  const iron = new TopShelfIronCurve(dir);
+  const topTube = new THREE.TubeGeometry(iron, 96, r, 12, false);
+  const cap0 = new THREE.SphereGeometry(r, 16, 12);
+  const cap1 = new THREE.SphereGeometry(r, 16, 12);
+  cap0.translate(iron.cap0.x, iron.cap0.y, iron.cap0.z);
+  cap1.translate(iron.cap1.x, iron.cap1.y, iron.cap1.z);
+  return { shell, top, baseTube, topTube, cap0, cap1 };
 }
 
 function Goal({ side }: { side: 1 | -1 }) {
@@ -595,6 +738,8 @@ function Goal({ side }: { side: 1 | -1 }) {
       meshGeo.top.dispose();
       meshGeo.baseTube.dispose();
       meshGeo.topTube.dispose();
+      meshGeo.cap0?.dispose();
+      meshGeo.cap1?.dispose();
     },
     [netTex, meshGeo],
   );
@@ -634,49 +779,37 @@ function Goal({ side }: { side: 1 | -1 }) {
   const hw = GOAL_W / 2;
   const h = GOAL_H;
   const join = r * 1.15;
-  const mid = Math.floor(meshGeo.basePts.length / 2);
-  const a = meshGeo.basePts[mid];
-  const b = meshGeo.topPts[mid];
-  const back = a && b ? a.clone().add(b).multiplyScalar(0.5) : null;
-  const backLen = a && b ? a.distanceTo(b) : 0;
-  const backQ =
-    a && b
-      ? new THREE.Quaternion().setFromUnitVectors(
-          new THREE.Vector3(0, 1, 0),
-          b.clone().sub(a).normalize(),
-        )
-      : null;
+  // Centerline radius of the top elbow. Larger than the tube so the inside of the bend stays open.
+  const bend = r * 2;
+  const postH = h - bend;
 
   return (
     <group position={[x, 0, 0]}>
-      <mesh material={pipe} position={[0, h / 2, hw]} castShadow>
-        <cylinderGeometry args={[r, r, h, 12]} />
+      <mesh material={pipe} position={[0, postH / 2, hw]} castShadow>
+        <cylinderGeometry args={[r, r, postH, 12]} />
       </mesh>
-      <mesh material={pipe} position={[0, h / 2, -hw]} castShadow>
-        <cylinderGeometry args={[r, r, h, 12]} />
+      <mesh material={pipe} position={[0, postH / 2, -hw]} castShadow>
+        <cylinderGeometry args={[r, r, postH, 12]} />
       </mesh>
       <mesh material={pipe} position={[0, h, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
-        <cylinderGeometry args={[r, r, GOAL_W + r * 2, 12]} />
+        <cylinderGeometry args={[r, r, GOAL_W - bend * 2, 12]} />
+      </mesh>
+      <mesh material={pipe} position={[0, h - bend, hw - bend]} rotation={[0, -Math.PI / 2, 0]} castShadow>
+        <torusGeometry args={[bend, r, 12, 16, Math.PI / 2]} />
+      </mesh>
+      <mesh material={pipe} position={[0, h - bend, -hw + bend]} rotation={[0, Math.PI / 2, 0]} castShadow>
+        <torusGeometry args={[bend, r, 12, 16, Math.PI / 2]} />
       </mesh>
 
       <mesh geometry={meshGeo.baseTube} material={white} />
       <mesh geometry={meshGeo.topTube} material={white} />
-      {back && backQ ? (
-        <mesh material={white} position={[back.x, back.y, back.z]} quaternion={backQ}>
-          <cylinderGeometry args={[r * 0.85, r * 0.85, backLen, 8]} />
-        </mesh>
-      ) : null}
+      {meshGeo.cap0 ? <mesh geometry={meshGeo.cap0} material={white} /> : null}
+      {meshGeo.cap1 ? <mesh geometry={meshGeo.cap1} material={white} /> : null}
 
       <mesh material={pipe} position={[0, 0, hw]}>
         <sphereGeometry args={[join, 8, 8]} />
       </mesh>
       <mesh material={pipe} position={[0, 0, -hw]}>
-        <sphereGeometry args={[join, 8, 8]} />
-      </mesh>
-      <mesh material={pipe} position={[0, h, hw]}>
-        <sphereGeometry args={[join, 8, 8]} />
-      </mesh>
-      <mesh material={pipe} position={[0, h, -hw]}>
         <sphereGeometry args={[join, 8, 8]} />
       </mesh>
 
@@ -925,6 +1058,15 @@ export function Rink() {
   const iceGeo = useMemo(() => {
     const s = roundedRectShape(RINK_L, RINK_W, CORNER_R, 0.02);
     const g = new THREE.ShapeGeometry(s, 24);
+    const uv = g.getAttribute("uv");
+    for (let i = 0; i < uv.count; i++) {
+      uv.setXY(
+        i,
+        (uv.getX(i) + RINK_L / 2) / RINK_L,
+        (uv.getY(i) + RINK_W / 2) / RINK_W,
+      );
+    }
+    uv.needsUpdate = true;
     g.rotateX(-Math.PI / 2);
     g.computeVertexNormals();
     return g;
@@ -954,18 +1096,37 @@ export function Rink() {
   }, [capMat, homeRibbon]);
   const glassWalls = useMemo(() => glassWallLayout(rinkPerimeter(RINK_GLASS_INSET, 96)), []);
 
-  const iceMat = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        map: ice.map,
-        color: "#ffffff",
-        roughness: 0.26,
-        metalness: 0.02,
-        envMapIntensity: 0.55,
-        side: THREE.DoubleSide,
-      }),
-    [ice],
-  );
+  const iceMat = useMemo(() => {
+    const mat = new THREE.MeshStandardMaterial({
+      map: ice.map,
+      color: "#ffffff",
+      roughness: 0.26,
+      metalness: 0.02,
+      envMapIntensity: 0.55,
+      side: THREE.DoubleSide,
+    });
+    const wearMap = iceWearTexture();
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.wearMap = { value: wearMap };
+      if (!shader.fragmentShader.includes("#include <common>")) return;
+      if (!shader.fragmentShader.includes("#include <map_fragment>")) return;
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nuniform sampler2D wearMap;")
+        .replace(
+          "#include <map_fragment>",
+          `#include <map_fragment>
+      float hfbWear = texture2D(wearMap, vMapUv).a;
+      float hfbIceMin = min(diffuseColor.r, min(diffuseColor.g, diffuseColor.b));
+      float hfbIce = smoothstep(0.62, 0.78, hfbIceMin);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.403, 0.552, 0.671), hfbWear * hfbIce);`,
+        );
+    };
+    mat.customProgramCacheKey = () => "ice-wear-v1";
+    return mat;
+  }, [ice]);
+  useFrame(() => {
+    flushIceWear();
+  });
 
   return (
     <group>

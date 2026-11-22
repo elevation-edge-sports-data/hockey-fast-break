@@ -509,13 +509,13 @@ const BUTTERFLY_AIM_FWD = 0.16;
 /**
  * Save window for that raised hand, goalie-relative.
  * Positive lateral is the blocker side. The box is the overlap of the blocker
- * board and the catcher pocket, so a top-corner puck (about y 1.26, |z| 0.86)
- * is on the hand. Low pad shots stay under Y0.
+ * board and the catcher pocket: 0.26 m inside the post to 0.04 m outside it,
+ * and 0.20 m under the crossbar to 0.04 m over it. Low pad shots stay under Y0.
  */
-export const GOALIE_CORNER_Y0 = 1.16;
-export const GOALIE_CORNER_Y1 = 1.4;
-export const GOALIE_CORNER_LAT0 = 0.76;
-export const GOALIE_CORNER_LAT1 = 1.06;
+export const GOALIE_CORNER_Y0 = GOAL_H - 0.2;
+export const GOALIE_CORNER_Y1 = GOAL_H + 0.04;
+export const GOALIE_CORNER_LAT0 = GOAL_W / 2 - 0.26;
+export const GOALIE_CORNER_LAT1 = GOAL_W / 2 + 0.04;
 
 /** Ice-blade center leads the stick-pad face. The heel sits GOALIE_ICE_CENTER_Z behind that. */
 export const GOALIE_BUTTERFLY_BLADE_LEAD = 0.26;

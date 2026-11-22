@@ -129,19 +129,6 @@ export function createIceCanvases(
   }
   ctx.putImageData(img, 0, 0);
 
-  ctx.strokeStyle = "rgba(170, 196, 214, 0.28)";
-  ctx.lineWidth = 1;
-  for (let i = 0; i < 420; i++) {
-    const x = Math.random() * w;
-    const y = Math.random() * h;
-    const len = 18 + Math.random() * 90;
-    const ang = (Math.random() - 0.5) * 0.35;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
-    ctx.stroke();
-  }
-
   const thinW = mx(0.055);
 
   const strokeV = (x: number, color: string, width: number) => {
@@ -326,9 +313,10 @@ export function createNetTexture(): THREE.CanvasTexture {
   const image = g.createImageData(size, size);
   const data = image.data;
   // Vertex-to-vertex pitch. Both cord families are diagonal, so the openings are diamonds.
+  // `half` is the cord radius in pixels. The 18-cell pitch is unchanged.
   const cells = 18;
   const step = size / cells;
-  const half = 0.62;
+  const half = 1.4;
   const inner = half - 0.4;
   const outer = half + 0.55;
   const peak = Math.round(0.92 * 255);
