@@ -22,7 +22,8 @@ import {
   SIDE_GLASS_H,
   cageDepthAt,
   cageBaseStrike,
-  GOAL_PIPE_R,
+  GOAL_RED_R,
+  GOAL_WHITE_R,
   iceWidthAtX,
   resolveCage,
   segmentHitsCage,
@@ -10628,7 +10629,7 @@ function looseEnd(puck: Puck): 1 | -1 | 0 {
 }
 
 function cageClearZ(radius: number): number {
-  return GOAL_W / 2 + radius + GOAL_PIPE_R + 0.28;
+  return GOAL_W / 2 + radius + GOAL_RED_R + 0.28;
 }
 
 function chaseRoom(): number {
@@ -10771,7 +10772,7 @@ function goalieLineDepth(s: Skater): number {
 }
 
 function goaliePostClear(s: Skater): number {
-  return GOAL_W / 2 + s.radius + GOAL_PIPE_R + 0.32;
+  return GOAL_W / 2 + s.radius + GOAL_RED_R + 0.32;
 }
 
 function goalieRouteBlocked(
@@ -10870,7 +10871,7 @@ function goalieCreasePoint(s: Skater): { x: number; z: number } {
   const sideZ = side * post;
   // Outside the pipe counts as wide. The boards-side spot is further out, and the
   // cage will not let him stand on it while he is still on the goal line.
-  const wide = Math.abs(s.z) >= GOAL_W / 2 + s.radius + GOAL_PIPE_R + 0.12;
+  const wide = Math.abs(s.z) >= GOAL_W / 2 + s.radius + GOAL_RED_R + 0.12;
   const maxDepth = RINK_L / 2 - GOAL_LINE_X - s.radius - 0.12;
   const backX = mouth + end * Math.min(Math.max(depth, GOAL_D + s.radius + 0.36), maxDepth);
   const flank = { x: creaseX, z: sideZ };
@@ -12064,7 +12065,7 @@ function thinkGoalie(s: Skater, dt: number): void {
     } else {
       const post = (GOAL_W / 2 - 0.14) * (puck.z >= 0 ? 1 : -1);
       const wrapMax = GOAL_W / 2 + 0.08;
-      const lip = s.radius + GOAL_PIPE_R + 0.04;
+      const lip = s.radius + GOAL_RED_R + 0.04;
       s.trackZ = Math.max(-wrapMax, Math.min(wrapMax, post));
       s.trackVz = 0;
       s.x += (endLine - def * lip - s.x) * Math.min(1, 7 * dt);
@@ -12890,7 +12891,7 @@ function goaliePuckHold(s: Skater): { x: number; z: number } {
 }
 
 const PUCK_R = 0.04;
-const CROSSBAR_R = GOAL_PIPE_R;
+const CROSSBAR_R = GOAL_RED_R;
 const SKATE_LX = 0.2;
 const SKATE_LZ = skateSoleZ();
 
@@ -21703,7 +21704,7 @@ function shellAlongLimit(z: number, y: number): number {
   const hw = GOAL_W / 2;
   if (Math.abs(z) >= hw) return 0;
   const yClamped = Math.max(0, Math.min(y, GOAL_H));
-  const ySurf = yClamped <= GOAL_PIPE_R * 2 + PUCK_R ? 0 : yClamped;
+  const ySurf = yClamped <= GOAL_WHITE_R * 2 + PUCK_R ? 0 : yClamped;
   return cageDepthAt(z, ySurf);
 }
 
@@ -21737,7 +21738,7 @@ function shellCrossing(
 function shellOutward(along: number, z: number, y: number): { na: number; nz: number } {
   const hw = GOAL_W / 2;
   const yS = Math.max(0, Math.min(y, GOAL_H));
-  const ySurf = yS <= GOAL_PIPE_R * 2 + PUCK_R ? 0 : yS;
+  const ySurf = yS <= GOAL_WHITE_R * 2 + PUCK_R ? 0 : yS;
   const depth = Math.max(0.25, cageDepthAt(0, ySurf));
   const zz = Math.max(-hw + 0.001, Math.min(hw - 0.001, z));
   const ga = along / (depth * depth);
@@ -21752,7 +21753,7 @@ function reboundCageBase(
   side: 1 | -1,
   hit: { a: number; z: number; na: number; nz: number },
 ): void {
-  const clear = PUCK_R + GOAL_PIPE_R + 0.03;
+  const clear = PUCK_R + GOAL_WHITE_R + 0.03;
   const mouth = side * GOAL_LINE_X;
   puck.x = mouth + side * (hit.a + hit.na * clear);
   puck.z = hit.z + hit.nz * clear;
@@ -21977,7 +21978,7 @@ function bouncePuckCage(puck: Puck, prevX: number, prevZ: number, prevY: number)
       }
     }
 
-    const onIce = puck.y <= GOAL_PIPE_R * 2 + PUCK_R + 0.04 && prevY <= GOAL_PIPE_R * 2 + PUCK_R + 0.08;
+    const onIce = puck.y <= GOAL_WHITE_R * 2 + PUCK_R + 0.04 && prevY <= GOAL_WHITE_R * 2 + PUCK_R + 0.08;
     const baseStrike = onIce
       ? cageBaseStrike((prevX - mouth) * side, prevZ, (puck.x - mouth) * side, puck.z)
       : null;

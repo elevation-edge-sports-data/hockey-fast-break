@@ -7,7 +7,6 @@ import {
   DOT_R,
   FACEOFF_EZ_X,
   FACEOFF_MARK_R,
-  FACEOFF_R,
   FACEOFF_SPOT_Z,
   FT,
   BLUE_LINE_W,
@@ -15,12 +14,6 @@ import {
   GOAL_LINE_W,
   GOAL_LINE_X,
   GOAL_W,
-  HASH_MARK_INSIDE,
-  HASH_MARK_L,
-  L_ARM,
-  L_GAP,
-  L_INSET,
-  L_STEM,
   LINE_BLUE,
   LINE_RED,
   RINK_L,
@@ -145,7 +138,7 @@ export function createIceCanvases(
     const dir = -side;
     ctx.fillStyle = CREASE_FILL;
     ctx.strokeStyle = LINE_RED;
-    ctx.lineWidth = Math.max(2.2, thinW * 1.6);
+    ctx.lineWidth = mx(GOAL_LINE_W);
     ctx.beginPath();
     const hw = Math.max(GOAL_W / 2, CREASE_R * 0.66);
     ctx.moveTo(wx(gx), wz(-hw));
@@ -178,62 +171,7 @@ export function createIceCanvases(
     ctx.stroke();
   };
 
-  const markW = Math.max(2, mx((2 / 12) * FT));
-  const strokeSeg = (x0: number, z0: number, x1: number, z1: number) => {
-    ctx.beginPath();
-    ctx.moveTo(wx(x0), wz(z0));
-    ctx.lineTo(wx(x1), wz(z1));
-    ctx.stroke();
-  };
-  const paintStripedDot = (x: number, z: number) => {
-    const r = DOT_R;
-    const cap = (3 / 12) * FT;
-    ctx.fillStyle = "#f7f7f5";
-    ctx.beginPath();
-    ctx.ellipse(wx(x), wz(z), mx(r), mz(r), 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.save();
-    ctx.beginPath();
-    ctx.ellipse(wx(x), wz(z), mx(r), mz(r), 0, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.fillStyle = LINE_RED;
-    ctx.fillRect(wx(x - r + cap), wz(z - r), mx(2 * r - 2 * cap), mz(2 * r));
-    ctx.restore();
-    ctx.strokeStyle = LINE_RED;
-    ctx.lineWidth = Math.max(1.6, mx((2 / 12) * FT));
-    ctx.beginPath();
-    ctx.ellipse(wx(x), wz(z), mx(r), mz(r), 0, 0, Math.PI * 2);
-    ctx.stroke();
-  };
-  const faceoff = (x: number, z: number, withCircle: boolean) => {
-    if (withCircle) {
-      ctx.strokeStyle = LINE_RED;
-      ctx.lineWidth = thinW;
-      ctx.beginPath();
-      ctx.ellipse(wx(x), wz(z), mx(FACEOFF_R), mz(FACEOFF_R), 0, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.lineWidth = markW;
-      ctx.lineCap = "butt";
-      const inner = HASH_MARK_INSIDE / 2;
-      for (const szn of [-1, 1]) {
-        for (const sxn of [-1, 1]) {
-          const xx = x + sxn * inner;
-          const z0 = z + szn * FACEOFF_R;
-          strokeSeg(xx, z0, xx, z + szn * (FACEOFF_R + HASH_MARK_L));
-        }
-      }
-      const halfGap = L_GAP / 2;
-      for (const sxn of [-1, 1]) {
-        for (const szn of [-1, 1]) {
-          const xInner = x + sxn * L_INSET;
-          const zStem = z + szn * halfGap;
-          strokeSeg(xInner, zStem, x + sxn * (L_INSET + L_STEM), zStem);
-          strokeSeg(xInner, zStem, xInner, z + szn * (halfGap + L_ARM));
-        }
-      }
-    }
-    paintStripedDot(x, z);
-  };
+  const faceoff = (_x: number, _z: number, _withCircle: boolean) => {};
 
   fillCrease(1);
   fillCrease(-1);
@@ -258,11 +196,6 @@ export function createIceCanvases(
   }
   strokeV(GOAL_LINE_X, LINE_RED, mx(GOAL_LINE_W));
   strokeV(-GOAL_LINE_X, LINE_RED, mx(GOAL_LINE_W));
-  ctx.strokeStyle = LINE_RED;
-  ctx.lineWidth = thinW;
-  ctx.beginPath();
-  ctx.ellipse(wx(0), wz(0), mx(FACEOFF_MARK_R), mz(FACEOFF_MARK_R), 0, 0, Math.PI * 2);
-  ctx.stroke();
 
   const ezX = GOAL_LINE_X - 20 * FT;
   const nzX = BLUE_X - 5 * FT;
@@ -390,15 +323,16 @@ export function createJumboTexture(): THREE.CanvasTexture {
 }
 
 export function createFaceoffDotTexture(): THREE.CanvasTexture {
-  const s = 256;
+  const s = 512;
   const c = document.createElement("canvas");
   c.width = s;
   c.height = s;
   const g = c.getContext("2d")!;
   const cap = s * (3 / 24);
+  const edge = s / 256;
   g.clearRect(0, 0, s, s);
   g.beginPath();
-  g.arc(s / 2, s / 2, s / 2 - 1, 0, Math.PI * 2);
+  g.arc(s / 2, s / 2, s / 2 - edge, 0, Math.PI * 2);
   g.fillStyle = "#f7f7f5";
   g.fill();
   g.save();
@@ -407,13 +341,13 @@ export function createFaceoffDotTexture(): THREE.CanvasTexture {
   g.fillRect(cap, 0, s - 2 * cap, s);
   g.restore();
   g.beginPath();
-  g.arc(s / 2, s / 2, s / 2 - 5, 0, Math.PI * 2);
+  g.arc(s / 2, s / 2, s / 2 - 5 * edge, 0, Math.PI * 2);
   g.strokeStyle = LINE_RED;
-  g.lineWidth = 8;
+  g.lineWidth = 8 * edge;
   g.stroke();
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 8;
+  tex.anisotropy = 16;
   return tex;
 }
 

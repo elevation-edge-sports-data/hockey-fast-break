@@ -22,7 +22,12 @@ export const GOAL_W = 6 * FT;
 export const GOAL_H = 4 * FT;
 export const GOAL_D = (44 / 12) * FT;
 export const GOAL_D_TOP = (22 / 12) * FT;
-export const GOAL_PIPE_R = 0.042;
+/** Red posts, crossbar, elbows, and base joints. 2.375 in outside diameter. */
+export const GOAL_RED_R = 0.0301625;
+/** White top-shelf and ice-level base iron. 1.9 in outside diameter. */
+export const GOAL_WHITE_R = 0.02413;
+/** Red post and crossbar radius. White iron uses GOAL_WHITE_R. */
+export const GOAL_PIPE_R = GOAL_RED_R;
 export const CREASE_R = 6 * FT;
 export const FACEOFF_R = 15 * FT;
 export const FACEOFF_MARK_R = FACEOFF_R * 0.88;
@@ -33,8 +38,8 @@ export const HASH_MARK_INSIDE = (5 + 11 / 12) * FT;
 export const L_STEM = 4 * FT;
 export const L_ARM = (2 + 10 / 12) * FT;
 export const L_GAP = (18 / 12) * FT;
-export const L_INSET = FT;
 export const MARK_W = (2 / 12) * FT;
+export const L_INSET = 2 * FT + MARK_W / 2;
 
 export const GOAL_LINE_X = RINK_L / 2 - GOAL_LINE_FROM_END;
 export const BLUE_X = GOAL_LINE_X - BLUE_FROM_GOAL;
@@ -46,9 +51,9 @@ export const LINE_RED = "#c8102e";
 export const LINE_BLUE = "#1d4ed8";
 export const CREASE_FILL = "rgba(70, 168, 255, 0.62)";
 
-export const GOAL_LINE_W = 0.09;
-export const CENTER_LINE_W = FT / 1.25;
-export const BLUE_LINE_W = FT / 1.25;
+export const GOAL_LINE_W = MARK_W;
+export const CENTER_LINE_W = FT;
+export const BLUE_LINE_W = FT;
 
 export function boardLineFaces(
   lineX: number,
@@ -655,7 +660,9 @@ function resolveBodyCage(x: number, z: number, radius: number): CagePush {
   let nz = 0;
   let hit = false;
   const hw = GOAL_W / 2;
-  const reach = radius + GOAL_PIPE_R;
+  const postReach = radius + GOAL_RED_R;
+  const baseReach = radius + GOAL_WHITE_R;
+  const reach = Math.max(postReach, baseReach);
 
   for (let iter = 0; iter < 3; iter++) {
     for (const side of [1, -1] as const) {
@@ -666,7 +673,7 @@ function resolveBodyCage(x: number, z: number, radius: number): CagePush {
 
       const outX = -side;
       for (const zPost of [hw, -hw] as const) {
-        const sep = pushFromCircle(px, pz, mouth, zPost, reach, outX, zPost >= 0 ? 1 : -1);
+        const sep = pushFromCircle(px, pz, mouth, zPost, postReach, outX, zPost >= 0 ? 1 : -1);
         if (!sep) continue;
         px = sep.x;
         pz = sep.z;
@@ -676,7 +683,7 @@ function resolveBodyCage(x: number, z: number, radius: number): CagePush {
       }
 
       const cz = Math.max(-hw, Math.min(hw, pz));
-      const bar = pushFromCircle(px, pz, mouth, cz, reach, outX, 0);
+      const bar = pushFromCircle(px, pz, mouth, cz, postReach, outX, 0);
       if (bar) {
         px = bar.x;
         pz = bar.z;
@@ -686,7 +693,7 @@ function resolveBodyCage(x: number, z: number, radius: number): CagePush {
       }
 
       const along = (px - mouth) * side;
-      const twine = pushFromTwine(along, pz, reach);
+      const twine = pushFromTwine(along, pz, baseReach);
       if (!twine) continue;
       px = mouth + side * twine.along;
       pz = twine.z;
@@ -905,7 +912,7 @@ export function cageBaseStrike(
   // Touching the pipe counts, including a tangent skim. A center moving clearly away does not.
   if (
     nearHit &&
-    nearDist < GOAL_PIPE_R + 0.045 &&
+    nearDist < GOAL_WHITE_R + 0.045 &&
     da * nearHit.na + dz * nearHit.nz < 0.02
   ) {
     return nearHit;
@@ -918,7 +925,7 @@ export function segmentHitsCage(x0: number, z0: number, x1: number, z1: number):
   for (const side of [1, -1] as const) {
     const mouth = side * GOAL_LINE_X;
     for (const zPost of [hw, -hw] as const) {
-      if (segmentHitsCircle(x0, z0, x1, z1, mouth, zPost, GOAL_PIPE_R)) return true;
+      if (segmentHitsCircle(x0, z0, x1, z1, mouth, zPost, GOAL_RED_R)) return true;
     }
     const a0 = (x0 - mouth) * side;
     const a1 = (x1 - mouth) * side;

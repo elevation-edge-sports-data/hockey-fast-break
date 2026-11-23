@@ -12,6 +12,7 @@ import {
   CORNER_R,
   CREASE_R,
   DOT_R,
+  FT,
   FACEOFF_EZ_X,
   FACEOFF_MARK_R,
   FACEOFF_NZ_X,
@@ -32,8 +33,9 @@ import {
   cageOutlinePoint,
   GOAL_D,
   GOAL_D_TOP,
-  GOAL_PIPE_R,
   GOAL_H,
+  GOAL_RED_R,
+  GOAL_WHITE_R,
   GOAL_LINE_W,
   GOAL_LINE_X,
   GOAL_W,
@@ -98,9 +100,16 @@ function IceStripe({
 
 function FaceoffCircle({ x, z, r = FACEOFF_R }: { x: number; z: number; r?: number }) {
   return (
-    <mesh position={[x, 0.026, z]} rotation={[-Math.PI / 2, 0, 0]}>
-      <ringGeometry args={[r, r + 0.09, 72]} />
-      <meshBasicMaterial color={LINE_RED} toneMapped={false} side={THREE.DoubleSide} />
+    <mesh position={[x, 0.012, z]} rotation={[-Math.PI / 2, 0, 0]}>
+      <ringGeometry args={[r, r + GOAL_LINE_W, 128]} />
+      <meshBasicMaterial
+        color={LINE_RED}
+        toneMapped={false}
+        side={THREE.DoubleSide}
+        polygonOffset
+        polygonOffsetFactor={-2}
+        polygonOffsetUnits={-2}
+      />
     </mesh>
   );
 }
@@ -110,16 +119,26 @@ function MarkLine({
   z,
   alongX,
   alongZ,
+  y = 0.027,
+  offset = 0,
 }: {
   x: number;
   z: number;
   alongX: number;
   alongZ: number;
+  y?: number;
+  offset?: number;
 }) {
   return (
-    <mesh position={[x, 0.027, z]} rotation={[-Math.PI / 2, 0, 0]}>
+    <mesh position={[x, y, z]} rotation={[-Math.PI / 2, 0, 0]}>
       <planeGeometry args={[Math.max(alongX, MARK_W), Math.max(alongZ, MARK_W)]} />
-      <meshBasicMaterial color={LINE_RED} toneMapped={false} />
+      <meshBasicMaterial
+        color={LINE_RED}
+        toneMapped={false}
+        polygonOffset={offset !== 0}
+        polygonOffsetFactor={offset}
+        polygonOffsetUnits={offset}
+      />
     </mesh>
   );
 }
@@ -135,9 +154,11 @@ function EndZoneMarks({ x, z }: { x: number; z: number }) {
           <MarkLine
             key={`h${sxn}${szn}`}
             x={x + sxn * inner}
-            z={z + szn * (FACEOFF_R + HASH_MARK_L / 2)}
+            z={z + szn * (Math.sqrt((FACEOFF_R + GOAL_LINE_W) ** 2 - inner ** 2) + HASH_MARK_L / 2)}
             alongX={MARK_W}
             alongZ={HASH_MARK_L}
+            y={0.012}
+            offset={-3}
           />
         )),
       )}
@@ -152,6 +173,8 @@ function EndZoneMarks({ x, z }: { x: number; z: number }) {
               z={zStem}
               alongX={L_STEM}
               alongZ={MARK_W}
+              y={0.012}
+              offset={-3}
             />,
             <MarkLine
               key={`la${sxn}${szn}`}
@@ -159,6 +182,17 @@ function EndZoneMarks({ x, z }: { x: number; z: number }) {
               z={z + szn * (halfGap + L_ARM / 2)}
               alongX={MARK_W}
               alongZ={L_ARM}
+              y={0.012}
+              offset={-3}
+            />,
+            <MarkLine
+              key={`lc${sxn}${szn}`}
+              x={xInner}
+              z={zStem}
+              alongX={MARK_W}
+              alongZ={MARK_W}
+              y={0.012}
+              offset={-3}
             />,
           ];
         }),
@@ -310,9 +344,15 @@ function FaceoffDot({
   map: THREE.CanvasTexture;
 }) {
   return (
-    <mesh position={[x, 0.028, z]} rotation={[-Math.PI / 2, 0, 0]}>
-      <circleGeometry args={[DOT_R, 48]} />
-      <meshBasicMaterial map={map} toneMapped={false} />
+    <mesh position={[x, 0.012, z]} rotation={[-Math.PI / 2, 0, 0]}>
+      <circleGeometry args={[DOT_R, 64]} />
+      <meshBasicMaterial
+        map={map}
+        toneMapped={false}
+        polygonOffset
+        polygonOffsetFactor={-2}
+        polygonOffsetUnits={-2}
+      />
     </mesh>
   );
 }
@@ -509,11 +549,67 @@ function CenterRedLine() {
   );
 }
 
+/** Canvas leg is 0.055 m (thinW). The extra 0.02 m covers the albedo antialias. */
+const TRAP_W = 0.075;
+
+function goalTrapezoidGeo(side: 1 | -1): THREE.BufferGeometry {
+  const gx = GOAL_LINE_X * side;
+  const back = (RINK_L / 2) * side;
+  const goal = 8.5 * FT;
+  const end = 14 * FT;
+  const y = 0.012;
+  const half = TRAP_W / 2;
+  const legs: [number, number, number, number][] = [
+    [gx, -goal, back, -end],
+    [gx, goal, back, end],
+  ];
+  const pos: number[] = [];
+  const idx: number[] = [];
+  for (const [x0, z0, x1, z1] of legs) {
+    const dx = x1 - x0;
+    const dz = z1 - z0;
+    const len = Math.hypot(dx, dz) || 1;
+    const ox = (dz / len) * half;
+    const oz = (-dx / len) * half;
+    const base = pos.length / 3;
+    pos.push(
+      x0 + ox, y, z0 + oz,
+      x0 - ox, y, z0 - oz,
+      x1 + ox, y, z1 + oz,
+      x1 - ox, y, z1 - oz,
+    );
+    idx.push(base, base + 2, base + 3, base, base + 3, base + 1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  return g;
+}
+
+function GoalTrapezoid({ side }: { side: 1 | -1 }) {
+  const geo = useMemo(() => goalTrapezoidGeo(side), [side]);
+  useLayoutEffect(() => () => geo.dispose(), [geo]);
+  return (
+    <mesh geometry={geo}>
+      <meshBasicMaterial
+        color={LINE_RED}
+        toneMapped={false}
+        side={THREE.DoubleSide}
+        polygonOffset
+        polygonOffsetFactor={-3}
+        polygonOffsetUnits={-3}
+      />
+    </mesh>
+  );
+}
+
 function IceLines({ blue }: { blue: boolean }) {
   return (
     <group>
       <Crease side={-1} />
       <Crease side={1} />
+      <GoalTrapezoid side={-1} />
+      <GoalTrapezoid side={1} />
       <IceStripe x={-GOAL_LINE_X} color={LINE_RED} width={GOAL_LINE_W} y={0.012} />
       <IceStripe x={GOAL_LINE_X} color={LINE_RED} width={GOAL_LINE_W} y={0.012} />
       {blue ? (
@@ -605,67 +701,89 @@ class CageOutlineCurve extends THREE.Curve<THREE.Vector3> {
 }
 
 /**
- * White top iron butts the back of the red elbow and runs straight into the
- * cage. Overhead, that meeting is perpendicular to the red frame. The rear
- * bar is narrower than the posts (the outline's 6-in top inset) so the sides
- * can stay straight. The net still uses the full top outline.
+ * White top iron: quarter-ellipse sides and a straight back at GOAL_D_TOP,
+ * the same family as the top outline. The straight back keeps the outline's
+ * rear bar. Each ellipse starts at the joint, not after a straight side.
+ * The end disk is head-on to the back of the elbow, so the centerline stops
+ * on the red surface (one red radius behind the elbow axis). Stopping a full
+ * white radius farther out would leave a gap the size of the white pipe.
  */
-const SHELF_REAR = GOAL_PIPE_R * 2;
-const SHELF_Z = GOAL_W / 2 - SHELF_REAR;
-const SHELF_BACK_Z = GOAL_W / 2 - (GOAL_W / 2) * (6 / 36);
-const SHELF_CORNER = SHELF_Z - SHELF_BACK_Z;
+function shelfIronLayout() {
+  const hw = GOAL_W / 2;
+  const topInset = (hw * 6) / 36;
+  const zJoin = hw - topInset;
+  const zButt = hw - GOAL_RED_R * 2;
+  const aButt = GOAL_RED_R;
+  const aSpan = GOAL_D_TOP - aButt;
+  const zSpan = zButt - zJoin;
+  let sideLen = 0;
+  let prevA = aButt;
+  let prevZ = zButt;
+  for (let i = 1; i <= 48; i++) {
+    const phi = (i / 48) * (Math.PI / 2);
+    const a = aButt + aSpan * Math.sin(phi);
+    const z = zJoin + zSpan * Math.cos(phi);
+    sideLen += Math.hypot(a - prevA, z - prevZ);
+    prevA = a;
+    prevZ = z;
+  }
+  return { zJoin, aButt, aSpan, zSpan, sideLen, backLen: zJoin * 2 };
+}
 
-type IronPiece = { len: number; at: (f: number, target: THREE.Vector3) => THREE.Vector3 };
+const SHELF_IRON = shelfIronLayout();
 
 class TopShelfIronCurve extends THREE.Curve<THREE.Vector3> {
-  private readonly pieces: IronPiece[];
-  private readonly total: number;
   readonly cap0: THREE.Vector3;
   readonly cap1: THREE.Vector3;
+  readonly out0: THREE.Vector3;
+  readonly out1: THREE.Vector3;
+  private readonly total: number;
 
-  constructor(dir: 1 | -1) {
+  constructor(private readonly dir: 1 | -1) {
     super();
-    const back = GOAL_D_TOP;
-    const corner = SHELF_CORNER;
-    const xTurn = back - corner;
-    const sideLen = xTurn - SHELF_REAR;
-    const pieces: IronPiece[] = [];
-    const put = (len: number, at: IronPiece["at"]) => pieces.push({ len, at });
-    put(sideLen, (f, target) => target.set(dir * (SHELF_REAR + sideLen * f), GOAL_H, SHELF_Z));
-    put(corner * (Math.PI / 2), (f, target) => {
-      const phi = f * (Math.PI / 2);
-      return target.set(dir * (xTurn + corner * Math.sin(phi)), GOAL_H, SHELF_BACK_Z + corner * Math.cos(phi));
-    });
-    put(SHELF_BACK_Z * 2, (f, target) => target.set(dir * back, GOAL_H, SHELF_BACK_Z - SHELF_BACK_Z * 2 * f));
-    put(corner * (Math.PI / 2), (f, target) => {
-      const phi = f * (Math.PI / 2);
-      return target.set(dir * (back - corner * (1 - Math.cos(phi))), GOAL_H, -(SHELF_BACK_Z + corner * Math.sin(phi)));
-    });
-    put(sideLen, (f, target) => target.set(dir * (xTurn - sideLen * f), GOAL_H, -SHELF_Z));
-    this.pieces = pieces;
-    this.total = pieces.reduce((sum, piece) => sum + piece.len, 0);
-    this.cap0 = pieces[0].at(0, new THREE.Vector3());
-    this.cap1 = pieces[pieces.length - 1].at(1, new THREE.Vector3());
+    this.total = SHELF_IRON.sideLen * 2 + SHELF_IRON.backLen;
+    this.cap0 = this.getPoint(0);
+    this.cap1 = this.getPoint(1);
+    const eps = 1e-4;
+    this.out0 = this.getPoint(0).sub(this.getPoint(eps)).normalize();
+    this.out1 = this.getPoint(1).sub(this.getPoint(1 - eps)).normalize();
   }
 
-  getPoint(t: number, optionalTarget?: THREE.Vector3) {
-    const target = optionalTarget ?? new THREE.Vector3();
-    let dist = Math.min(1, Math.max(0, t)) * this.total;
-    for (let i = 0; i < this.pieces.length; i++) {
-      const piece = this.pieces[i];
-      if (dist <= piece.len || i === this.pieces.length - 1) {
-        const f = piece.len > 1e-8 ? Math.min(1, dist / piece.len) : 0;
-        return piece.at(f, target);
-      }
-      dist -= piece.len;
+  private atDist(dist: number): { a: number; z: number } {
+    const { zJoin, aButt, aSpan, zSpan, sideLen, backLen } = SHELF_IRON;
+    if (dist <= sideLen) {
+      const phi = (dist / sideLen) * (Math.PI / 2);
+      return { a: aButt + aSpan * Math.sin(phi), z: zJoin + zSpan * Math.cos(phi) };
     }
-    return target;
+    dist -= sideLen;
+    if (dist <= backLen) return { a: GOAL_D_TOP, z: zJoin - dist };
+    dist -= backLen;
+    const phi = (Math.min(sideLen, dist) / sideLen) * (Math.PI / 2);
+    return {
+      a: GOAL_D_TOP - aSpan * (1 - Math.cos(phi)),
+      z: -(zJoin + zSpan * Math.sin(phi)),
+    };
   }
+
+  getPoint(u: number, optionalTarget?: THREE.Vector3) {
+    const target = optionalTarget ?? new THREE.Vector3();
+    const p = this.atDist(Math.min(1, Math.max(0, u)) * this.total);
+    return target.set(this.dir * p.a, GOAL_H, p.z);
+  }
+}
+
+function ironCap(at: THREE.Vector3, outward: THREE.Vector3, radius: number): THREE.BufferGeometry {
+  const geo = new THREE.CircleGeometry(radius, 24);
+  geo.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), outward));
+  geo.translate(at.x, at.y, at.z);
+  return geo;
 }
 
 function goalMesh(dir: 1 | -1) {
   const h = GOAL_H;
-  const r = GOAL_PIPE_R;
+  // Existing shell lift. The plan outline stays on cageOutlinePoint.
+  const netLift = 0.042;
+  const whiteR = GOAL_WHITE_R;
   const segs = 36;
   const ySegs = 5;
   const shell = new THREE.BufferGeometry();
@@ -674,7 +792,7 @@ function goalMesh(dir: 1 | -1) {
   const idx: number[] = [];
   for (let j = 0; j <= ySegs; j++) {
     const yf = j / ySegs;
-    const y = r + (h - r) * yf;
+    const y = netLift + (h - netLift) * yf;
     const depth = GOAL_D * (1 - yf * (1 - GOAL_D_TOP / GOAL_D));
     for (let i = 0; i <= segs; i++) {
       const t = i / segs;
@@ -718,13 +836,11 @@ function goalMesh(dir: 1 | -1) {
   top.setIndex(tIdx);
   top.computeVertexNormals();
 
-  const baseTube = new THREE.TubeGeometry(new CageOutlineCurve(dir, r, GOAL_D), 64, r, 8, false);
+  const baseTube = new THREE.TubeGeometry(new CageOutlineCurve(dir, whiteR, GOAL_D), 64, whiteR, 8, false);
   const iron = new TopShelfIronCurve(dir);
-  const topTube = new THREE.TubeGeometry(iron, 96, r, 12, false);
-  const cap0 = new THREE.SphereGeometry(r, 16, 12);
-  const cap1 = new THREE.SphereGeometry(r, 16, 12);
-  cap0.translate(iron.cap0.x, iron.cap0.y, iron.cap0.z);
-  cap1.translate(iron.cap1.x, iron.cap1.y, iron.cap1.z);
+  const topTube = new THREE.TubeGeometry(iron, 128, GOAL_WHITE_R, 12, false);
+  const cap0 = ironCap(iron.cap0, iron.out0, GOAL_WHITE_R);
+  const cap1 = ironCap(iron.cap1, iron.out1, GOAL_WHITE_R);
   return { shell, top, baseTube, topTube, cap0, cap1 };
 }
 
@@ -772,10 +888,11 @@ function Goal({ side }: { side: 1 | -1 }) {
         color: "#f4f6f8",
         roughness: 0.38,
         metalness: 0.22,
+        side: THREE.DoubleSide,
       }),
     [],
   );
-  const r = GOAL_PIPE_R;
+  const r = GOAL_RED_R;
   const hw = GOAL_W / 2;
   const h = GOAL_H;
   const join = r * 1.15;
