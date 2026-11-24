@@ -1346,6 +1346,10 @@ function resetSkaters(): void {
   wingAimFrame = Number.NaN;
   passChaseFrame = Number.NaN;
   passChaseId = -1;
+  otMeetFrame = Number.NaN;
+  otMeetId = -1;
+  otMeetPass = Number.NaN;
+  otMeetLatched = -1;
   pathChaseFrame = Number.NaN;
   pathChaseId = -1;
   pathChaseAway = -1;
@@ -5884,11 +5888,15 @@ function ozFarRimSide(): 1 | -1 | 0 {
   return 0;
 }
 
-/** Point on the pass he can skate onto. Coast uses the puck's ice drag. */
-function ontoPassPuck(s: Skater): { x: number; z: number } {
+/**
+ * Point on the pass he can skate onto. Coast uses the puck's ice drag.
+ * late is seconds after the puck (negative means he can arrive early). t is that coast time.
+ * Callers that only need the point keep reading x and z.
+ */
+function ontoPassPuck(s: Skater): { x: number; z: number; late: number; t: number } {
   const puck = world.puck;
   const spd = Math.hypot(puck.vx, puck.vz);
-  if (spd < 1.2) return { x: puck.x, z: puck.z };
+  if (spd < 1.2) return { x: puck.x, z: puck.z, late: 0, t: 0 };
   const drag = puckDrag();
   const ux = puck.vx / spd;
   const uz = puck.vz / spd;
@@ -5896,6 +5904,7 @@ function ontoPassPuck(s: Skater): { x: number; z: number } {
   let bestX = puck.x;
   let bestZ = puck.z;
   let bestLate = Infinity;
+  let bestT = 0;
   for (let i = 0; i <= 18; i++) {
     const t = i * 0.1;
     const coast = (spd / drag) * (1 - Math.exp(-drag * t));
@@ -5904,12 +5913,263 @@ function ontoPassPuck(s: Skater): { x: number; z: number } {
     const late = Math.hypot(x - s.x, z - s.z) / skate - t;
     if (late < bestLate) {
       bestLate = late;
+      bestT = t;
       bestX = x;
       bestZ = z;
     }
     if (late <= 0.02) break;
   }
-  return { x: bestX, z: bestZ };
+  return { x: bestX, z: bestZ, late: bestLate, t: bestT };
+}
+
+/** Same-side pass still loose. A later shot, save, or hit ends it. */
+function teamPassLive(side: "home" | "away"): boolean {
+  if (world.puck.owner !== null || world.faceoff || world.stoppage) return false;
+  if (world.lastPasser === null) return false;
+  const passer = world.skaters[world.lastPasser];
+  if (!passer || passer.side !== side) return false;
+  if (world.time - world.lastPass > 2.2) return false;
+  if (world.lastShoot >= world.lastPass) return false;
+  if (world.goalieSaveT >= world.lastPass || world.lastHitTime >= world.lastPass) return false;
+  return true;
+}
+
+/** The aimed teammate is still the reception, so nobody else leaves for a one-timer. */
+function namedReceiverOwnsPass(): boolean {
+  if (world.lastPassTo === null) return false;
+  const named = world.skaters[world.lastPassTo];
+  if (!named || named.kind === "goalie") return false;
+  const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : undefined;
+  if (!passer || named.side !== passer.side || named.id === passer.id) return false;
+  if (!teamPassLive(named.side)) return false;
+  return !passClearlyMissed(named);
+}
+
+/** A one-timer from this ice spot can actually reach the net. */
+function receiveShotPlausible(s: Skater, x: number, z: number): boolean {
+  const attack = attackDir(s.side);
+  const depth = (attack * GOAL_LINE_X - x) * attack;
+  return depth > 1.4 && depth < 22 && Math.abs(z) < 10.5;
+}
+
+/** Closest the coasting puck comes to where he already stands. */
+function stayOnPassGap(s: Skater): { gap: number; t: number } {
+  const puck = world.puck;
+  const spd = Math.hypot(puck.vx, puck.vz);
+  const here = Math.hypot(s.x - puck.x, s.z - puck.z);
+  if (spd < 1.2) return { gap: here, t: 0 };
+  const drag = puckDrag();
+  const ux = puck.vx / spd;
+  const uz = puck.vz / spd;
+  let gap = here;
+  let at = 0;
+  for (let i = 0; i <= 18; i++) {
+    const t = i * 0.1;
+    const coast = (spd / drag) * (1 - Math.exp(-drag * t));
+    const d = Math.hypot(puck.x + ux * coast - s.x, puck.z + uz * coast - s.z);
+    if (d < gap) {
+      gap = d;
+      at = t;
+    }
+  }
+  return { gap, t: at };
+}
+
+let otMeetFrame = Number.NaN;
+let otMeetId = -1;
+let otMeetPass = Number.NaN;
+let otMeetLatched = -1;
+
+/** The pass is running at the net this skater would shoot at. A retrieval is not a one-timer. */
+function passAttacksNet(side: "home" | "away"): boolean {
+  const attack = attackDir(side);
+  const puck = world.puck;
+  if (puck.vx * attack < 2) return false;
+  const depth = (attack * GOAL_LINE_X - puck.x) * attack;
+  return depth > -2 && depth < 28;
+}
+
+/** Still worth skating onto this one-timer. A latched skater keeps going until he arrives. */
+function oneTimerMeetLive(s: Skater, arriving: boolean): boolean {
+  if (s.kind !== "winger" || !cpuCanChase(s)) return false;
+  if (!passAttacksNet(s.side)) return false;
+  if (nearestFoe(s).d < 2.6) return false;
+  const meet = ontoPassPuck(s);
+  const dist = Math.hypot(meet.x - s.x, meet.z - s.z);
+  if (meet.late > 0.55) return false;
+  if (!arriving && dist < 1.2) return false;
+  if (arriving && dist < 0.55) return false;
+  if (!receiveShotPlausible(s, meet.x, meet.z)) return false;
+  if (!arriving) {
+    const stay = stayOnPassGap(s);
+    if (stay.gap < 1.05 && receiveShotPlausible(s, s.x, s.z)) return false;
+    if (stay.gap < 1.05 && dist < 2.4) return false;
+  }
+  return true;
+}
+
+/**
+ * One CPU to skate onto a loose pass that can be a one-timer.
+ * The named receiver already uses passToMe. This is the open teammate
+ * whose intercept is a shot, when leaving his spot is worth it.
+ * The choice sticks for that pass so two skaters do not trade the job.
+ * -1 when nobody should abandon where they are.
+ */
+function oneTimerMeetId(): number {
+  if (otMeetFrame === world.time) return otMeetId;
+  otMeetFrame = world.time;
+  otMeetId = -1;
+  if (namedReceiverOwnsPass()) {
+    otMeetLatched = -1;
+    return -1;
+  }
+  const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : undefined;
+  if (!passer || !teamPassLive(passer.side)) {
+    otMeetLatched = -1;
+    return -1;
+  }
+  if (otMeetPass !== world.lastPass) {
+    otMeetPass = world.lastPass;
+    otMeetLatched = -1;
+  }
+  const latched = otMeetLatched >= 0 ? world.skaters[otMeetLatched] : undefined;
+  if (latched && latched.side === passer.side && oneTimerMeetLive(latched, true)) {
+    otMeetId = latched.id;
+    return otMeetId;
+  }
+  otMeetLatched = -1;
+  let best = -1;
+  let bestScore = 0.35;
+  for (const s of world.skaters) {
+    if (s.side !== passer.side || s.id === passer.id || !oneTimerMeetLive(s, false)) continue;
+    const meet = ontoPassPuck(s);
+    const dist = Math.hypot(meet.x - s.x, meet.z - s.z);
+    const attack = attackDir(s.side);
+    const depth = (attack * GOAL_LINE_X - meet.x) * attack;
+    const slot = depth > 3.5 && depth < 15 && Math.abs(meet.z) < 6 ? 1.4 : 0;
+    const score =
+      slot +
+      Math.max(0, 12 - Math.abs(depth - 9)) * 0.08 -
+      Math.abs(meet.z) * 0.22 -
+      meet.late * 3 -
+      dist * 0.04;
+    if (score > bestScore) {
+      bestScore = score;
+      best = s.id;
+    }
+  }
+  otMeetLatched = best;
+  otMeetId = best;
+  return best;
+}
+
+/** About 35°. Inside this, the body is already on the net and yaw is left alone. */
+const NET_FACE_CONE = 0.82;
+
+/** Dot of heading with the attacking net. 1 faces that net. Same heading as faceYaw. */
+function netFaceAlign(s: Skater): number {
+  const attack = attackDir(s.side);
+  const dx = attack * GOAL_LINE_X - s.x;
+  const dz = -s.z;
+  const d = Math.hypot(dx, dz) || 1;
+  const h = heading(s.yaw);
+  return (h.fx * dx + h.fz * dz) / d;
+}
+
+/** A turn here would fight a dive, a tumble, or a rim from behind the goal line. */
+function shotFaceUnsafe(s: Skater): boolean {
+  if (s.kind === "goalie") return true;
+  if (s.tumble !== 0 || s.dive > 0.04) return true;
+  if (behindOwnGoalLine(s)) return true;
+  return false;
+}
+
+/**
+ * Smooth turn onto the attacking net. No snap, and no change once he is in the cone.
+ * Net vector is attack * GOAL_LINE_X, then turnToward, the same yaw as faceYaw.
+ */
+function turnTowardNet(s: Skater, dt: number, rate: number): void {
+  if (shotFaceUnsafe(s) || netFaceAlign(s) >= NET_FACE_CONE) return;
+  const attack = attackDir(s.side);
+  s.yaw = turnToward(s.yaw, attack * GOAL_LINE_X - s.x, -s.z, rate, dt);
+}
+
+/** One step of the release turn. The follow-through keeps going on later frames. */
+function faceShotRelease(s: Skater): void {
+  turnTowardNet(s, 1 / 60, 22);
+}
+
+/** Wide enough for a point one-timer. Does not decide who skates to the intercept. */
+function canFaceForShot(s: Skater): boolean {
+  if (behindOwnGoalLine(s)) return false;
+  const attack = attackDir(s.side);
+  const depth = (attack * GOAL_LINE_X - s.x) * attack;
+  return depth > 1.2 && depth < 26 && Math.abs(s.z) < 12.6;
+}
+
+function passArrivalEta(s: Skater): number {
+  const flight = passFlightLine(s.x, s.z);
+  if (flight.spd < 1.2 || flight.along <= 0.05) return 99;
+  return flight.along / flight.spd;
+}
+
+/**
+ * A shot is about to come off this stick: an armed one-timer (including a lateral
+ * pass to the point), an away shot off an attacking pass, or a windup he already owns.
+ * An ordinary catch with no shot stays on his current facing.
+ */
+function shotFaceBeforeRelease(s: Skater): boolean {
+  if (s.kind === "goalie" || s.id === world.userId || shotFaceUnsafe(s)) return false;
+  if (world.puck.owner === s.id && s.windup > 0.12 && canFaceForShot(s)) return true;
+  if (!teamPassLive(s.side) || !canFaceForShot(s)) return false;
+  const named = world.lastPassTo === s.id && !passClearlyMissed(s);
+  if (namedReceiverOwnsPass()) {
+    if (!named) return false;
+    if (s.side === "home" && !world.oneTimerArmed && s.windup <= 0.04) return false;
+    if (s.side === "away" && !passAttacksNet(s.side) && !world.oneTimerArmed) return false;
+    return true;
+  }
+  if (world.oneTimerArmed) {
+    const recv = oneTimerReceiver();
+    if (recv && recv.id === s.id) return true;
+    if (s.id === oneTimerMeetId()) return true;
+  }
+  return s.side === "away" && s.id === oneTimerMeetId() && passAttacksNet(s.side);
+}
+
+/**
+ * integrateSkater turns yaw toward travel. A shot squares to the net in the last
+ * 0.15–0.35 s, then the follow-through holds that facing. One-timers and wrist shots share it.
+ */
+function squareShotFace(s: Skater, dt: number): void {
+  if (s.kind === "goalie") return;
+  if (s.follow > 0.02 && world.lastShooter === s.id) {
+    turnTowardNet(s, dt, 14);
+    return;
+  }
+  if (s.id === world.userId) {
+    if (
+      world.puck.owner === s.id &&
+      s.windup > 0.08 &&
+      world.shotWindupT > 0.18 &&
+      canFaceForShot(s)
+    ) {
+      turnTowardNet(s, dt, 10);
+    }
+    return;
+  }
+  if (!shotFaceBeforeRelease(s)) return;
+  const eta = passArrivalEta(s);
+  const gap = Math.hypot(s.x - world.puck.x, s.z - world.puck.z);
+  const owned = world.puck.owner === s.id;
+  if (owned || (eta > 0 && eta <= 0.35) || (gap < 1.6 && eta < 0.5)) {
+    turnTowardNet(s, dt, 22);
+    return;
+  }
+  if (eta < 1.6) {
+    const puck = world.puck;
+    s.yaw = turnToward(s.yaw, puck.x - s.x, puck.z - s.z, 7, dt);
+  }
 }
 
 /** Rebound, or a loose puck that is not still a shot in flight. A faceoff stamps lastShoot with lastPass. */
@@ -9389,6 +9649,7 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
   let retrieving = false;
   let faceoffDHold = false;
   let faceoffDChase = false;
+  let oneTimerMeet = false;
   let openEnd: 1 | -1 | 0 = 0;
   let userPress: "on" | "peel" | "hold" | null = null;
   const endJob = endChaseJob(s, holder, passToMe);
@@ -10297,6 +10558,33 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
     wrapDeep = false;
     userPress = null;
   }
+  // After the rail and the carom. An open one-timer who is not the named
+  // receiver still has to skate onto the coast, when that beat staying put.
+  if (
+    !faceoffDHold &&
+    !pointReceive &&
+    !retrieving &&
+    !wrapDeep &&
+    openEnd === 0 &&
+    s.id === oneTimerMeetId()
+  ) {
+    const meet = ontoPassPuck(s);
+    const held = clampPassMeet(meet.x, meet.z);
+    c.tx = held.tx;
+    c.tz = held.tz;
+    oneTimerMeet = true;
+    shapeHold = false;
+    stackHold = false;
+    depthHold = false;
+    cornerHold = false;
+    breakoutHold = false;
+    rushJoin = false;
+    ozHoldSkate = false;
+    netCrash = false;
+    wallChase = false;
+    loosePassChase = false;
+    matePuckChase = false;
+  }
   const dx = c.tx - s.x;
   const dz = c.tz - s.z;
   const dist = Math.hypot(dx, dz) || 1;
@@ -10425,6 +10713,10 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
     mag = dist < 0.45 ? 0 : dist < 1.15 ? 0.55 : 1;
     burst = dist > 1.4;
   }
+  if (oneTimerMeet && !passToMe && !retrieving) {
+    mag = dist < 0.45 ? 0 : dist < 1.15 ? 0.55 : 1;
+    burst = dist > 1.4;
+  }
   if (matePuckChase && !retrieving) {
     const dPuck = Math.hypot(s.x - puck.x, s.z - puck.z);
     const pace = Math.min(1, s.side === "away" ? cpuMul("def") : userMul("def"));
@@ -10531,7 +10823,7 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
         ? 0.08
         : openEnd !== 0 || retrieving || stickChase
         ? 0.12
-        : passToMe || matePuckChase || loosePassChase || pointReceive
+        : passToMe || oneTimerMeet || matePuckChase || loosePassChase || pointReceive
           ? 0.06
           : rushJoin
             ? 0.1
@@ -14351,8 +14643,13 @@ function fullSauceLand(s: Skater, ax: number, az: number): FullSauceLand | null 
   };
   if (zone === "offensive") {
     const dist = hit ? Math.max(1.2, hit.dist) : 10;
+    // Select-only full sauce uses the same under-glass crest as sauceGlassY.
+    // CPU keeps the clear / glass / clip roll. launchPass never calls this on a clear.
+    if (sauceOnlyRelease && s.id === world.userId) {
+      return { dist, wantY: sauceGlassY(1, wall) };
+    }
     const roll = Math.random();
-    // Most clear the end glass. A glass hit is next. A clip that can kick out is rare.
+    // Most CPU clears still go over the end glass. A glass hit is next. A clip is rare.
     if (roll < 0.74) return { dist, wantY: wall + 0.85 };
     if (roll < 0.94) return { dist, wantY: Math.max(1.6, wall - 0.9) };
     return { dist, wantY: wall + 0.12 };
@@ -16660,6 +16957,30 @@ function cpuInsideTarget(tZ: number, sharp: number, shooterZ: number, openSign: 
   return z;
 }
 
+/**
+ * Mouth spot a normal shot uses for this stick.
+ * A centered stick is the middle of the net. Body yaw is not an aim.
+ */
+function stickNetTarget(s: Skater, mx: number, my: number): { tZ: number; wantY: number } {
+  let stickX = Math.max(-1, Math.min(1, mx));
+  let stickY = Math.max(-1, Math.min(1, my));
+  const stickMag = Math.hypot(stickX, stickY);
+  if (stickMag < 1e-6) {
+    stickX = 0;
+    stickY = 0;
+  } else {
+    const stickScale = 1 / Math.max(Math.abs(stickX / stickMag), Math.abs(stickY / stickMag));
+    stickX *= stickScale;
+    stickY *= stickScale;
+  }
+  const aim = stickToNetAim(stickX, stickY, s.side);
+  const half = GOAL_W / 2;
+  return {
+    tZ: Math.max(-1, Math.min(1, aim.lat)) * (half - 0.16) * aimZSign(s.side),
+    wantY: shotHeight(aim.hgt).wantY,
+  };
+}
+
 function launchShotAtNet(
   s: Skater,
   mx: number,
@@ -17195,42 +17516,21 @@ function fireOneTimer(t: Skater): void {
     beginShotSpeedTrack();
     return;
   }
-  const half = GOAL_W / 2 - 0.1;
-  const g = world.skaters.find((p) => p.kind === "goalie" && p.side !== t.side);
-  let stickX = Math.max(-1, Math.min(1, world.oneTimerMx));
-  let stickY = Math.max(-1, Math.min(1, world.oneTimerMy));
-  const stickMag = Math.hypot(stickX, stickY);
-  if (stickMag < 1e-6) {
-    stickX = 0;
-    stickY = 0;
-  } else {
-    const stickScale = 1 / Math.max(Math.abs(stickX / stickMag), Math.abs(stickY / stickMag));
-    stickX *= stickScale;
-    stickY *= stickScale;
-  }
-  const aim = stickToNetAim(stickX, stickY, t.side);
-  const corner = Math.max(-1, Math.min(1, aim.lat));
-  const wantY = shotHeight(aim.hgt).wantY;
-  const lat = t.z - pz;
-  const far =
-    (Math.abs(lat) > 0.35
-      ? Math.sign(lat)
-      : Math.abs(dAng) > 0.08
-        ? Math.sign(dAng)
-        : Math.sign(t.z || 1)) * half;
-  const bodyZ = g ? Math.max(-half, Math.min(half, g.z)) : 0;
-  let tZ = danger > 0.18 ? bodyZ + (far - bodyZ) * Math.min(1, 0.4 + danger * 0.7) : bodyZ;
-  tZ = Math.max(-half, Math.min(half, tZ + corner * 0.28));
   world.lastOneTimerDanger = lines >= 1 ? 0 : danger;
-  // Own half uses the same stick aim and spray as a wrist or slap. No net lock.
+  // Same mouth spot as a wrist or slap. Centered stick is the middle of the net.
+  // launchShotAtNet sends stickBlade at that spot. Yaw is not the shot direction.
   const zone = noteOneTimerZone(t);
-  const dist =
-    zone === "own"
-      ? launchShotAtNet(t, stickX, stickY, power, slap ? 0.016 : 0.01, false)
-      : launchShotAtNet(t, 0, 0, power, zone === "nz" ? (slap ? 0.016 : 0.01) : slap ? 0.018 : 0.016, false, {
-          tZ,
-          wantY,
-        });
+  const spray =
+    zone === "own" || zone === "nz" ? (slap ? 0.016 : 0.01) : slap ? 0.018 : 0.016;
+  const dist = launchShotAtNet(
+    t,
+    world.oneTimerMx,
+    world.oneTimerMy,
+    power,
+    spray,
+    false,
+    stickNetTarget(t, world.oneTimerMx, world.oneTimerMy),
+  );
   if (zone !== "own") pushOneTimerMiss(lines, zone === "nz" ? 0.5 : 1);
   rememberOneTimerLines(t.id, lines);
   world.oneTimerArmed = false;
@@ -17247,6 +17547,7 @@ function fireOneTimer(t: Skater): void {
   world.lastShotDist = dist;
   t.follow = shotFollowTime(slap ? "slap" : "wrist");
   t.windup = 0;
+  faceShotRelease(t);
   if (t.side === "home") world.userId = t.id;
   beginShotSpeedTrack();
 }
@@ -17519,6 +17820,7 @@ function doShot(
     drillEncoreShots = 1;
     s.windup = 0;
     s.follow = shotFollowTime(backhand ? "backhand" : "wrist");
+    faceShotRelease(s);
     beginShotSpeedTrack();
     finishUserShot(s);
     return;
@@ -17570,7 +17872,10 @@ function doShot(
   if (oneTimer) noteOneTimerZone(s);
   let sprayAmt = shotSpray(kind, s, oneTimer, resolved.backhandBand);
   if (useGame.getState().clockMode === "drill") sprayAmt = 0;
-  const dist = launchShotAtNet(s, shot.mx, shot.my, power, sprayAmt);
+  // A possessed one-timer uses the stick spot, not aimDir's facing fallback.
+  const dist = oneTimer
+    ? launchShotAtNet(s, mx, my, power, sprayAmt, false, stickNetTarget(s, mx, my))
+    : launchShotAtNet(s, shot.mx, shot.my, power, sprayAmt);
   world.lastShoot = world.time;
   world.lastShotSlap = isSlap;
   world.lastShotBackhand = backhand;
@@ -17587,6 +17892,7 @@ function doShot(
   if (useGame.getState().clockMode === "drill") armDrillShot();
   s.windup = 0;
   s.follow = shotFollowTime(kind);
+  faceShotRelease(s);
   beginShotSpeedTrack();
   finishUserShot(s);
 }
@@ -17828,6 +18134,7 @@ function cpuFinishOnNet(s: Skater, oneTimer: boolean): void {
   world.shotWindupT = 0;
   s.windup = 0;
   s.follow = shotFollowTime(choice.kind, choice.slap);
+  faceShotRelease(s);
   beginShotSpeedTrack();
 }
 
@@ -17861,6 +18168,7 @@ function shootAtNet(s: Skater): void {
   world.lastShotRedirect = false;
   world.lastShooter = s.id;
   world.lastShotDist = dist;
+  faceShotRelease(s);
   beginShotSpeedTrack();
 }
 
@@ -20906,8 +21214,7 @@ function crossedGoalMouth(prevX: number, prevZ: number, prevY: number, puck: Puc
     const zAt = prevZ + (puck.z - prevZ) * t;
     const yAt = prevY + (puck.y - prevY) * t;
     const throughMouth = yAt <= GOAL_H - 0.02 && Math.abs(zAt) <= GOAL_W / 2 - 0.02;
-    const inNet = inCageVolume(puck.x, puck.z, puck.y, side);
-    if (!throughMouth && !inNet) continue;
+    if (!throughMouth) continue;
     return side;
   }
   return 0;
@@ -24106,7 +24413,7 @@ function noteUserPossession(nextOwner: number | null): void {
 
 /**
  * Armed one-timer on a pass already classed as a board pass.
- * Shoot has to be buffered. The puck is not parked on the blade first,
+ * Shoot has to be buffered. The shot leaves from the blade with no owner,
  * so the receiver goes into the wrist or slap follow instead of a carry.
  * Pass Snap's named target, when there is one, is the only skater checked.
  */
@@ -24184,15 +24491,9 @@ function tryArmedBoardOneTimer(puck: Puck, prevX: number, prevZ: number): boolea
     }
   }
   if (!best) return false;
-  const x = puck.x;
-  const z = puck.z;
-  const y = puck.y;
   noteControl(best, "receive");
   noteChainReception(best);
   fireOneTimer(best);
-  puck.x = x;
-  puck.z = z;
-  puck.y = y;
   return true;
 }
 
@@ -24250,15 +24551,9 @@ function tryArmedReceiverOneTimer(puck: Puck, prevX: number, prevZ: number): boo
     const ahead = (puck.x - s.x) * fx + (puck.z - s.z) * fz;
     if (ahead < -0.08) return false;
   }
-  const x = puck.x;
-  const z = puck.z;
-  const y = puck.y;
   noteControl(s, "receive");
   noteChainReception(s);
   fireOneTimer(s);
-  puck.x = x;
-  puck.z = z;
-  puck.y = y;
   return true;
 }
 
@@ -24383,16 +24678,8 @@ function settleBankOneTimerReceiver(puck: Puck, prevX: number, prevZ: number): b
     meet = true;
   }
   if (meet) {
-    const x = puck.x;
-    const z = puck.z;
-    const y = puck.y;
     fireOneTimer(s);
-    if (world.lastShotOneTimer && world.lastShoot === world.time) {
-      puck.x = x;
-      puck.z = z;
-      puck.y = y;
-      return true;
-    }
+    if (world.lastShotOneTimer && world.lastShoot === world.time) return true;
   }
   if (yOk && bodyPath <= 1.25 && along <= SKATER_STICK_LEN) {
     grantOneTimerFallback(s);
@@ -24576,15 +24863,9 @@ function tryPickup(puck: Puck, prevX = puck.x, prevZ = puck.z): void {
         const stickMeet = distPath < 0.55 && puck.y < 0.55;
         const bankOwns = boardPassIntent === "bank" && bankOtFirst >= 0 && bankOtFirst !== t.id;
         if (!bankOwns && !tooEarly && stickMeet && world.oneTimerArmed && t.side === "home") {
-          const x = puck.x;
-          const z = puck.z;
-          const y = puck.y;
           noteControl(t, "receive");
           noteChainReception(t);
           fireOneTimer(t);
-          puck.x = x;
-          puck.z = z;
-          puck.y = y;
           return;
         }
         if (
@@ -24594,15 +24875,9 @@ function tryPickup(puck: Puck, prevX = puck.x, prevZ = puck.z): void {
           t.id !== world.userId &&
           cpuOneTimerAttempt(t)
         ) {
-          const x = puck.x;
-          const z = puck.z;
-          const y = puck.y;
           noteControl(t, "receive");
           noteChainReception(t);
           cpuOneTimerShot(t);
-          puck.x = x;
-          puck.z = z;
-          puck.y = y;
           return;
         }
         if (!tooEarly && stickMeet && dist < reach && puck.y < (passerIsGoalie ? 1.15 : 0.9)) {
@@ -25588,10 +25863,12 @@ function stepPuck(dt: number): void {
   if (tickScrimmage(prevX, prevY, prevZ, puck.x, puck.y, puck.z)) return;
 
   let scored = crossedGoalMouth(prevX, prevZ, prevY, puck);
-  if (scored === 0 && mouthBeforeCage !== 0) {
-    const side = mouthBeforeCage;
-    const along = (puck.x - side * GOAL_LINE_X) * side;
-    if (inCageVolume(puck.x, puck.z, puck.y, side) || along > 0.02) scored = side;
+  if (
+    scored === 0 &&
+    mouthBeforeCage !== 0 &&
+    inCageVolume(puck.x, puck.z, puck.y, mouthBeforeCage)
+  ) {
+    scored = mouthBeforeCage;
   }
   if (scored !== 0 && shootoutLive()) {
     noteShotOnGoal();
@@ -31087,6 +31364,7 @@ function stepCpuDrillWatch(dt: number): void {
       if (s.backskate) lockBackskateYaw(s);
     } else {
       integrateSkater(s, ai.wx, ai.wz, ai.mag, ai.burst, dt);
+      squareShotFace(s, dt);
       keepInBowl(s);
     }
   }
@@ -31125,6 +31403,7 @@ function stepOpenIce(dt: number, act: Actions): void {
       if (s.backskate) lockBackskateYaw(s);
     } else {
       integrateSkater(s, ai.wx, ai.wz, ai.mag, ai.burst, dt);
+      squareShotFace(s, dt);
       keepInBowl(s);
     }
   }
@@ -32163,6 +32442,7 @@ function stepPlay(dt: number, act: Actions): void {
     if (user.kind === "goalie" && user.dive <= 0 && !user.backskate) orientGoalieOut(user, dt);
   }
   keepInBowl(user);
+  squareShotFace(user, dt);
   refreshUserStickCommit(act);
 
   for (const s of world.skaters) {
@@ -32194,6 +32474,7 @@ function stepPlay(dt: number, act: Actions): void {
       if (s.backskate) lockBackskateYaw(s);
     } else {
       integrateSkater(s, ai.wx, ai.wz, ai.mag, ai.burst, dt);
+      squareShotFace(s, dt);
       keepInBowl(s);
     }
   }
