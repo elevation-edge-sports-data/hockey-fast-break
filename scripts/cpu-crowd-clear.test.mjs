@@ -1,6 +1,6 @@
 /**
- * CPU goalie clears and sauces stay in the rink. A CPU skater high clear
- * can still sail out, but only rarely, and only on the arc that used to.
+ * CPU goalie sauces and length shots stay in the rink. A pressured CPU skater
+ * does not fire a high clear.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -149,8 +149,9 @@ test("a CPU goalie clear never leaves the rink", () => {
   assert.equal(outs, 0, `goalie crowd shots ${outs}`);
 });
 
-test("a CPU skater high clear rarely leaves the rink", () => {
-  let clears = 0;
+test("a pressured CPU skater does not fire a high clear", () => {
+  let saucers = 0;
+  let tall = 0;
   let outs = 0;
   for (let seed = 1; seed <= 80; seed++) {
     const real = Math.random;
@@ -193,13 +194,26 @@ test("a CPU skater high clear rarely leaves the rink", () => {
       world.time = seed * 5;
       const owner = s.id;
       step(1);
-      if (world.puck.owner === owner || world.puck.vy < 12) continue;
-      clears++;
-      if (aboveGlass(world.puck.x, world.puck.z, world.puck.y) || flewOut()) outs++;
+      if (world.puck.owner === owner || useGame.getState().shotKind !== "saucer") continue;
+      saucers++;
+      let peak = world.puck.y;
+      let left = aboveGlass(world.puck.x, world.puck.z, world.puck.y);
+      for (let i = 0; i < 240 && !left; i++) {
+        step(1);
+        if (world.puck.y > peak) peak = world.puck.y;
+        if (world.whistle === "crowd" || aboveGlass(world.puck.x, world.puck.z, world.puck.y)) {
+          left = true;
+          break;
+        }
+        if (world.puck.owner !== null || world.whistle) break;
+        if (world.puck.y <= 0.08 && i > 10) break;
+      }
+      if (peak > 2.4) tall++;
+      if (left) outs++;
     } finally {
       Math.random = real;
     }
   }
-  assert.ok(clears >= 30, `clears ${clears}`);
-  assert.ok(outs / clears < 0.2, `crowd clears ${outs} of ${clears}`);
+  assert.equal(tall, 0, `high saucers ${tall} of ${saucers}`);
+  assert.equal(outs, 0, `saucers that left ${outs} of ${saucers}`);
 });

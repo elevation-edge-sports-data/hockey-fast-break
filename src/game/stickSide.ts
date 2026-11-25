@@ -339,6 +339,11 @@ export function neutralCarryLocal(): V3 {
   };
 }
 
+/** Midpoint of the puckPossess1 and puckPossess2 tape centers, yaw+π frame. */
+export function possessCarryLocal(): V3 {
+  return { x: -0.391, y: 0.093, z: 1.416 };
+}
+
 /**
  * 1 is this neutral plate. 0 is the forehand or backhand pull already aimed.
  * A deke uses dekePull, so the held middle stays on the backhand.

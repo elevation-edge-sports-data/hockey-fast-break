@@ -5,7 +5,7 @@
  * Sauce height is Select's own hold: empty when it goes down, full at 1s. It does not set speed.
  * A clean Select release with A never down launches at tap speed. Height follows that hold.
  * Releasing Select while A is still held drains the sauce meter instead of clearing it.
- * A high clear is a saucer with both meters at 90% or full. Select alone does not clear.
+ * Both meters full is still a saucer on the same crest. It does not loft a clear.
  * Sauce height is a parabola that peaks, then drops. An open-ice sauce never holds
  * that peak. A glass ride that stays on the boards until the ice holds it when the
  * pass is at least 50%: 0 s at 50%, 0.5 s at full. A ride that leaves the glass does not.
@@ -489,6 +489,7 @@ function boardSauce(roll) {
   fresh();
   parkGoalie();
   settleUser();
+  parkOthers();
   setInjectedAim(1, 0);
   holdSelect(true);
   pressPass();
@@ -960,6 +961,13 @@ test("a glass ride that stays on the boards holds a pass-scaled plateau", () => 
   assert.ok(full.launchVx < -8, `glass ride did not leave along the wall vx ${full.launchVx.toFixed(2)}`);
 });
 
+test("a full glass ride uses the same crest as an open-ice sauce", () => {
+  useGame.getState().setSauceBoardClamp(true);
+  const ride = glassPeakHold(1.5, 1, 0);
+  assert.equal(useGame.getState().shotKind, "saucer");
+  assert.ok(ride.peak > 1.9 && ride.peak < 2.25, `glass crest ${ride.peak.toFixed(2)}`);
+});
+
 test("a glass ride that leaves the glass before the ice has no plateau", () => {
   const intoGap = glassPeakHold(1.5, 0.8, benchDoorX() + 4);
   assert.equal(useGame.getState().shotKind, "saucer");
@@ -993,7 +1001,7 @@ test("a long Select hold without A stays a saucer", () => {
   assert.notEqual(world.whistle, "crowd");
 });
 
-test("a high sauce plus a high pass is a clear, and a low pass is not", () => {
+test("a full sauce plus a full pass stays a saucer, and a low pass is not taller", () => {
   fresh();
   parkGoalie();
   settleUser();
@@ -1006,14 +1014,15 @@ test("a high sauce plus a high pass is a clear, and a low pass is not", () => {
   step(1);
   const armed = useGame.getState();
   assert.equal(armed.chargeKind, "saucer");
-  assert.equal(armed.chargeWind, "Clear");
+  assert.equal(armed.chargeWind, "Saucer");
   assert.ok(armed.sauce > 0.99, `sauce ${armed.sauce}`);
   assert.ok(armed.charge > 0.99, `pass ${armed.charge}`);
   releasePass();
   assertSpeed(1.5);
   assertHud(1.5, "saucer");
-  const clearPeak = lobPeak();
-  assert.ok(clearPeak > GOAL_H + 1.15, `clear peak ${clearPeak}`);
+  const pairPeak = lobPeak();
+  assert.ok(pairPeak > 1.9 && pairPeak < 2.25, `full pair peak ${pairPeak}`);
+  assert.ok(pairPeak < GOAL_H + 1.15, `full pair stayed under a clear ${pairPeak}`);
 
   fresh();
   parkGoalie();
@@ -1025,13 +1034,14 @@ test("a high sauce plus a high pass is a clear, and a low pass is not", () => {
   pressPass();
   clockMs += 1500;
   step(1);
-  assert.equal(useGame.getState().chargeWind, "Clear");
+  assert.equal(useGame.getState().chargeWind, "Saucer");
   holdSelect(false);
   step(1);
   assert.equal(world.puck.owner, null);
   assertSpeed(1.5);
   assertHud(1.5, "saucer");
-  assert.ok(lobPeak() > GOAL_H + 1.15, "Select release of a full pair stays a clear");
+  const released = lobPeak();
+  assert.ok(released > 1.9 && released < 2.25, `Select release of a full pair ${released}`);
 
   fresh();
   parkGoalie();
@@ -1100,11 +1110,13 @@ test("a user goalie sauces on Select release, and a long hold is not a clear", (
   pressPass();
   clockMs += 1500;
   step(1);
-  assert.equal(useGame.getState().chargeWind, "Clear");
+  assert.equal(useGame.getState().chargeWind, "Saucer");
   releasePass();
   assert.equal(useGame.getState().shotKind, "saucer");
-  assert.ok(Math.abs(useGame.getState().speed - 85) < 2, `goalie clear ${useGame.getState().speed.toFixed(1)}`);
-  assert.ok(lobPeak() > GOAL_H + 1.15, "goalie high pass plus high sauce clears");
+  assert.ok(Math.abs(useGame.getState().speed - 85) < 2, `goalie full pair ${useGame.getState().speed.toFixed(1)}`);
+  const goaliePeak = lobPeak();
+  assert.ok(goaliePeak > 1.9 && goaliePeak < 2.25, `goalie full pair peak ${goaliePeak}`);
+  assert.ok(goaliePeak < GOAL_H + 1.15, "goalie full pair stays a sauce");
 });
 
 test("a skater directing the home goalie charges sauce on Select", () => {
@@ -1211,13 +1223,15 @@ test("a skater directing the home goalie charges sauce on Select", () => {
   assert.equal(armed.chargeKind, "saucer");
   assert.ok(armed.sauce > 0.99, `directed pass sauce ${armed.sauce}`);
   assert.ok(armed.charge > 0.99, `directed pass charge ${armed.charge}`);
-  assert.equal(armed.chargeWind, "Clear");
+  assert.equal(armed.chargeWind, "Saucer");
   releasePass();
   assert.equal(world.puck.owner, null);
   assert.equal(world.lastPasser, g3.id);
   assert.equal(useGame.getState().shotKind, "saucer");
-  assert.ok(Math.abs(useGame.getState().speed - 85) < 2, `directed clear ${useGame.getState().speed.toFixed(1)}`);
-  assert.ok(lobPeak() > fullPeak, "directed high pass plus high sauce is the tall arc");
+  assert.ok(Math.abs(useGame.getState().speed - 85) < 2, `directed full pair ${useGame.getState().speed.toFixed(1)}`);
+  const paired = lobPeak();
+  assert.ok(Math.abs(paired - fullPeak) < 0.2, `directed pair ${paired} sauce ${fullPeak}`);
+  assert.ok(paired < GOAL_H + 1.15, `directed pair stayed a sauce ${paired}`);
 });
 
 test("a clean Select release launches a partial saucer without A", () => {
@@ -1365,7 +1379,9 @@ test("a partial saucer lands flat and a full saucer bounces once", () => {
       step(1);
       if (world.puck.y > peak) peak = world.puck.y;
       if (y0 > 0.12) airborne = true;
-      if (airborne && y0 > 0.06 && world.puck.y <= 0.05) {
+      const soft = y0 > 0.06 && world.puck.y <= 0.05;
+      const ice = y0 > 0.05 && world.puck.y <= 0.043;
+      if (airborne && (soft || ice)) {
         return {
           vy: world.puck.vy,
           keep: Math.hypot(world.puck.vx, world.puck.vz) / Math.max(0.01, v0),
@@ -1552,7 +1568,7 @@ test("full sauce landing follows the zone, and the ice takes speed with charge",
     const v0 = Math.hypot(world.puck.vx, world.puck.vz);
     if (world.puck.y > 0.15) airborne = world.puck.y;
     step(1);
-    if (!seen && airborne > 0.15 && world.puck.y <= 0.08) {
+    if (!seen && airborne > 0.15 && world.puck.y <= 0.045) {
       before = v0;
       after = Math.hypot(world.puck.vx, world.puck.vz);
       seen = true;
@@ -2102,7 +2118,7 @@ test("clamp toggles default on, persist, and off skips that clamp", () => {
     settleUser();
     parkOthers();
     const s = user();
-    s.x = BLUE_X + 6;
+    s.x = 0;
     s.z = 0;
     s.yaw = -Math.PI / 2;
     const b = stickBlade(s);
@@ -2112,7 +2128,7 @@ test("clamp toggles default on, persist, and off skips that clamp", () => {
     world.puck.y = 0.042;
     world.lastPass = -10;
     world.lastShoot = -10;
-    setInjectedAim(0, 1);
+    setInjectedAim(1, 0);
     pressPass();
     holdSelect(true);
     step(1);
@@ -2134,7 +2150,8 @@ test("clamp toggles default on, persist, and off skips that clamp", () => {
   }
   const capped = ozPeak(true);
   const open = ozPeak(false);
-  assert.ok(open > capped + 0.35, `sauce board clamp off ${open.toFixed(2)} on ${capped.toFixed(2)}`);
+  assert.ok(open > 1.9 && open < 2.25, `board sauce crest ${open.toFixed(2)}`);
+  assert.ok(Math.abs(open - capped) < 0.08, `sauce board clamp off ${open.toFixed(2)} on ${capped.toFixed(2)}`);
 
   function lengthVy(cap) {
     fresh();

@@ -144,7 +144,7 @@ test("marks export the inclusive span and leave the scrubber free", () => {
       assert.equal(frame.time, frame.frame / 60);
       assert.deepEqual(frame.original, frame.adjusted);
       assert.ok(frame.original.players.length > 0);
-      const keys = ["adjusted", "frame", "original", "time", "userId"];
+      const keys = ["adjusted", "frame", "original", "time", "userId", "oneTimerArmed", "oneTimerUntil", "lastPassTo"];
       if (i === 0) keys.push("settings");
       assert.deepEqual(Object.keys(frame).sort(), keys.sort());
       assert.equal(frame.userId, world.userId);

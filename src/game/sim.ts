@@ -20,6 +20,7 @@ import {
   BOARD_H,
   END_GLASS_H,
   SIDE_GLASS_H,
+  glassHeightAt,
   cageDepthAt,
   cageBaseStrike,
   GOAL_RED_R,
@@ -35,7 +36,7 @@ import {
 import { BUTTERFLY_STANCE_DROP, GOALIE_CORNER_Y0, GOALIE_STICK_LEN, GOALIE_Z, goalieRaisedHandCovers } from "./goalieStance";
 import { readActions, setInjectedKeys, windowHasInputFocus, type Actions } from "./input";
 import { clampIceMark, cycleMarkLock } from "./iceMark";
-import { burstCarryLocal, dekePuckLocal, neutralCarryBlend, neutralCarryLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal, SKATER_STICK_LEN } from "./stickSide";
+import { burstCarryLocal, dekePuckLocal, neutralCarryBlend, possessCarryLocal, skaterKnobLocal, skaterPlateLocal, skillCarryLocal, SKATER_STICK_LEN } from "./stickSide";
 import {
   CHAOS_CAP,
   GAME_CLOCK_DISPLAY_MINUTES,
@@ -1281,6 +1282,7 @@ function resetSkaters(): void {
   boardBank = null;
   passCaromHit = null;
   clearBoardNear();
+  boardLeavePass = false;
   overWall.delete(world.puck);
   world.shotWindupT = 0;
   world.oneTimerArmed = false;
@@ -1294,6 +1296,11 @@ function resetSkaters(): void {
   bankOtFirst = -1;
   bankOtPass = Number.NaN;
   boardHitStep = false;
+  passBoardHits = 0;
+  passBoardHitsFor = Number.NaN;
+  boardHitsAtArm = 0;
+  boardHitsAtArmPass = Number.NaN;
+  rideLiveAtArm = false;
   world.oneTimerMx = 0;
   world.oneTimerMy = 0;
   world.puckOz = 0;
@@ -1444,6 +1451,14 @@ let oneTimerRearmOpen = false;
 let boardPassIntent: "rim" | "bank" | "carom" | null = null;
 /** This puck step met the boards on a new contact, not a continued press. */
 let boardHitStep = false;
+/** Discrete board contacts for world.lastPass. A new pass starts again at 0. */
+let passBoardHits = 0;
+let passBoardHitsFor = Number.NaN;
+/** passBoardHits at the press. NaN pass means the latch was not armed here. */
+let boardHitsAtArm = 0;
+let boardHitsAtArmPass = Number.NaN;
+/** A rim or bank was already on the glass when X went down. */
+let rideLiveAtArm = false;
 let passMeet: { x: number; z: number } | null = null;
 let userWinding = false;
 let skillStickLoading = false;
@@ -1595,8 +1610,6 @@ let cpuOtId = -2;
 let cpuOtYes = false;
 /** Breakaway deke already sold this rush. cut is the lateral sign, opposite the goalie pull. */
 const cpuDekeAt = new Map<number, { t: number; cut: number }>();
-/** Last time this CPU skater looked at a high clear. A reset of world.time rolls again. */
-const cpuClearRoll = new Map<number, number>();
 /** When the carrier started waiting on a developing odd-man one-timer. */
 const cpuOtLook = new Map<number, number>();
 let otLinesPass = -1;
@@ -2721,6 +2734,9 @@ function bounceScrimmageFace(
   y: number,
   z: number,
 ): boolean {
+  // A carried puck follows the stick. The possess plate can cross this mouth
+  // in one tick while the carrier is still behind the net. That is not a shot.
+  if (world.puck.owner !== null) return false;
   if ((prevX - mouth * GOAL_LINE_X) * (x - mouth * GOAL_LINE_X) >= 0 || x === prevX) return false;
   const line = mouth * GOAL_LINE_X;
   const t = (line - prevX) / (x - prevX || 1);
@@ -5371,62 +5387,6 @@ function cpuBetterLookMate(s: Skater, attack: number): Skater | null {
   return best;
 }
 
-/** Up-ice teammate who can take a short tape. A covered or long target is not one. */
-function cpuHasShortOutlet(s: Skater): boolean {
-  const mate = clearPassTarget(s, attackDir(s.side), 0, false);
-  if (!mate) return false;
-  const d = Math.hypot(mate.x - s.x, mate.z - s.z);
-  if (d > 12) return false;
-  if (laneBlocked(s.x, s.z, mate.x, mate.z, s.side)) return false;
-  return nearestFoe(mate).d >= 2.8;
-}
-
-/** One roll per 1.35s so a held puck is not cleared on the next frame. */
-function cpuClearNow(s: Skater, p: number): boolean {
-  const at = cpuClearRoll.get(s.id);
-  if (at !== undefined && world.time >= at && world.time - at < 1.35) return false;
-  cpuClearRoll.set(s.id, world.time);
-  return Math.random() < p;
-}
-
-/**
- * Own-zone clear. Heavy pressure with no short outlet is the usual case.
- * A free breakout is left on the skates.
- */
-function cpuWantHighClear(s: Skater, pressure: number): boolean {
-  if (s.kind === "goalie" || s.id === world.userId) return false;
-  if (sauceZone(s) !== "own") return false;
-  if (world.time - world.lastPass < 0.4) return false;
-  const heavy = pressure < 2.8;
-  const outlet = cpuHasShortOutlet(s);
-  if (!heavy && outlet) return false;
-  if (!heavy && pressure > 6) return false;
-  let p = 0.22;
-  if (heavy && !outlet) p = 0.62;
-  else if (heavy) p = 0.28;
-  return cpuClearNow(s, p);
-}
-
-/** Up ice, steered away from the nearest checker. */
-function cpuSkaterHighClear(s: Skater): void {
-  const attack = attackDir(s.side);
-  const foe = nearestFoe(s).foe;
-  let az = 0;
-  if (foe) az = foe.z >= s.z ? -0.55 : 0.55;
-  const m = Math.hypot(attack, az) || 1;
-  s.yaw = Math.atan2(-attack / m, -az / m);
-  withChargedPass(
-    PASS_FULL_HOLD,
-    true,
-    SAUCE_FULL_HOLD,
-    () => {
-      launchHighClear(s, 0, 0);
-    },
-    false,
-    true,
-  );
-}
-
 function shootoutCpuShooter(s: Skater): boolean {
   const so = world.shootout;
   if (!so || so.phase !== "live" || s.kind === "goalie") return false;
@@ -5552,11 +5512,6 @@ function thinkCarrier(s: Skater): CarrierWish {
   if (s.side === "away" && s.id !== world.userId) {
     const rushWish = thinkCpuRush(s, attack, mouth, distMouth);
     if (rushWish) return rushWish;
-  }
-
-  if (cpuWantHighClear(s, pressure)) {
-    cpuSkaterHighClear(s);
-    return { wx: 0, wz: 0, mag: 0.15, burst: false };
   }
 
   if (
@@ -6009,6 +5964,30 @@ function oneTimerMeetLive(s: Skater, arriving: boolean): boolean {
 }
 
 /**
+ * First coast sample that is already a shot, if this winger can still get there.
+ * Armed meets only. Ordinary receives stay on ontoPassPuck and its skate of 9.
+ */
+function armedOneTimerPoint(s: Skater): { x: number; z: number; late: number; t: number } | null {
+  const puck = world.puck;
+  const spd = Math.hypot(puck.vx, puck.vz);
+  if (spd < 1.2 || puck.vx * attackDir(s.side) < 2) return null;
+  const drag = puckDrag();
+  const ux = puck.vx / spd;
+  const uz = puck.vz / spd;
+  for (let i = 0; i <= 22; i++) {
+    const t = i * 0.1;
+    const coast = (spd / drag) * (1 - Math.exp(-drag * t));
+    const x = puck.x + ux * coast;
+    const z = puck.z + uz * coast;
+    if (!receiveShotPlausible(s, x, z)) continue;
+    const late = Math.hypot(x - s.x, z - s.z) / WINGER_SPEED - t;
+    if (late > 0.55) continue;
+    return { x, z, late, t };
+  }
+  return null;
+}
+
+/**
  * One CPU to skate onto a loose pass that can be a one-timer.
  * The named receiver already uses passToMe. This is the open teammate
  * whose intercept is a shot, when leaving his spot is worth it.
@@ -6031,6 +6010,45 @@ function oneTimerMeetId(): number {
   if (otMeetPass !== world.lastPass) {
     otMeetPass = world.lastPass;
     otMeetLatched = -1;
+  }
+  if (world.oneTimerArmed) {
+    const held = otMeetLatched >= 0 ? world.skaters[otMeetLatched] : undefined;
+    if (
+      held &&
+      held.side === passer.side &&
+      held.kind === "winger" &&
+      (oneTimerMeetLive(held, true) || armedOneTimerPoint(held))
+    ) {
+      otMeetId = held.id;
+      return otMeetId;
+    }
+    otMeetLatched = -1;
+    let best = -1;
+    let bestScore = -Infinity;
+    for (const s of world.skaters) {
+      if (s.side !== passer.side || s.id === passer.id || s.kind !== "winger" || !cpuCanChase(s)) continue;
+      if (nearestFoe(s).d < 2.6) continue;
+      const classic = ontoPassPuck(s);
+      const meet = oneTimerMeetLive(s, false) ? classic : armedOneTimerPoint(s);
+      if (!meet) continue;
+      const dist = Math.hypot(meet.x - s.x, meet.z - s.z);
+      const attack = attackDir(s.side);
+      const depth = (attack * GOAL_LINE_X - meet.x) * attack;
+      const slot = depth > 3.5 && depth < 15 && Math.abs(meet.z) < 6 ? 1.4 : 0;
+      const score =
+        slot +
+        Math.max(0, 12 - Math.abs(depth - 9)) * 0.08 -
+        Math.abs(meet.z) * 0.22 -
+        meet.late * 3 -
+        dist * 0.04;
+      if (score > bestScore) {
+        bestScore = score;
+        best = s.id;
+      }
+    }
+    otMeetLatched = best;
+    otMeetId = best;
+    return best;
   }
   const latched = otMeetLatched >= 0 ? world.skaters[otMeetLatched] : undefined;
   if (latched && latched.side === passer.side && oneTimerMeetLive(latched, true)) {
@@ -8827,6 +8845,8 @@ const RIM_NEAR = 1;
 /** Into-wall speed above this is still approaching the boards, not riding them. */
 const RIM_INTO = 1;
 const BANK_TURN = (18 * Math.PI) / 180;
+/** This loose pass left the glass or was sent as a rim, bank, or carom. Cleared on the next launch. */
+let boardLeavePass = false;
 
 function clearBoardNear(): void {
   rimFor = Number.NaN;
@@ -8890,8 +8910,20 @@ function beginRimPass(): void {
 }
 
 /** A loose-pass board hit. Owned pucks and pre-pass frames must not call this. */
+/** Pass-scoped. Stays set after the puck leaves the wall until the next launchPuck. */
+function noteBoardLeavePass(): void {
+  if (boardLeavePass) return;
+  const puck = world.puck;
+  if (puck.owner !== null || world.lastPasser === null) return;
+  if (world.lastShoot >= world.lastPass) return;
+  const intent =
+    boardPassIntent === "rim" || boardPassIntent === "bank" || boardPassIntent === "carom";
+  if (intent || nearestBoards(puck.x, puck.z).dist <= RIM_NEAR) boardLeavePass = true;
+}
+
 function noteLooseBoardHit(vx0: number, vz0: number, vx1: number, vz1: number, nx: number, nz: number, vnIn: number): void {
   if (!loosePassLive()) return;
+  boardLeavePass = true;
   const vnOut = vx1 * nx + vz1 * nz;
   const turn = dirAngle(vx0, vz0, vx1, vz1);
   const bank = turn >= BANK_TURN || (vnIn > 1.5 && vnOut < -0.35);
@@ -10568,7 +10600,12 @@ function thinkWithoutPuck(s: Skater): { wx: number; wz: number; mag: number; bur
     openEnd === 0 &&
     s.id === oneTimerMeetId()
   ) {
-    const meet = ontoPassPuck(s);
+    const classic = ontoPassPuck(s);
+    const shot =
+      world.oneTimerArmed && !receiveShotPlausible(s, classic.x, classic.z)
+        ? armedOneTimerPoint(s)
+        : null;
+    const meet = shot ?? classic;
     const held = clampPassMeet(meet.x, meet.z);
     c.tx = held.tx;
     c.tz = held.tz;
@@ -11846,22 +11883,6 @@ function cpuGoalieSauce(s: Skater): void {
   finishCpuGoaliePass(s, mate ? mate.id : world.lastPassTo);
 }
 
-/** Full-charge dump. Higher than a saucer, and it does not hunt a teammate. */
-function cpuGoalieHighClear(s: Skater): void {
-  s.yaw = faceYaw(s.side);
-  withChargedPass(
-    PASS_FULL_HOLD,
-    true,
-    SAUCE_FULL_HOLD,
-    () => {
-      launchHighClear(s, 0, 0);
-    },
-    true,
-    true,
-  );
-  stopPassChainHold(s.id);
-}
-
 /** Same full-rink lob the user goalie fires on a straight shot. */
 function cpuGoalieLengthShot(s: Skater): void {
   s.yaw = faceYaw(s.side);
@@ -11878,8 +11899,8 @@ function cpuGoalieLengthShot(s: Skater): void {
 
 /**
  * One release once the away CPU goalie is allowed to play the puck.
- * Outlet stays the usual play. Sauce, a high clear, and a length shot
- * take the rest, weighted by pressure, a teammate, and how long he has held it.
+ * Outlet stays the usual play. A saucer and a length shot take the rest,
+ * weighted by pressure, a teammate, and how long he has held it.
  */
 function playCpuGoaliePuck(s: Skater, crash: number): void {
   const veryOpen = !Number.isFinite(crash) || crash > 3.8;
@@ -11892,8 +11913,8 @@ function playCpuGoaliePuck(s: Skater, crash: number): void {
   const looked = Math.min(1, Math.max(0, (world.coverT - GOALIE_HOLD) / 0.85));
   const shotLook = cpuGoalieShotLook(s);
 
-  // A free teammate keeps the outlet. Pressure or a long look adds the clear.
-  // No teammate is when the saucer, the high clear, and the length shot take over.
+  // A free teammate keeps the outlet. Pressure or no teammate used to add a clear.
+  // That weight is a normal saucer now. Nothing in this roll leaves over the glass.
   let outlet = 0.56;
   let sauce = 0.26;
   let clear = 0.06;
@@ -11936,9 +11957,9 @@ function playCpuGoaliePuck(s: Skater, crash: number): void {
     outlet = Math.max(0, outlet - 0.1);
   }
 
-  const play = takeCpuGoaliePlay(outlet, sauce, clear, shot);
+  sauce += Math.max(0, clear);
+  const play = takeCpuGoaliePlay(outlet, sauce, 0, shot);
   if (play === "sauce") cpuGoalieSauce(s);
-  else if (play === "clear") cpuGoalieHighClear(s);
   else if (play === "shot") cpuGoalieLengthShot(s);
   else doGoalieOutlet(s, 0, 0, veryOpen);
 }
@@ -13118,7 +13139,7 @@ export function stickBlade(s: Skater): { x: number; z: number } {
   if (plate && neutralCarryOn(s)) {
     const n = neutralCarryBlend(s.deke, s.stickPull);
     if (n > 0) {
-      const at = neutralCarryLocal();
+      const at = possessCarryLocal();
       lx += (at.x - lx) * n;
       lz += (at.z - lz) * n;
     }
@@ -13132,7 +13153,7 @@ export function stickBlade(s: Skater): { x: number; z: number } {
     (burstCarryPose(s) || neutralCarryOn(s))
   ) {
     const at = burstCarryLocal();
-    const from = neutralCarryLocal();
+    const from = possessCarryLocal();
     lx = from.x + (at.x - from.x) * bw;
     lz = from.z + (at.z - from.z) * bw;
   }
@@ -14113,12 +14134,8 @@ const PASS_FULL_MPH = SKATER_PASS_HI_MPH;
 const PASS_FULL_HOLD = 1.5;
 // Sauce height is Select's hold, not A's. Empty when Select goes down, full at 1s, then clamped.
 // It used to copy aHoldFor, so it could not start before A and jumped to full if the pass was already full.
-// Full sauce toward the net and open ice is above the crossbar (the old high loft).
-// A board saucer used to aim over the glass (wall top + 0.28) on every full hold, and
-// containPuckBoards does not bounce a puck above wallTop, so those all reached the crowd.
-// Most board saucers still hit high on the glass and bounce. SAUCE_CROWD_P still clears.
-// A high clear is not its own button hold. Both meters at this fraction, or full, use that loft.
-// Sauce alone, and a saucer on a short pass, stay on the saucer arc.
+// Every saucer crests on sauceNetY. A glass ride uses that same crest, then
+// may hold it. Pass charge does not change the crest. A full hold is not a clear.
 const SAUCE_FULL_HOLD = 1;
 const CLEAR_CHARGE_AT = 0.9;
 const SAUCE_LOW_Y = 0.38;
@@ -14171,7 +14188,7 @@ let sauceClean = true;
 let sauceLandCharge = -1;
 // A full saucer has used its one ice bounce. The next ice hit sticks.
 let sauceFlatNext = false;
-// A high clear may leave the rink. Other saucers stay under the glass.
+// Saucers stay in the rink. A full hold does not leave over the glass.
 let sauceMayLeave = false;
 // Sauce and glass-ride height. Age advances in stepPuck. Null on ice, shots, and pickups.
 type HeightProfile = {
@@ -14200,8 +14217,8 @@ function resetSauceWindow(): void {
   heightProfile = null;
 }
 
-function clearArmed(pass01: number, sauce01: number): boolean {
-  return pass01 + 1e-4 >= CLEAR_CHARGE_AT && sauce01 + 1e-4 >= CLEAR_CHARGE_AT;
+function clearArmed(_pass01: number, _sauce01: number): boolean {
+  return false;
 }
 
 function sauceMeterWind(pass01: number, sauce01: number): string {
@@ -14490,6 +14507,7 @@ function launchPuck(s: Skater, vx: number, vz: number, vy = 0): void {
   bankOtPass = Number.NaN;
   passCaromHit = null;
   clearBoardNear();
+  boardLeavePass = false;
   overWall.delete(world.puck);
   boardPress.delete(world.puck);
   shotIron = null;
@@ -14526,31 +14544,16 @@ function checkedPassScale(s: Skater): number {
 }
 
 type SauceAim = { dist: number; over: boolean; bank: boolean; wall?: number; receiveY?: number };
-type SauceZone = "own" | "ownNeutral" | "attackNeutral" | "offensive";
 
 function sauceNetY(sauce: number): number {
-  // Partial charges stay on this ramp. Full end-aimed sauces use the zone landing instead.
+  // Open ice, including a full charge, stays on this ramp.
   const high = mouthTopY() + 0.78;
   return SAUCE_LOW_Y + sauce * (high - SAUCE_LOW_Y);
 }
 
-function sauceGlassY(sauce: number, wall: number): number {
-  const high = Math.max(SAUCE_LOW_Y + 0.04, wall - 0.2);
-  return SAUCE_LOW_Y + sauce * (high - SAUCE_LOW_Y);
-}
-
-/** High clear arrives well above a full net saucer and carries down the ice. */
-function sauceClearY(): number {
-  return mouthTopY() + 2.15;
-}
-
-/** Arrival loft. A low sauce keeps a short hop. A full sauce uses the real flight. */
-function sauceLaunchVy(dist: number, speed: number, wantY: number, sauce: number, grav = 12): number {
-  const raw = Math.max(0.1, flightSeconds(Math.max(0.55, dist), Math.max(8, speed)));
-  const t = (1 - sauce) * Math.min(raw, 0.36) + sauce * raw;
-  const drop = 0.5 * grav * t * t;
-  const vy = (wantY - PUCK_Y + drop) / Math.max(0.08, t + 0.02);
-  return Math.max(0.45, Math.min(22, vy));
+/** Board plus the pane at this spot. An open bench door does not drop it to the boards. */
+function continuousGlassTop(x: number, z: number): number {
+  return BOARD_H + glassHeightAt(x, z);
 }
 
 function pass01FromMps(mps: number, goalie: boolean): number {
@@ -14608,76 +14611,6 @@ function buildHeightProfile(
   };
 }
 
-function sauceZone(s: Skater): SauceZone {
-  const along = s.x * attackDir(s.side);
-  const blue = BLUE_X + BLUE_LINE_W * 0.5;
-  if (along > blue) return "offensive";
-  if (along > 0.35) return "attackNeutral";
-  if (along >= -blue) return "ownNeutral";
-  return "own";
-}
-
-function aimingAtAttackEnd(s: Skater, ax: number, az: number): boolean {
-  const attack = attackDir(s.side);
-  if (ax * attack > 0.42) return true;
-  const from = passOrigin(s);
-  const hit = rayBoard(from.x, from.z, ax, az, 80);
-  if (!hit) return false;
-  return Math.abs(hit.nx) > 0.72 && hit.nx * attack > 0.45;
-}
-
-type FullSauceLand = { dist: number; wantY: number };
-
-/** Full charge only. Partial sauces keep the lower proportional arc. */
-function fullSauceLand(s: Skater, ax: number, az: number): FullSauceLand | null {
-  if (!aimingAtAttackEnd(s, ax, az)) return null;
-  const attack = attackDir(s.side);
-  const from = passOrigin(s);
-  const hit = rayBoard(from.x, from.z, ax, az, 90);
-  const wall = hit ? wallTop(hit.nx, hit.nz, hit.x, hit.z) : BOARD_H + END_GLASS_H;
-  const zone = sauceZone(s);
-  const distToX = (x: number): number | null => {
-    if (ax * attack < 0.12) return null;
-    const d = (x - from.x) / ax;
-    return d > 0.8 ? d : null;
-  };
-  if (zone === "offensive") {
-    const dist = hit ? Math.max(1.2, hit.dist) : 10;
-    // Select-only full sauce uses the same under-glass crest as sauceGlassY.
-    // CPU keeps the clear / glass / clip roll. launchPass never calls this on a clear.
-    if (sauceOnlyRelease && s.id === world.userId) {
-      return { dist, wantY: sauceGlassY(1, wall) };
-    }
-    const roll = Math.random();
-    // Most CPU clears still go over the end glass. A glass hit is next. A clip is rare.
-    if (roll < 0.74) return { dist, wantY: wall + 0.85 };
-    if (roll < 0.94) return { dist, wantY: Math.max(1.6, wall - 0.9) };
-    return { dist, wantY: wall + 0.12 };
-  }
-  if (zone === "attackNeutral") {
-    const dist = hit ? Math.max(1.2, hit.dist) : 18;
-    const slip = (Math.random() - 0.5) * 0.2;
-    return { dist, wantY: Math.max(1.7, wall - 0.7 + slip) };
-  }
-  if (zone === "ownNeutral") {
-    const goal = attack * GOAL_LINE_X;
-    const roll = Math.random();
-    if (roll >= 0.74 && hit) {
-      return { dist: Math.max(2, hit.dist), wantY: 0.5 + Math.random() * 0.35 };
-    }
-    const landX =
-      roll < 0.42
-        ? goal - attack * (0.5 + Math.random() * 1.5)
-        : goal + attack * (0.35 + Math.random() * 2.2);
-    const dist = distToX(landX) ?? (hit ? Math.min(hit.dist * 0.9, 40) : 26);
-    return { dist, wantY: PUCK_Y + 0.03 };
-  }
-  const blue = BLUE_X + BLUE_LINE_W * 0.5;
-  const landAlong = blue + 2.2 + Math.random() * Math.max(3.5, GOAL_LINE_X - blue - 7);
-  const dist = distToX(attack * landAlong) ?? 34;
-  return { dist: Math.max(8, dist), wantY: PUCK_Y + 0.04 };
-}
-
 function inferSauceAim(s: Skater, ax: number, az: number): SauceAim {
   const from = passOrigin(s);
   const hit = rayBoard(from.x, from.z, ax, az, 70);
@@ -14690,7 +14623,7 @@ function inferSauceAim(s: Skater, ax: number, az: number): SauceAim {
       dist: Math.max(0.6, hit.dist),
       over: true,
       bank: false,
-      wall: wallTop(hit.nx, hit.nz, hit.x, hit.z),
+      wall: continuousGlassTop(hit.x, hit.z),
     };
   }
   const netX = attackDir(s.side) * GOAL_LINE_X;
@@ -14701,22 +14634,9 @@ function inferSauceAim(s: Skater, ax: number, az: number): SauceAim {
   return { dist: hit ? Math.max(0.6, Math.min(16, hit.dist)) : 10, over: false, bank: false };
 }
 
-/**
- * Share of CPU skater high clears that may still sail over the glass.
- * A goalie clear never does. User aim is not passed through this.
- */
-const CPU_CROWD_CLEAR_P = 0.08;
-
-/**
- * True when this release may keep an arc that leaves the rink.
- * A user saucer stays under the glass. A high clear may carry over,
- * the same as a rare CPU clear.
- */
-function cpuKeepsCrowdArc(s: Skater): boolean {
-  if (!chargedClear) return false;
-  if (s.id === world.userId) return true;
-  if (s.kind === "goalie") return false;
-  return Math.random() < CPU_CROWD_CLEAR_P;
+/** Saucers and clears stay in the rink. Nothing in this release keeps a crowd arc. */
+function cpuKeepsCrowdArc(_s: Skater): boolean {
+  return false;
 }
 
 /**
@@ -14839,42 +14759,18 @@ function launchPass(
     const dirz = scaled.vz / sp;
     const full = sauceNow >= 0.999;
     const grav = full ? SAUCE_GRAV : 12;
-    const zoneLand =
-      full && !chargedClear && !(sauceAim && sauceAim.receiveY !== undefined)
-        ? fullSauceLand(s, dirx, dirz)
-        : null;
-    let want = chargedClear ? sauceClearY() : sauceNetY(sauceNow);
-    let glass = false;
-    if (zoneLand) {
-      want = zoneLand.wantY;
-    } else {
-      const aim = sauceAim ?? inferSauceAim(s, dirx, dirz);
-      if (aim.receiveY !== undefined && !chargedClear) want = Math.min(want, aim.receiveY);
-      if (aim.over && !chargedClear && sauceNow >= 0.999) {
-        const wall = aim.wall ?? BOARD_H + SIDE_GLASS_H;
-        const intoCrowd = sauceNow >= SAUCE_CROWD_AT && Math.random() < SAUCE_CROWD_P;
-        want = intoCrowd ? wall + 0.32 : sauceGlassY(sauceNow, wall);
-        glass = true;
-      } else if (aim.over) glass = true;
+    const from = passOrigin(s);
+    const hit = rayBoard(from.x, from.z, dirx, dirz, 80);
+    const aim = sauceAim ?? inferSauceAim(s, dirx, dirz);
+    const glass = !!aim.over;
+    let peakY = sauceNetY(sauceNow);
+    if (hit && useGame.getState().sauceBoardClamp) {
+      const top = continuousGlassTop(hit.x, hit.z);
+      peakY = Math.min(peakY, Math.max(SAUCE_LOW_Y + 0.05, top - SAUCE_BOARD_CLAMP_BELOW));
     }
-    // A clear keeps the aimed lob. Sauce and glass rides crest at the target height.
-    // An ice landing spot still rises to the sauce crest, then drops.
-    if (chargedClear) {
-      useVy = sauceLaunchVy(zoneLand ? zoneLand.dist : 40, sp, want, 1, grav);
-    } else {
-      const cruise = sauceNetY(sauceNow);
-      let peakY = zoneLand && want + 0.05 < cruise ? cruise : want;
-      const from = passOrigin(s);
-      const hit = rayBoard(from.x, from.z, dirx, dirz, 80);
-      if (hit && useGame.getState().sauceBoardClamp) {
-        const top = wallTop(hit.nx, hit.nz, hit.x, hit.z);
-        peakY = Math.min(peakY, Math.max(SAUCE_LOW_Y + 0.05, top - SAUCE_BOARD_CLAMP_BELOW));
-      }
-      // Open ice, and any sauce that leaves the glass, stays on the rise and drop.
-      // launchGlassRide may add a plateau after it checks the whole ride.
-      sauceShape = buildHeightProfile(glass ? "glassRide" : "sauce", peakY, grav, 0);
-      useVy = sauceShape.vy;
-    }
+    // The crest is the same on ice and on a ride. launchGlassRide may add a plateau.
+    sauceShape = buildHeightProfile(glass ? "glassRide" : "sauce", peakY, grav, 0);
+    useVy = sauceShape.vy;
   }
   if (m < 1) passSpeedCutFor = world.time;
   const flightGrav = saucer && sauceCharge >= 0.999 ? SAUCE_GRAV : 12;
@@ -14883,7 +14779,7 @@ function launchPass(
     : holdCpuReleaseInRink(s, scaled.vx * m, scaled.vz * m, useVy * m, flightGrav);
   launchPuck(s, scaled.vx * m, scaled.vz * m, lvy);
   sauceLandCharge = sauceCharge;
-  sauceMayLeave = chargedClear;
+  sauceMayLeave = false;
   if (sauceShape) heightProfile = sauceShape.profile;
   beginPassSpeedTrack(saucer);
   passReleaseCharge =
@@ -14947,7 +14843,7 @@ function syncSauceWindow(act: Actions): void {
   sauceOffset = 0;
 }
 
-/** Dump. Higher and longer than a net saucer. Does not hunt a teammate. */
+/** Up-ice saucer. Same crest as any other full sauce. Does not hunt a teammate. */
 function launchHighClear(s: Skater, mx: number, my: number): void {
   if (s.kind === "goalie" && goalieMustHoldCover(s)) return;
   const { ax, az } = aimDir(s, mx, my);
@@ -14969,8 +14865,8 @@ function launchHighClear(s: Skater, mx: number, my: number): void {
  * Select up. A full meter fires immediately. No extra second and no separate clear hold.
  * A clean shorter release sends a saucer at that height. A is not required.
  * Horizontal speed is the A hold. A never down is a tap, whatever the Select clock.
- * Both meters at CLEAR_CHARGE_AT use the high-clear loft. A goalie uses the outlet
- * unless that clear fires. A skater uses doPass. B cancel still blocks the release.
+ * A full meter is a sauce, whether or not A is also full. A goalie uses the outlet.
+ * A skater uses doPass. B cancel still blocks the release.
  */
 function releaseSelectSauce(act: Actions): boolean {
   if (!sauceReleaseClean && !sauceReleaseFull) return false;
@@ -15030,7 +14926,7 @@ function userPassIsClear(passHoldS: number, sauceHoldS: number, saucer: boolean)
 
 /**
  * User pass or saucer. passHoldS and sauceHoldS override the live sticks when Select
- * itself is the release. A high pass plus a high sauce uses the clear loft.
+ * itself is the release. Both meters full stays a saucer.
  */
 function fireUserChargedPass(
   act: Actions,
@@ -16117,7 +16013,7 @@ function launchGlassRide(
   const from = passOrigin(s);
   const flight = rimLaunchVelocity(s, ax, az, nx, nz);
   const hit = rayBoard(from.x, from.z, ax, az, 80);
-  const wall = hit ? wallTop(hit.nx, hit.nz, hit.x, hit.z) : BOARD_H + SIDE_GLASS_H;
+  const wall = hit ? continuousGlassTop(hit.x, hit.z) : continuousGlassTop(from.x, from.z);
   launchPass(s, flight.vx, flight.vz, 0.02, true, {
     dist: hit ? Math.max(0.6, hit.dist) : 40,
     over: true,
@@ -16161,7 +16057,7 @@ function launchSaucerBoard(s: Skater, ax: number, az: number, hit: BoardHit): vo
     dist: travel,
     over: true,
     bank: false,
-    wall: wallTop(hit.nx, hit.nz, hit.x, hit.z),
+    wall: continuousGlassTop(hit.x, hit.z),
   });
   boardPassIntent = "carom";
   dampCheckedPassRide();
@@ -17211,6 +17107,11 @@ function oneTimerReceiver(): Skater | null {
     const t = world.skaters[world.lastPassTo];
     if (t && t.side === "home" && t.kind !== "goalie" && t.id !== passer.id) return t;
   }
+  if (world.oneTimerArmed && world.lastPassTo === null) {
+    const id = oneTimerMeetId();
+    const meet = id >= 0 ? world.skaters[id] : undefined;
+    if (meet && meet.side === "home" && meet.kind !== "goalie" && meet.id !== passer.id) return meet;
+  }
   let best: Skater | null = null;
   let bestD = 99;
   for (const s of world.skaters) {
@@ -17281,7 +17182,16 @@ function armUserOneTimer(): void {
   world.oneTimerArmed = true;
   world.oneTimerPass = false;
   world.oneTimerSaucer = false;
-  if (first) oneTimerArmedAt = world.time;
+  if (first) {
+    oneTimerArmedAt = world.time;
+    if (passBoardHitsFor !== world.lastPass) {
+      passBoardHitsFor = world.lastPass;
+      passBoardHits = 0;
+    }
+    boardHitsAtArm = passBoardHits;
+    boardHitsAtArmPass = world.lastPass;
+    rideLiveAtArm = !!(boardRide || boardBank) || ridingWall(boardVelocity(world.puck));
+  }
   if (rearm) {
     world.oneTimerUntil = world.time + 2.2;
     oneTimerRearmOpen = false;
@@ -17300,8 +17210,29 @@ function boardOneTimerStillLive(): boolean {
   return boardPassIntent === "bank" || boardPassIntent === "carom";
 }
 
+function boardRideHeldFromArm(): boolean {
+  if (boardRide || boardBank) return true;
+  if (!boardPassLoose()) return false;
+  return ridingWall(boardVelocity(world.puck));
+}
+
 function cancelOneTimerIfBoardMissed(): void {
+  if (boardHitStep) {
+    if (passBoardHitsFor !== world.lastPass) {
+      passBoardHitsFor = world.lastPass;
+      passBoardHits = 0;
+    }
+    passBoardHits++;
+  }
   if (!boardHitStep || !world.oneTimerArmed) return;
+  const tracked = boardHitsAtArmPass === world.lastPass;
+  if (tracked) {
+    const sinceArm = passBoardHits - boardHitsAtArm;
+    if (rideLiveAtArm && boardRideHeldFromArm()) return;
+    if (boardHitsAtArm === 0 && sinceArm === 1 && boardOneTimerStillLive()) return;
+    cancelArmedOneTimer(true);
+    return;
+  }
   if (boardOneTimerStillLive()) return;
   cancelArmedOneTimer(true);
 }
@@ -21310,7 +21241,7 @@ function containPuckBoards(puck: Puck): boolean {
       if (puck.vy < pop) puck.vy = pop;
     }
   }
-  // The long clear may leave. Every other saucer has to come down inside the rink.
+  // A saucer has to come down inside the rink.
   if (!sauceMayLeave && useGame.getState().shotKind === "saucer" && puck.vy > 0) {
     const top = wallTop(hit.nx, hit.nz, hit.x, hit.z);
     const g = sauceLandCharge >= 0.999 ? SAUCE_GRAV : 12;
@@ -22639,7 +22570,9 @@ function maybeCrowdStoppage(prevX: number, prevY: number, prevZ: number, dt: num
     deflectCrowdTravel(dt, prevX, prevY, prevZ);
     return true;
   }
-  if (!outsideStandFootprint(puck.x, puck.z) || !crowdPuckLanded(puck.y, puck.vy)) return false;
+  // Left the rink. The last-seat outline is ~54 m farther out, so a puck on the floor under the bowl never reaches it.
+  const leftRink = resolveRink(puck.x, puck.z, 0.02).hit;
+  if (!leftRink || !crowdPuckLanded(puck.y, puck.vy)) return false;
   chooseCrowdFaceoff();
   startStoppage("crowd");
   return true;
@@ -24558,6 +24491,63 @@ function tryArmedReceiverOneTimer(puck: Puck, prevX: number, prevZ: number): boo
 }
 
 /**
+ * Armed one-timer for the winger skating onto a shootable intercept.
+ * The named receiver already had his turn. This does not require lastPassTo
+ * or possession. The puck has to be at his body, and that body has to be a shot.
+ */
+function tryArmedMeetOneTimer(puck: Puck, prevX: number, prevZ: number): boolean {
+  if (!world.oneTimerArmed || world.oneTimerPass || namedReceiverOwnsPass()) return false;
+  if (periodEndLive() || world.time - world.lastShoot < 0.05) return false;
+  const sincePass = world.time - world.lastPass;
+  const sinceArm = oneTimerArmedAt >= 0 ? world.time - oneTimerArmedAt : sincePass;
+  if (sincePass < 0.04 || puck.y >= 0.55) return false;
+  if (sincePass > 2.2 && sinceArm > 2.2) return false;
+  if (
+    !(
+      world.lastShoot < world.lastPass &&
+      world.goalieSaveT < world.lastPass &&
+      world.lastHitTime < world.lastPass
+    )
+  ) {
+    return false;
+  }
+  if (shootoutBlocksPuckPlay()) return false;
+  const id = oneTimerMeetId();
+  const s = id >= 0 ? world.skaters[id] : undefined;
+  if (!s || s.side !== "home" || s.kind === "goalie") return false;
+  if (dekeCommitBlocks(s.id) || s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) return false;
+  if (!receiveShotPlausible(s, s.x, s.z)) return false;
+  const stepX = puck.x - prevX;
+  const stepZ = puck.z - prevZ;
+  const step = Math.hypot(stepX, stepZ);
+  let ux = 1;
+  let uz = 0;
+  if (step > 0.02) {
+    ux = stepX / step;
+    uz = stepZ / step;
+  } else {
+    const sp = Math.hypot(puck.vx, puck.vz);
+    if (sp > 0.5) {
+      ux = puck.vx / sp;
+      uz = puck.vz / sp;
+    }
+  }
+  const along = (s.x - puck.x) * ux + (s.z - puck.z) * uz;
+  const lat = Math.hypot(s.x - puck.x - ux * along, s.z - puck.z - uz * along);
+  const latMax = s.radius + SKATER_STICK_LEN;
+  if (lat > latMax || along < -(s.radius + 0.08) || along > SKATER_STICK_LEN) return false;
+  if (lat > 0.45) {
+    const { fx, fz } = heading(s.yaw);
+    const ahead = (puck.x - s.x) * fx + (puck.z - s.z) * fz;
+    if (ahead < -0.08) return false;
+  }
+  noteControl(s, "receive");
+  noteChainReception(s);
+  fireOneTimer(s);
+  return true;
+}
+
+/**
  * Named open-ice one-timer. The meet window is the same one tryArmedReceiverOneTimer
  * uses. Approaching, or still inside that window, is not a miss. Past the body,
  * or past the 2.2s tape clock, the attempt is over. A live board pass is not this.
@@ -24731,10 +24721,108 @@ function cancelOneTimerIfOpenIceMissed(puck: Puck, prevX: number, prevZ: number)
   // No travel yet. The clock above is the only fail.
   if (ux === 0 && uz === 0) return;
   const along = (s.x - puck.x) * ux + (s.z - puck.z) * uz;
+  const lat = Math.hypot(s.x - puck.x - ux * along, s.z - puck.z - uz * along);
   // Still in front of the back edge of the meet window, including a wide
   // approach that has not gone past the body. Do not clear.
   if (along >= -(s.radius + 0.08)) return;
+  // A wide miss of the named skater on a pass that left the glass does not
+  // clear while a home defenseman can still meet the puck.
+  if (lat > 0.85 && boardLeavePass && defenseCanCloseBoardLeave(puck, ux, uz, s.id, passer.id)) return;
   cancelArmedOneTimer(true);
+}
+
+/** Home defenseman still ahead of a board-leave pass, close enough to skate onto the 0.85 m window. */
+function defenseCanCloseBoardLeave(
+  puck: Puck,
+  ux: number,
+  uz: number,
+  namedId: number,
+  passerId: number,
+): boolean {
+  const speed = Math.hypot(puck.vx, puck.vz);
+  for (const d of world.skaters) {
+    if (d.side !== "home" || d.kind !== "defense") continue;
+    if (d.id === namedId || d.id === passerId) continue;
+    const along = (d.x - puck.x) * ux + (d.z - puck.z) * uz;
+    if (along < -(d.radius + 0.08)) continue;
+    const lat = Math.hypot(d.x - puck.x - ux * along, d.z - puck.z - uz * along);
+    const close = speed > 1e-6 ? Math.min(6, (9 * Math.max(0, along)) / speed) : 0;
+    if (lat <= 0.85 + close) return true;
+  }
+  return false;
+}
+
+/**
+ * Armed one-timer for a home defenseman after the puck has left the glass.
+ * Same under-body window as tryArmedReceiverOneTimer. Not the rail lane.
+ * The owner stays empty; fireOneTimer releases from the blade.
+ */
+function tryArmedDefenseOneTimer(puck: Puck, prevX: number, prevZ: number): boolean {
+  if (!world.oneTimerArmed || world.oneTimerPass || !boardLeavePass) return false;
+  if (periodEndLive() || world.time - world.lastShoot < 0.05) return false;
+  const sincePass = world.time - world.lastPass;
+  const sinceArm = oneTimerArmedAt >= 0 ? world.time - oneTimerArmedAt : sincePass;
+  if (sincePass < 0.04 || puck.y >= 0.55) return false;
+  if (sincePass > 2.2 && sinceArm > 2.2) return false;
+  if (
+    !(
+      world.lastShoot < world.lastPass &&
+      world.goalieSaveT < world.lastPass &&
+      world.lastHitTime < world.lastPass
+    )
+  ) {
+    return false;
+  }
+  const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : null;
+  if (!passer || passer.side !== "home") return false;
+  if (shootoutBlocksPuckPlay()) return false;
+  const stepX = puck.x - prevX;
+  const stepZ = puck.z - prevZ;
+  const step = Math.hypot(stepX, stepZ);
+  let ux = 1;
+  let uz = 0;
+  if (step > 0.02) {
+    ux = stepX / step;
+    uz = stepZ / step;
+  } else {
+    const sp = Math.hypot(puck.vx, puck.vz);
+    if (sp > 0.5) {
+      ux = puck.vx / sp;
+      uz = puck.vz / sp;
+    }
+  }
+  if (world.lastPassTo !== null) {
+    const named = world.skaters[world.lastPassTo];
+    if (named) {
+      const namedAlong = (named.x - puck.x) * ux + (named.z - puck.z) * uz;
+      if (namedAlong >= -(named.radius + 0.08)) return false;
+    }
+  }
+  let best: Skater | null = null;
+  let bestLat = Infinity;
+  for (const s of world.skaters) {
+    if (s.side !== "home" || s.kind !== "defense" || s.id === passer.id) continue;
+    if (s.id === world.lastPassTo) continue;
+    if (bankOtFirst >= 0 && s.id === bankOtFirst) continue;
+    if (dekeCommitBlocks(s.id) || s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) continue;
+    const along = (s.x - puck.x) * ux + (s.z - puck.z) * uz;
+    const lat = Math.hypot(s.x - puck.x - ux * along, s.z - puck.z - uz * along);
+    if (lat > 0.85 || along < -(s.radius + 0.08) || along > SKATER_STICK_LEN) continue;
+    if (lat > 0.45) {
+      const { fx, fz } = heading(s.yaw);
+      const ahead = (puck.x - s.x) * fx + (puck.z - s.z) * fz;
+      if (ahead < -0.08) continue;
+    }
+    if (lat < bestLat) {
+      bestLat = lat;
+      best = s;
+    }
+  }
+  if (!best) return false;
+  noteControl(best, "receive");
+  noteChainReception(best);
+  fireOneTimer(best);
+  return true;
 }
 
 /** A buffered shoot holds the catch for the one-timer. A puck in the body still sticks. */
@@ -24900,14 +24988,17 @@ function tryPickup(puck: Puck, prevX = puck.x, prevZ = puck.z): void {
   // Named receiver first, then a rim with nobody named. Neither parks the puck.
   // A bank already locked the first teammate the puck reached, above.
   if (tryArmedReceiverOneTimer(puck, prevX, prevZ)) return;
+  if (tryArmedMeetOneTimer(puck, prevX, prevZ)) return;
   // The named open-ice attempt is over once the puck is past that window.
   // A live board pass keeps its own cancel. Clearing here is what stops the
   // next teammate from inheriting the shot.
+  noteBoardLeavePass();
   cancelOneTimerIfOpenIceMissed(puck, prevX, prevZ);
   // A rim leaves lastPassTo empty, and a buffered shoot then skips every home
   // catch, so a stick on the rail never fires. This lane is only that shot.
   // It does not widen ordinary possession.
   if (tryArmedBoardOneTimer(puck, prevX, prevZ)) return;
+  if (tryArmedDefenseOneTimer(puck, prevX, prevZ)) return;
   if (settleBankOneTimerReceiver(puck, prevX, prevZ)) return;
 
   if (puck.y > 1.18) return;
@@ -26593,6 +26684,15 @@ type ReplaySnap = {
   hud?: ReplayHud;
   /** Rules in effect when this frame was recorded. */
   settings?: ReplaySettingsSnapshot;
+  /**
+   * One-timer latch at this frame. Playback does not restore it.
+   * Absent on snaps built before this field existed.
+   */
+  oneTimer?: {
+    armed: boolean;
+    until: number;
+    lastPassTo: number | null;
+  };
 };
 
 type ReplayHud = {
@@ -27176,6 +27276,11 @@ function recordReplay(force = false): void {
     targets: snapTargets(),
     hud: snapHud(),
     settings: captureReplaySettings(),
+    oneTimer: {
+      armed: world.oneTimerArmed,
+      until: world.oneTimerUntil,
+      lastPassTo: world.lastPassTo,
+    },
   };
   replayW = (replayW + 1) % REPLAY_CAP;
   if (replayN < REPLAY_CAP) {
@@ -27376,6 +27481,7 @@ function cloneReplaySnap(snap: ReplaySnap): ReplaySnap {
     ceremony: snap.ceremony,
     hud: snap.hud ? { ...snap.hud } : undefined,
     settings: snap.settings,
+    oneTimer: snap.oneTimer ? { ...snap.oneTimer } : undefined,
     targets: snap.targets
       ? {
           drillGone: snap.targets.drillGone.slice(),
@@ -27476,6 +27582,10 @@ export type ReplayFormationExport = {
   adjusted: ReplayFormationSide;
   /** Present on the first frame of a download. Recorded with that frame, not at download time. */
   settings?: ReplaySettingsSnapshot;
+  /** Latch at record time. Omitted when this snap has no oneTimer reading. */
+  oneTimerArmed?: boolean;
+  oneTimerUntil?: number;
+  lastPassTo?: number | null;
 };
 
 function recordedRoster(b: ReplayBody, index: number): { side: "home" | "away"; kind: SkaterKind; number: number } {
@@ -27626,6 +27736,7 @@ function replayExport(
   adjusted: ReplaySnap,
   settings?: ReplaySettingsSnapshot,
 ): ReplayFormationExport {
+  const ot = original.oneTimer;
   return {
     frame,
     time,
@@ -27633,6 +27744,13 @@ function replayExport(
     original: formationSide(original),
     adjusted: formationSide(adjusted),
     ...(settings ? { settings } : {}),
+    ...(ot
+      ? {
+          oneTimerArmed: ot.armed,
+          oneTimerUntil: ot.until,
+          lastPassTo: ot.lastPassTo,
+        }
+      : {}),
   };
 }
 
@@ -31541,7 +31659,7 @@ function stepPlay(dt: number, act: Actions): void {
     return;
   }
 
-  if (ui.clockMode === "scrimmage" && !world.periodOver && !scrimmageWinner()) {
+  if (ui.clockMode === "scrimmage" && !world.periodOver && !scrimmageWinner() && !world.stoppage && !world.faceoff) {
     world.periodClock += clockDt(dt);
     const shown = Math.floor(world.periodClock);
     if (shown !== ui.periodClock) ui.setPeriodClock(shown);
@@ -32314,7 +32432,7 @@ function stepPlay(dt: number, act: Actions): void {
 
   // HUD meters. Pass speed fills from aHoldFor across PASS_FULL_HOLD, and only while A is down.
   // Sauce fills from Select's hold across SAUCE_FULL_HOLD, including while A is still up.
-  // The two bars do not share a clock. Clear is both meters at CLEAR_CHARGE_AT, not a longer Select hold.
+  // The two bars do not share a clock. Both meters full still reads Saucer.
   // Releasing Select while A is still held drains sauceFall. It does not clear on that frame.
   // The shot meter used to step to 0.4, then to full once xHeld (0.28s), and the label always said Slap.
   // Skater bar: snap under 0.1s, wrist until half of SHOT_FULL_HOLD, then slap.

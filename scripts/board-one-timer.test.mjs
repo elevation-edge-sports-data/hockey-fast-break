@@ -408,6 +408,36 @@ test("a clean boards bounce clears the armed one-timer", () => {
   assert.equal(world.oneTimerUntil, -10);
 });
 
+test("a second board hit after the press clears a carom one-timer", () => {
+  fresh();
+  const receiver = world.skaters.find((s) => s.side === "home" && s.kind === "defense");
+  const passer = placeRail(receiver, false);
+  parkFar(passer.id);
+  receiver.x = -40;
+  receiver.z = 0;
+  setBoardPassIntent("carom");
+  world.puck.x = 0;
+  world.puck.z = -12.55;
+  world.puck.vx = 0.4;
+  world.puck.vz = -25;
+  world.puck.vy = 0;
+  world.lastPass = world.time - 0.3;
+  setInjectedKeys(["KeyF"]);
+  step(1);
+  setInjectedKeys([]);
+  assert.equal(world.oneTimerArmed, true);
+  assert.equal(world.lastShotOneTimer, false);
+  world.puck.x = 0;
+  world.puck.z = 12.55;
+  world.puck.vx = 0.4;
+  world.puck.vz = 25;
+  world.puck.vy = 0;
+  step(1);
+  assert.equal(world.lastShotOneTimer, false);
+  assert.equal(world.oneTimerArmed, false);
+  assert.equal(world.oneTimerUntil, -10);
+});
+
 test("a puck that stays on the wall keeps the armed one-timer", () => {
   fresh();
   const receiver = world.skaters.find((s) => s.side === "home" && s.kind === "defense");
