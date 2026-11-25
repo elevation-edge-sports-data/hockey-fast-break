@@ -922,12 +922,6 @@ function MainMenus() {
     setRinkSub(null);
   };
   const toggleRinkSub = (id: RinkSubId) => setRinkSub((cur) => (cur === id ? null : id));
-  const blurb =
-    controlProfile === "wings"
-      ? "LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB defensive skate; hold Select or R for the goalie; RB dives."
-      : controlProfile === "stick"
-        ? "Right stick shoots: up snap, right then up wrist, left then up backhand, pull back slap. Left stick aims. X tap wrist, hold slap. LB defensive skate. Hold Select or R for the goalie."
-        : "LB defensive skate. Hold Select or R for the goalie.";
   const startReplay = () => {
     if (replay) {
       stopPauseReplay();
@@ -1238,7 +1232,6 @@ function MainMenus() {
               <button
                 type="button"
                 className={controlProfile === "classic" ? "is-on" : ""}
-                title="LB defensive skate. Hold Select or R for the goalie."
                 onClick={() => setControlProfile("classic")}
               >
                 Classic
@@ -1246,7 +1239,6 @@ function MainMenus() {
               <button
                 type="button"
                 className={controlProfile === "wings" ? "is-on" : ""}
-                title="LT/RT claim nearest teammate left/right of you; left stick steers you and them; LB defensive skate; hold Select or R for the goalie; RB dives."
                 onClick={() => setControlProfile("wings")}
               >
                 Wings
@@ -1254,12 +1246,10 @@ function MainMenus() {
               <button
                 type="button"
                 className={controlProfile === "stick" ? "is-on" : ""}
-                title="Right stick shoots. Left stick aims. X tap wrist, hold slap. LB defensive skate. Hold Select or R for the goalie."
                 onClick={() => setControlProfile("stick")}
               >
                 Skill Stick
               </button>
-              <p className="hint menu-blurb">{blurb}</p>
             </>
           ) : null}
           {menu === "gameplay" ? (

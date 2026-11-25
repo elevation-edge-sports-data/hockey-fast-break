@@ -2872,6 +2872,7 @@ export function resetWorld(opts?: { keepScore?: boolean; keepReplay?: boolean })
   const heldRadius = world.freeCam.radius;
   checkAbsorbed.clear();
   checkCycleIds.clear();
+  divePokeRoll.clear();
   burstPoseW.clear();
   checkCloseLeft.clear();
   shoulderCheckArmed.clear();
@@ -3513,7 +3514,10 @@ function integrateSkater(
   dt: number,
 ): void {
   if (heldBody(s.id)) return;
-  if (s.poke > 0) s.poke = Math.max(0, s.poke - dt);
+  if (s.poke > 0) {
+    s.poke = Math.max(0, s.poke - dt);
+    if (s.poke === 0) divePokeRoll.delete(s.id);
+  }
   if (
     s.kind === "goalie" &&
     world.whistle !== "goal" &&
@@ -12138,6 +12142,8 @@ function tryGoalieCreasePoke(puck: Puck, prevX: number, prevZ: number, prevY: nu
   return false;
 }
 
+const goalieDekeLat = new Set<number>();
+
 function thinkGoalie(s: Skater, dt: number): void {
   // The series is over. Coast. Do not lerp back onto the crease dot.
   if (shootoutWinnerDecided()) {
@@ -12319,11 +12325,24 @@ function thinkGoalie(s: Skater, dt: number): void {
     return Math.max(-zMax, Math.min(zMax, tz0 * (depth / along)));
   };
 
+  const dekeOnMe =
+    !!attackOnMe &&
+    !!holder &&
+    (holder.deke > 0.02 || Math.abs(holder.stickPull) > 0.02);
+  const wasDeke = goalieDekeLat.has(s.id);
+  if (dekeOnMe) goalieDekeLat.add(s.id);
+  else goalieDekeLat.delete(s.id);
+
   let tz: number;
   const shotAtMe = !holder && Math.hypot(puck.vx, puck.vz) > 5.5 && puck.vx * defendDir(s.side) > 5;
   if (shotAtMe && !far) {
     const ttm = Math.max(0.02, (mouth - puck.x) / (puck.vx || 1));
-    tz = puck.z + puck.vz * Math.min(home ? 0.35 : 0.1, ttm);
+    let look = Math.min(home ? 0.35 : 0.1, ttm);
+    if (home) {
+      const toBody = (s.x - puck.x) / (puck.vx || 1);
+      look = Math.min(look, Math.max(0.02, toBody));
+    }
+    tz = puck.z + puck.vz * look;
     tz = Math.max(-zMax, Math.min(zMax, tz));
     if (home) {
       s.trackZ = tz;
@@ -12336,6 +12355,8 @@ function thinkGoalie(s: Skater, dt: number): void {
       s.z += (s.trackZ - s.z) * Math.min(1, 2.6 * dt);
       s.z = Math.max(-zMax, Math.min(zMax, s.z));
     }
+  } else if (dekeOnMe) {
+    tz = puck.z + puck.vz * (home ? 0.08 : 0.06);
   } else if (attackOnMe && holder) {
     tz = angleZ(holder.x, holder.z + holder.vz * lead);
   } else {
@@ -12344,17 +12365,22 @@ function thinkGoalie(s: Skater, dt: number): void {
   tz = Math.max(-zMax, Math.min(zMax, tz));
 
   if (!shotAtMe) {
-    const toward = tz - s.trackZ;
-    const reversing = Math.sign(toward) !== Math.sign(s.trackVz) && Math.abs(s.trackVz) > 0.55;
-    if (reversing && home) {
-      s.trackVz *= Math.exp(-1.05 * dt);
-      s.trackZ += s.trackVz * dt;
+    if (dekeOnMe || (wasDeke && !dekeOnMe)) {
+      s.trackZ = tz;
+      s.trackVz = 0;
     } else {
-      const k = reverse * dt;
-      s.trackVz += (toward * 9 - s.trackVz * 3.4) * dt;
-      s.trackZ += s.trackVz * Math.min(1, k);
+      const toward = tz - s.trackZ;
+      const reversing = Math.sign(toward) !== Math.sign(s.trackVz) && Math.abs(s.trackVz) > 0.55;
+      if (reversing && home) {
+        s.trackVz *= Math.exp(-1.05 * dt);
+        s.trackZ += s.trackVz * dt;
+      } else {
+        const k = reverse * dt;
+        s.trackVz += (toward * 9 - s.trackVz * 3.4) * dt;
+        s.trackZ += s.trackVz * Math.min(1, k);
+      }
+      s.trackZ = Math.max(-zMax, Math.min(zMax, s.trackZ));
     }
-    s.trackZ = Math.max(-zMax, Math.min(zMax, s.trackZ));
     const recalling = home && world.goalieRecallT > 0;
     s.x += (netX - s.x) * Math.min(1, (recalling ? 1.4 : 6) * dt);
     s.z += (s.trackZ - s.z) * Math.min(1, (recalling ? 1.6 : home ? 10 : 14) * dt);
@@ -16378,7 +16404,7 @@ function doPass(s: Skater, mx: number, my: number, saucer: boolean): void {
   if (skipFind || (directed && !lock && aimed)) {
     freeAimToLane(s, ax, az, saucer, !skipFind);
   } else {
-    const mate = bestPassTarget(s, ax, az, aimed);
+    const mate = bestPassTarget(s, ax, az, true);
     if (mate) {
       tapePass(s, mate, saucer);
     } else if (aimed) {
@@ -18890,6 +18916,23 @@ const CPU_DIVE_POKE: DivePokeOutcome = {
   maxSpin: CPU_DIVE_ABSORB_SPIN,
 };
 
+/** One tumble roll per victim for this diver's poke. A higher poke is a new press. */
+const divePokeRoll = new Map<number, { poke: number; ids: Set<number> }>();
+
+function divePokeRepeat(hitter: Skater, victimId: number): boolean {
+  const poke = hitter.poke;
+  let rec = divePokeRoll.get(hitter.id);
+  if (!rec || poke > rec.poke) {
+    rec = { poke, ids: new Set() };
+    divePokeRoll.set(hitter.id, rec);
+  } else if (poke < rec.poke) {
+    rec.poke = poke;
+  }
+  if (rec.ids.has(victimId)) return true;
+  rec.ids.add(victimId);
+  return false;
+}
+
 /**
  * |sin θ| between two planar velocities. θ is 0° parallel, 90° perpendicular,
  * 180° head-on. A body slower than 0.05 m/s has no direction, so the spin is 0.
@@ -18928,8 +18971,10 @@ function impactTumbleSpin(
 
 /** Dive-poke outcome. Fall stays a coin flip. Absorb twist comes from the impact. */
 function applyDivePokeVictim(s: Skater, hitter: Skater, hit: DivePokeOutcome): void {
+  const repeat = divePokeRepeat(hitter, s.id);
   s.stun = hit.stun;
   s.struck = hit.struck;
+  if (repeat) return;
   if (Math.random() < hit.fallP) {
     s.tumble = Math.random() < 0.5 ? 1 : -1;
     s.tumbleSpin = 0;
@@ -19396,17 +19441,6 @@ function applyDeke(user: Skater): void {
   const lz = fx;
   const side = user.z >= 0 ? 1 : -1;
   commitDekeDefenders(user, fx, fz, lx, lz, side);
-  const rush = rushCounts(user.side);
-  if (rush.defenders > 0) return;
-  const g = world.skaters.find((p) => p.kind === "goalie" && p.side !== user.side);
-  if (!g) return;
-  const attack = attackDir(user.side);
-  const distMouth = (attack * GOAL_LINE_X - user.x) * attack;
-  if (distMouth > 14 || distMouth < 0.35) return;
-  const pull = (rush.attackers >= 3 ? 1.15 : rush.attackers >= 2 ? 0.95 : 0.72) * side;
-  g.trackZ = Math.max(-1.65, Math.min(1.65, user.z + pull));
-  g.z = Math.max(-1.65, Math.min(1.65, g.z + pull * 0.62));
-  g.stun = Math.max(g.stun, rush.attackers >= 2 ? 0.55 : 0.38);
 }
 
 function tickDeke(user: Skater, _dt: number): void {
@@ -22572,7 +22606,14 @@ function maybeCrowdStoppage(prevX: number, prevY: number, prevZ: number, dt: num
   }
   // Left the rink. The last-seat outline is ~54 m farther out, so a puck on the floor under the bowl never reaches it.
   const leftRink = resolveRink(puck.x, puck.z, 0.02).hit;
-  if (!leftRink || !crowdPuckLanded(puck.y, puck.vy)) return false;
+  if (!leftRink) return false;
+  if (!crowdPuckLanded(puck.y, puck.vy)) {
+    if (puck.y > PUCK_Y || !heightProfile) return false;
+    puck.vy = 0;
+    heightProfile = null;
+    sauceLandCharge = -1;
+    sauceFlatNext = false;
+  }
   chooseCrowdFaceoff();
   startStoppage("crowd");
   return true;
@@ -25821,7 +25862,7 @@ function stepPuck(dt: number): void {
       puck.vy -= sauceGrav * dt;
     }
     if (puck.y <= PUCK_Y) {
-      const hitIce = prevY > PUCK_Y + 0.008;
+      const hitIce = prevY > PUCK_Y;
       puck.y = PUCK_Y;
       if (world.reboundSoft) {
         if (puck.vy < 0) puck.vy *= -0.06;
@@ -25835,15 +25876,23 @@ function stepPuck(dt: number): void {
       // First ice hit of a saucer. Keep sheds horizontal speed either way.
       // A partial charge sticks. A full charge keeps this one bounce, then sticks.
       if (hitIce && sauceLandCharge >= 0) {
-        const keep = 1 - sauceLandCharge * SAUCE_LAND_KEEP_LOSS;
-        puck.vx *= keep;
-        puck.vz *= keep;
-        if (sauceLandCharge < 0.999) {
+        const leftRink = resolveRink(puck.x, puck.z, 0.02).hit;
+        if (leftRink) {
           puck.vy = 0;
           sauceFlatNext = false;
-        } else if (puck.vy > 0) sauceFlatNext = true;
-        sauceLandCharge = -1;
-        heightProfile = null;
+          sauceLandCharge = -1;
+          heightProfile = null;
+        } else {
+          const keep = 1 - sauceLandCharge * SAUCE_LAND_KEEP_LOSS;
+          puck.vx *= keep;
+          puck.vz *= keep;
+          if (sauceLandCharge < 0.999) {
+            puck.vy = 0;
+            sauceFlatNext = false;
+          } else if (puck.vy > 0) sauceFlatNext = true;
+          sauceLandCharge = -1;
+          heightProfile = null;
+        }
       } else if (hitIce && sauceFlatNext) {
         puck.vy = 0;
         sauceFlatNext = false;
