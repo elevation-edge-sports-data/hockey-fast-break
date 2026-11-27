@@ -5985,16 +5985,18 @@ function oneTimerMeetLive(s: Skater, arriving: boolean): boolean {
 }
 
 /**
- * First coast sample that is already a shot, if this winger can still get there.
- * Armed meets only. Ordinary receives stay on ontoPassPuck and its skate of 9.
+ * Best-late coast sample that is already a shot, if this winger can still get there.
+ * Armed meets only. A carom back up the ice still counts. Ordinary receives stay
+ * on ontoPassPuck and its skate of 9, and unarmed meets keep passAttacksNet.
  */
 function armedOneTimerPoint(s: Skater): { x: number; z: number; late: number; t: number } | null {
   const puck = world.puck;
   const spd = Math.hypot(puck.vx, puck.vz);
-  if (spd < 1.2 || puck.vx * attackDir(s.side) < 2) return null;
+  if (!world.oneTimerArmed || spd < 1.2) return null;
   const drag = puckDrag();
   const ux = puck.vx / spd;
   const uz = puck.vz / spd;
+  let best: { x: number; z: number; late: number; t: number } | null = null;
   for (let i = 0; i <= 22; i++) {
     const t = i * 0.1;
     const coast = (spd / drag) * (1 - Math.exp(-drag * t));
@@ -6003,9 +6005,9 @@ function armedOneTimerPoint(s: Skater): { x: number; z: number; late: number; t:
     if (!receiveShotPlausible(s, x, z)) continue;
     const late = Math.hypot(x - s.x, z - s.z) / WINGER_SPEED - t;
     if (late > 0.55) continue;
-    return { x, z, late, t };
+    if (!best || late < best.late) best = { x, z, late, t };
   }
-  return null;
+  return best;
 }
 
 /**
@@ -15257,6 +15259,22 @@ function farAim(luck: FarLuck, bank: -1 | 0 | 1): { z: number; y: number | null 
   return { z: post * (hw + 0.3 + Math.random() * 0.16), y: null };
 }
 
+/** Longest fireFlip hang. The slow arrival speed used to ask for 3–4 s. */
+const LOB_HANG_MAX = 2.35;
+
+/** Time for `speed` to cover `dist` under ice drag. Inverse of speedForTime. */
+function timeAtSpeed(dist: number, speed: number): number {
+  const drag = puckDrag();
+  const d = Math.max(0.2, dist);
+  const v = Math.max(0.8, speed);
+  if (!(drag > 1e-8)) return d / v;
+  const cover = (drag * d) / v;
+  if (cover >= 0.97) return LOB_HANG_MAX;
+  const t = -Math.log(1 - cover) / drag;
+  if (drag * t < 0.05) return d / v;
+  return t;
+}
+
 function speedForTime(dist: number, t: number): number {
   const drag = puckDrag();
   const knee = drag * t;
@@ -15555,6 +15573,7 @@ function goalieLengthPlay(s: Skater, play: FarPlay, registerShot = true): void {
   let path = Math.abs(netX - from.x);
   let banked = false;
   let lob = false;
+  let lobDist = 0;
 
   const fireDirect = (toX: number, toZ: number, speed: number, up: number): void => {
     const dx = toX - from.x;
@@ -15573,8 +15592,9 @@ function goalieLengthPlay(s: Skater, play: FarPlay, registerShot = true): void {
     const landX = netX - attack * drop;
     const dist = Math.hypot(landX - from.x, aim.z - from.z) || 1;
     const vend = 6.2 + drag * drop;
-    const t = Math.max(0.95, Math.min(2.35, timeForArrival(dist, vend)));
+    const t = Math.max(0.95, Math.min(LOB_HANG_MAX, timeForArrival(dist, vend)));
     fireDirect(landX, aim.z, speedForTime(dist, t), 6 * t);
+    lobDist = dist;
     path = dist + drop;
   };
   const fireIce = (): void => {
@@ -15715,6 +15735,14 @@ function goalieLengthPlay(s: Skater, play: FarPlay, registerShot = true): void {
       vx = held.vx;
       vz = held.vz;
     }
+    if (useGame.getState().capLengthClearVy) {
+      vy = capLengthClearVy(from.x, from.z, vx, vz, vy, netX, attack);
+    }
+  }
+  if (lob && !sealed && lobDist > 0) {
+    let hang = timeAtSpeed(lobDist, Math.hypot(vx, vz));
+    if (hang > LOB_HANG_MAX) hang = LOB_HANG_MAX;
+    vy = 6 * hang;
     if (useGame.getState().capLengthClearVy) {
       vy = capLengthClearVy(from.x, from.z, vx, vz, vy, netX, attack);
     }
@@ -17431,17 +17459,19 @@ let boardOtChaseId = -1;
 
 /**
  * Who should still skate at a live board one-timer.
- * The named receiver keeps going after the 2.2s tape clock.
- * An unnamed rim already has the rail chaser. If that selector found
- * nobody, the nearest home skater goes so the puck is not ignored.
+ * The named receiver keeps going after the 2.2s tape clock, until the rail
+ * has gone past him. Then the defenseman on that side wall goes. An unnamed
+ * rim already has the rail chaser. If that selector found nobody, the nearest
+ * home skater goes so the puck is not ignored.
  */
-function boardOneTimerChaseId(): number {
+export function boardOneTimerChaseId(): number {
   if (boardOtChaseFrame === world.time) return boardOtChaseId;
   boardOtChaseFrame = world.time;
   boardOtChaseId = -1;
   if (!world.oneTimerArmed || !boardPassLoose() || boardOneTimerExpired()) return -1;
   const passer = world.lastPasser !== null ? world.skaters[world.lastPasser] : undefined;
   if (!passer || passer.side !== "home") return -1;
+  const samples = boardRailSamples();
   if (world.lastPassTo !== null) {
     const t = world.skaters[world.lastPassTo];
     if (
@@ -17449,10 +17479,17 @@ function boardOneTimerChaseId(): number {
       t.side === "home" &&
       t.kind !== "goalie" &&
       t.id !== passer.id &&
-      t.id !== world.userId
+      t.id !== world.userId &&
+      samples &&
+      !railPuckGonePast(t, samples)
     ) {
       boardOtChaseId = t.id;
+      return boardOtChaseId;
     }
+  }
+  const wall = boardRailDefense();
+  if (wall && wall.id !== world.userId && cpuCanChase(wall) && samples && !railPuckGonePast(wall, samples)) {
+    boardOtChaseId = wall.id;
     return boardOtChaseId;
   }
   if (selectedRailChaser() >= 0) return -1;
@@ -24558,10 +24595,74 @@ function noteUserPossession(nextOwner: number | null): void {
 }
 
 /**
+ * Home defenseman on the puck's side wall. Null on the end glass, in open ice,
+ * or when this is not a loose board pass. Closest to the travel line wins.
+ * Two within 0.05 m keep the lower id.
+ */
+function boardRailDefense(): Skater | null {
+  if (!boardPassLoose()) return null;
+  const puck = world.puck;
+  const wall = nearestBoards(puck.x, puck.z);
+  if (Math.abs(wall.nz) <= 0.8) return null;
+  const side = Math.sign(puck.z);
+  if (side === 0) return null;
+  const passerId = world.lastPasser;
+  const sp = Math.hypot(puck.vx, puck.vz);
+  let ux = 1;
+  let uz = 0;
+  if (sp > 0.5) {
+    ux = puck.vx / sp;
+    uz = puck.vz / sp;
+  }
+  let best: Skater | null = null;
+  let bestLat = Infinity;
+  for (const s of world.skaters) {
+    if (s.side !== "home" || s.kind !== "defense") continue;
+    if (passerId !== null && s.id === passerId) continue;
+    if (s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) continue;
+    if (defenseLaneSign(s) !== side) continue;
+    const along = (s.x - puck.x) * ux + (s.z - puck.z) * uz;
+    const lat = Math.hypot(s.x - puck.x - ux * along, s.z - puck.z - uz * along);
+    const closer = !best || lat < bestLat - 0.05;
+    const tied = !!best && Math.abs(lat - bestLat) <= 0.05 && s.id < best.id;
+    if (closer || tied) {
+      if (closer) bestLat = lat;
+      best = s;
+    }
+  }
+  return best;
+}
+
+/** Same stick / rail window tryArmedBoardOneTimer already uses. lat is the body gap. */
+function boardOneTimerWindow(
+  s: Skater,
+  puck: Puck,
+  prevX: number,
+  prevZ: number,
+  ux: number,
+  uz: number,
+): { ok: boolean; lat: number } {
+  const blade = stickBlade(s);
+  const distPath = Math.min(
+    Math.hypot(blade.x - puck.x, blade.z - puck.z),
+    segmentPointDist(prevX, prevZ, puck.x, puck.z, blade.x, blade.z),
+  );
+  const along = (s.x - puck.x) * ux + (s.z - puck.z) * uz;
+  const lat = Math.hypot(s.x - puck.x - ux * along, s.z - puck.z - uz * along);
+  const onRail = !!boardRide || nearestBoards(puck.x, puck.z).dist <= 1.6;
+  const latMax = onRail ? 1.9 : SKATER_STICK_LEN;
+  const alongBack = onRail ? s.radius + 0.55 : s.radius + 0.08;
+  const alongFront = onRail ? 2.05 : SKATER_STICK_LEN;
+  const inLane = lat <= latMax && along >= -alongBack && along <= alongFront;
+  return { ok: distPath < 0.55 || inLane, lat };
+}
+
+/**
  * Armed one-timer on a pass already classed as a board pass.
  * Shoot has to be buffered. The shot leaves from the blade with no owner,
  * so the receiver goes into the wrist or slap follow instead of a carry.
- * Pass Snap's named target, when there is one, is the only skater checked.
+ * The named skater keeps the shot when he is in the window. On the rail, if
+ * he is not, the side-wall defenseman in that same window takes it.
  */
 function tryArmedBoardOneTimer(puck: Puck, prevX: number, prevZ: number): boolean {
   if (boardOneTimerExpired()) {
@@ -24604,36 +24705,49 @@ function tryArmedBoardOneTimer(puck: Puck, prevX: number, prevZ: number): boolea
     }
   }
 
-  const named = world.lastPassTo;
+  const namedId = world.lastPassTo;
   const bankOnly = boardPassIntent === "bank" && bankOtFirst >= 0 ? bankOtFirst : null;
+  const onRail = !!boardRide || nearestBoards(puck.x, puck.z).dist <= 1.6;
+  const blocked = (s: Skater) =>
+    s.side !== "home" ||
+    s.kind === "goalie" ||
+    s.id === passer.id ||
+    shootoutBlocksPuckPlay() ||
+    dekeCommitBlocks(s.id) ||
+    s.stun > 0.04 ||
+    s.struck > 0.18 ||
+    s.dive > 0;
   let best: Skater | null = null;
   let bestLat = Infinity;
-  for (const s of world.skaters) {
-    if (s.side !== "home" || s.kind === "goalie" || s.id === passer.id) continue;
-    if (shootoutBlocksPuckPlay()) continue;
-    if (bankOnly !== null) {
-      if (s.id !== bankOnly) continue;
-    } else if (named !== null && s.id !== named) continue;
-    if (dekeCommitBlocks(s.id) || s.stun > 0.04 || s.struck > 0.18 || s.dive > 0) continue;
-    const blade = stickBlade(s);
-    const distPath = Math.min(
-      Math.hypot(blade.x - puck.x, blade.z - puck.z),
-      segmentPointDist(prevX, prevZ, puck.x, puck.z, blade.x, blade.z),
-    );
-    const along = (s.x - puck.x) * ux + (s.z - puck.z) * uz;
-    const lat = Math.hypot(s.x - puck.x - ux * along, s.z - puck.z - uz * along);
-    // On a live rail the catch stands about 1.15 m off the glass, and the
-    // puck arrives a step before it is beside the body. Off the rail the
-    // old stick-length window stays. Neither path re-arms a cleared latch.
-    const onRail = !!boardRide || nearestBoards(puck.x, puck.z).dist <= 1.6;
-    const latMax = onRail ? 1.75 : SKATER_STICK_LEN;
-    const alongBack = onRail ? s.radius + 0.55 : s.radius + 0.08;
-    const alongFront = onRail ? 2.05 : SKATER_STICK_LEN;
-    const inLane = lat <= latMax && along >= -alongBack && along <= alongFront;
-    if (!(distPath < 0.55 || inLane)) continue;
-    if (lat < bestLat) {
-      bestLat = lat;
+  const take = (s: Skater) => {
+    if (blocked(s)) return;
+    const win = boardOneTimerWindow(s, puck, prevX, prevZ, ux, uz);
+    if (!win.ok) return;
+    if (win.lat < bestLat) {
+      bestLat = win.lat;
       best = s;
+    }
+  };
+  if (bankOnly !== null) {
+    const locked = world.skaters[bankOnly];
+    if (locked) take(locked);
+  } else {
+    const named = namedId !== null ? world.skaters[namedId] : undefined;
+    if (named && !blocked(named) && boardOneTimerWindow(named, puck, prevX, prevZ, ux, uz).ok) {
+      take(named);
+    } else if (onRail) {
+      const wall = boardRailDefense();
+      if (wall && !blocked(wall) && boardOneTimerWindow(wall, puck, prevX, prevZ, ux, uz).ok) {
+        take(wall);
+      } else if (namedId !== null) {
+        if (named) take(named);
+      } else {
+        for (const s of world.skaters) take(s);
+      }
+    } else if (namedId !== null) {
+      if (named) take(named);
+    } else {
+      for (const s of world.skaters) take(s);
     }
   }
   if (!best) return false;
@@ -24877,7 +24991,7 @@ function settleBankOneTimerReceiver(puck: Puck, prevX: number, prevZ: number): b
     }
   }
   const nearWall = nearestBoards(puck.x, puck.z).dist <= 2.2;
-  if (!meet && yOk && nearWall && lat <= 1.75 && along >= -(s.radius + 0.55) && along <= 2.05) {
+  if (!meet && yOk && nearWall && lat <= 1.9 && along >= -(s.radius + 0.55) && along <= 2.05) {
     meet = true;
   }
   if (meet) {
@@ -25167,6 +25281,18 @@ function armedShootBlocksCatch(s: Skater, puck: Puck, prevX: number, prevZ: numb
   if (puck.y >= 0.55) return true;
   const bodyD = Math.hypot(s.x - puck.x, s.z - puck.z);
   const bodyPath = Math.min(bodyD, segmentPointDist(prevX, prevZ, puck.x, puck.z, s.x, s.z));
+  // The rail shot already had its turn. A named receiver, or the side-wall
+  // defenseman, can still take the existing 1.25 m board-body catch.
+  const wallD = boardRailDefense();
+  if (
+    (wallD?.id === s.id || world.lastPassTo === s.id) &&
+    boardPassLoose() &&
+    onWall &&
+    bodyPath <= 1.25 &&
+    puck.y < 0.5
+  ) {
+    return false;
+  }
   // 0.55 m is the fast-pass stick cap. Faster than 16 m/s does not glue on.
   if (bodyPath > 0.55) return true;
   if (Math.hypot(puck.vx - s.vx, puck.vz - s.vz) > 16) return true;

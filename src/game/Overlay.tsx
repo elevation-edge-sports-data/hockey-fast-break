@@ -454,7 +454,7 @@ function downloadReplayRange(): void {
   const link = document.createElement("a");
   const last = data[data.length - 1]!;
   link.href = url;
-  link.download = `replay-${data[0]!.frame}-${last.frame}.json`;
+  link.download = `hockey-replay-${data[0]!.frame}-${last.frame}.json`;
   link.click();
   URL.revokeObjectURL(url);
 }

@@ -3,9 +3,9 @@ export function formationDownloadBody(data: unknown): string {
   return JSON.stringify(data, null, 2) + "\n";
 }
 
-/** `replay-frame-1107.json` for frame 1107. The in-game lock uses this name. */
+/** `hockey-frame-1107.json` for frame 1107. The in-game lock uses this name. */
 export function formationDownloadName(frame: number): string {
-  return `replay-frame-${frame}.json`;
+  return `hockey-frame-${frame}.json`;
 }
 
 function saveBlob(body: string, filename: string): void {

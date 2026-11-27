@@ -878,7 +878,7 @@ test("locked-frame download keeps original and adjusted, matching the in-game re
   shot.userId = 1;
   const body = formationDownloadBody(shot);
   assert.equal(body, JSON.stringify(shot, null, 2) + "\n");
-  assert.equal(formationDownloadName(shot.frame), "replay-frame-1107.json");
+  assert.equal(formationDownloadName(shot.frame), "hockey-frame-1107.json");
   const parsed = JSON.parse(body);
   assert.equal(parsed.original.players[0].x, shot.original.players[0].x);
   assert.equal(parsed.adjusted.players[0].x, shot.adjusted.players[0].x);

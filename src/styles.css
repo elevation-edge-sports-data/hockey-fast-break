@@ -146,6 +146,28 @@
   pointer-events: auto;
 }
 
+.shell.is-cursor-idle,
+.shell.is-cursor-idle .rink-canvas {
+  cursor: none;
+}
+
+/* Keep normal cursors on interactive HUD controls even when idle */
+.shell.is-cursor-idle .hud button,
+.shell.is-cursor-idle .hud input,
+.shell.is-cursor-idle .hud .stick,
+.shell.is-cursor-idle .hud .burst,
+.shell.is-cursor-idle .hud .dump,
+.shell.is-cursor-idle .hud .pass,
+.shell.is-cursor-idle .hud .face-pad,
+.shell.is-cursor-idle .hud .stepper,
+.shell.is-cursor-idle .hud .lineup-strip,
+.shell.is-cursor-idle .hud .cam-pop,
+.shell.is-cursor-idle .hud .cam-adjust,
+.shell.is-cursor-idle .aim-compass,
+.shell.is-cursor-idle [role="button"] {
+  cursor: pointer;
+}
+
 .lab-versions {
   position: fixed;
   top: max(8px, env(safe-area-inset-top, 0px));

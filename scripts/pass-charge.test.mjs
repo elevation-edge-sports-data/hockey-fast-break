@@ -2153,10 +2153,13 @@ test("clamp toggles default on, persist, and off skips that clamp", () => {
   assert.ok(open > 1.9 && open < 2.25, `board sauce crest ${open.toFixed(2)}`);
   assert.ok(Math.abs(open - capped) < 0.08, `sauce board clamp off ${open.toFixed(2)} on ${capped.toFixed(2)}`);
 
-  function lengthVy(cap) {
+  function lengthFlight(cap) {
     fresh();
-    useGame.getState().setClockMode("game");
-    useGame.getState().setCapLengthClearVy(cap);
+    const ui = useGame.getState();
+    ui.setClockMode("game");
+    ui.setHomeLineup({ g: 1, d: 2, o: 3 });
+    ui.setAwayLineup({ g: 1, d: 2, o: 3 });
+    ui.setCapLengthClearVy(cap);
     resetWorld();
     world.homeAttack = 1;
     resetWorld({ keepScore: true });
@@ -2168,7 +2171,7 @@ test("clamp toggles default on, persist, and off skips that clamp", () => {
     assert.ok(g);
     world.userId = g.id;
     parkOthers();
-    g.x = 0;
+    g.x = -GOAL_LINE_X + 2.2;
     g.z = 0;
     g.vx = 0;
     g.vz = 0;
@@ -2180,25 +2183,60 @@ test("clamp toggles default on, persist, and off skips that clamp", () => {
     world.puck.x = g.x;
     world.puck.z = g.z;
     world.puck.y = 0.042;
+    world.puck.vx = 0;
+    world.puck.vz = 0;
     world.puck.vy = 0;
     world.lastShoot = -10;
     world.lastPass = -10;
+    world.shotWindupT = 0;
+    world.windupCancel = false;
     setInjectedAim(0, 0);
     const real = Math.random;
     Math.random = () => 0.2;
     try {
       setInjectedKeys(["KeyF"]);
       step(1);
+      world.userId = g.id;
+      world.shotWindupT = 1.5;
+      g.x = -GOAL_LINE_X + 2.2;
+      g.z = 0;
+      g.vx = 0;
+      g.vz = 0;
+      g.yaw = -Math.PI / 2;
+      g.stun = 0;
+      g.coverPose = 0;
+      world.coverT = 1;
+      world.puck.owner = g.id;
+      world.puck.x = g.x;
+      world.puck.z = g.z;
+      world.puck.y = 0.042;
+      world.puck.vx = 0;
+      world.puck.vz = 0;
+      world.puck.vy = 0;
+      world.lastShoot = -10;
+      parkOthers();
       setInjectedKeys([]);
       step(1);
+      const vy = world.puck.vy;
+      let peak = world.puck.y;
+      let iceBefore = false;
+      for (let i = 0; i < 240; i++) {
+        step(1);
+        if (world.puck.y > peak) peak = world.puck.y;
+        if (world.puck.y <= 0.05 && world.puck.x < GOAL_LINE_X) iceBefore = true;
+        if (iceBefore || world.puck.x >= GOAL_LINE_X) break;
+      }
+      return { vy, peak, iceBefore };
     } finally {
       Math.random = real;
     }
-    return world.puck.vy;
   }
-  const low = lengthVy(true);
-  const high = lengthVy(false);
-  assert.ok(high > low + 0.3, `capLengthClearVy off ${high.toFixed(2)} on ${low.toFixed(2)}`);
+  const low = lengthFlight(true);
+  const high = lengthFlight(false);
+  assert.equal(high.vy, low.vy, `capLengthClearVy off ${high.vy.toFixed(2)} on ${low.vy.toFixed(2)}`);
+  assert.ok(high.vy > 2 && low.vy > 2, `length vy off ${high.vy.toFixed(2)} on ${low.vy.toFixed(2)}`);
+  assert.ok(high.peak < 3 && low.peak < 3, `peak off ${high.peak.toFixed(2)} on ${low.peak.toFixed(2)}`);
+  assert.ok(high.iceBefore && low.iceBefore, "full-charge length shot stays on the ice before the far goal line");
 
   useGame.getState().setCapLengthClearVy(true);
   useGame.getState().setHoldLobInFront(true);

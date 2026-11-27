@@ -43,7 +43,7 @@ const store = await server.ssrLoadModule("/src/game/store.ts");
 const input = await server.ssrLoadModule("/src/game/input.ts");
 const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 
-const { resetWorld, stepSim, world, setBoardPassIntent } = sim;
+const { resetWorld, stepSim, world, setBoardPassIntent, boardOneTimerChaseId } = sim;
 const { inferNamedPose } = poses;
 const { useGame } = store;
 const { setInjectedKeys } = input;
@@ -157,14 +157,32 @@ test("the same lane does not catch the puck when shoot is not buffered", () => {
   assert.notEqual(world.lastShooter, receiver.id);
 });
 
-test("pass snap keeps the shot on the named target", () => {
-  const receiver = world.skaters.find((s) => s.side === "home" && s.kind === "defense");
+test("a named skater inside the rail window keeps the shot", () => {
+  const defs = world.skaters
+    .filter((s) => s.side === "home" && s.kind === "defense")
+    .sort((a, b) => a.id - b.id);
+  const wall = defs[0];
   const wings = world.skaters.filter((s) => s.side === "home" && s.kind === "winger");
-  placeRail(receiver, true, wings[1].id);
+  const named = wings[1];
+  placeRail(wall, true, named.id);
+  // The user is not steered, so the named skater stays in the window.
+  // He is the wider body. A closest-lateral rule would pick the defenseman.
+  world.userId = named.id;
+  named.x = -8.9;
+  named.z = 11.4;
+  named.vx = 0;
+  named.vz = 0;
+  named.stun = 0;
+  named.struck = 0;
+  named.dive = 0;
+  named.yaw = 0;
+  wall.x = -10.2;
+  wall.z = 11.9;
   step(1);
-  assert.equal(world.lastShotOneTimer, false);
   assert.equal(world.puck.owner, null);
-  assert.notEqual(world.lastShooter, receiver.id);
+  assert.equal(world.lastShotOneTimer, true);
+  assert.equal(world.lastShooter, named.id);
+  assert.notEqual(world.lastShooter, wall.id);
 });
 
 test("a shoot press from the approach still fires after the tape clock", () => {
@@ -1001,4 +1019,215 @@ test("pressing X again after a missed bank one-timer arms the next teammate", ()
   assert.equal(world.lastShotOneTimer, true);
   assert.equal(world.lastShooter, later.id);
   assert.equal(world.puck.owner, null);
+});
+
+function homeDefs() {
+  return world.skaters
+    .filter((s) => s.side === "home" && s.kind === "defense")
+    .sort((a, b) => a.id - b.id);
+}
+
+function homeWings() {
+  return world.skaters.filter((s) => s.side === "home" && s.kind === "winger");
+}
+
+/** Puck on the +z glass. Passer and the other skaters start out of the lane. */
+function armSideWall(puck, armed = true) {
+  const wings = homeWings();
+  const passer = wings[0];
+  const named = wings[1];
+  world.userId = passer.id;
+  for (const s of world.skaters) {
+    if (s.id === passer.id) continue;
+    s.x = -40 - s.id;
+    s.z = 0;
+    s.vx = 0;
+    s.vz = 0;
+    s.stun = 0;
+    s.struck = 0;
+    s.dive = 0;
+    s.windup = 0;
+    s.follow = 0;
+  }
+  passer.x = -40;
+  passer.z = 0;
+  passer.vx = 0;
+  passer.vz = 0;
+  world.puck.owner = null;
+  world.puck.x = puck.x;
+  world.puck.z = puck.z;
+  world.puck.y = 0.042;
+  world.puck.vx = puck.vx;
+  world.puck.vz = puck.vz ?? 0;
+  world.puck.vy = 0;
+  world.lastPass = world.time - 0.35;
+  world.lastPasser = passer.id;
+  world.lastPassTo = named.id;
+  world.lastPassX = puck.x - Math.sign(puck.vx || 1) * 8;
+  world.lastPassZ = puck.z;
+  world.lastShoot = -10;
+  world.lastShotOneTimer = false;
+  world.lastShotKind = null;
+  world.lastShooter = null;
+  world.goalieSaveT = -10;
+  world.lastHitTime = -10;
+  world.oneTimerArmed = armed;
+  world.oneTimerSlap = false;
+  world.oneTimerPass = false;
+  world.oneTimerSaucer = false;
+  world.oneTimerUntil = world.time + 2;
+  return { passer, named };
+}
+
+test("a defenseman in the rail window shoots when the named skater is off it", () => {
+  fresh();
+  const { named } = armSideWall({ x: -10, z: 12.79, vx: 22 });
+  const wall = homeDefs()[0];
+  named.x = 30;
+  named.z = 0;
+  wall.x = -9.2;
+  wall.z = 11.57;
+  wall.yaw = 0;
+  step(1);
+  assert.equal(world.puck.owner, null);
+  assert.equal(world.lastShotOneTimer, true);
+  assert.equal(world.lastShooter, wall.id);
+  assert.notEqual(world.lastShooter, named.id);
+});
+
+test("replay shape: +z glass, puck moving -x, the on-wall defenseman one-times", () => {
+  fresh();
+  world.homeAttack = 1;
+  const { named } = armSideWall({ x: 10, z: 12.79, vx: -22 });
+  const onWall = world.skaters.find((s) => s.id === 2);
+  const far = world.skaters.find((s) => s.id === 1);
+  named.x = 40;
+  named.z = 0;
+  onWall.x = 9.33;
+  onWall.z = 11.47;
+  onWall.yaw = 0;
+  onWall.vx = 0;
+  onWall.vz = 0;
+  far.x = 9.33;
+  far.z = -11.47;
+  far.yaw = 0;
+  far.vx = 0;
+  far.vz = 0;
+  step(1);
+  assert.equal(world.puck.owner, null);
+  assert.equal(world.lastShotOneTimer, true);
+  assert.equal(world.lastShooter, onWall.id);
+  assert.notEqual(world.lastShooter, far.id);
+  assert.equal(boardOneTimerChaseId(), onWall.id);
+});
+
+test("the far-wall defenseman does not take a near-wall one-timer", () => {
+  fresh();
+  const { named } = armSideWall({ x: 10, z: 12.79, vx: -22 });
+  const near = homeDefs()[0];
+  const far = homeDefs()[1];
+  named.x = 40;
+  named.z = 0;
+  near.x = -40;
+  near.z = 0;
+  far.x = 9.33;
+  far.z = 11.47;
+  far.yaw = 0;
+  step(1);
+  assert.equal(world.lastShotOneTimer, false);
+  assert.notEqual(world.lastShooter, far.id);
+  assert.notEqual(boardOneTimerChaseId(), far.id);
+});
+
+test("a bank lock still ignores the wall defenseman", () => {
+  fresh();
+  const wings = homeWings();
+  const first = wings[1];
+  const named = wings[2];
+  const wall = homeDefs()[0];
+  armSideWall({ x: -10, z: 12.79, vx: 22 });
+  world.lastPassTo = named.id;
+  named.x = 30;
+  named.z = 0;
+  first.x = -9.5;
+  first.z = 12.4;
+  first.yaw = -Math.PI / 2;
+  first.vx = 0;
+  first.vz = 0;
+  first.stun = 0;
+  first.dive = 0;
+  wall.x = -9.3;
+  wall.z = 11.6;
+  wall.yaw = 0;
+  setBoardPassIntent("bank");
+  step(1);
+  assert.equal(world.lastShotOneTimer, true);
+  assert.equal(world.lastShooter, first.id);
+  assert.notEqual(world.lastShooter, wall.id);
+  assert.equal(world.puck.owner, null);
+});
+
+test("an unarmed or off-wall puck does not send the wall defenseman", () => {
+  fresh();
+  const wall = homeDefs()[0];
+  armSideWall({ x: -10, z: 12.79, vx: 22 }, false);
+  wall.x = -9.2;
+  wall.z = 11.57;
+  step(1);
+  assert.equal(world.lastShotOneTimer, false);
+  assert.equal(boardOneTimerChaseId(), -1);
+
+  fresh();
+  armSideWall({ x: 0, z: 0, vx: 12 });
+  const again = homeDefs()[0];
+  again.x = 8;
+  again.z = 6;
+  step(1);
+  assert.equal(world.lastShotOneTimer, false);
+  assert.equal(boardOneTimerChaseId(), -1);
+});
+
+test("naming the wall defenseman still one-times him", () => {
+  fresh();
+  const wall = homeDefs()[0];
+  placeRail(wall, true, wall.id);
+  step(1);
+  assert.equal(world.puck.owner, null);
+  assert.equal(world.lastShotOneTimer, true);
+  assert.equal(world.lastShooter, wall.id);
+});
+
+test("a 1.1 m miss becomes a catch, then the armed one-timer fires", () => {
+  fresh();
+  const wall = homeDefs()[0];
+  const { named } = armSideWall({ x: 10, z: 12.79, vx: -15 });
+  named.x = 40;
+  named.z = 0;
+  wall.x = 10.8;
+  wall.z = 12.59;
+  wall.yaw = 0;
+  wall.vx = 0;
+  wall.vz = 0;
+  step(1);
+  assert.equal(world.lastShotOneTimer, false);
+  assert.equal(world.puck.owner, wall.id);
+  assert.equal(world.oneTimerArmed, true);
+  step(1);
+  assert.equal(world.lastShotOneTimer, true);
+  assert.equal(world.lastShooter, wall.id);
+});
+
+test("a 1.37 m rail gap shoots and does not claim the puck", () => {
+  fresh();
+  const wall = homeDefs()[0];
+  const { named } = armSideWall({ x: 10, z: 12.79, vx: -22 });
+  named.x = 40;
+  named.z = 0;
+  wall.x = 9.33;
+  wall.z = 11.47;
+  wall.yaw = 0;
+  step(1);
+  assert.equal(world.puck.owner, null);
+  assert.equal(world.lastShotOneTimer, true);
+  assert.equal(world.lastShooter, wall.id);
 });
