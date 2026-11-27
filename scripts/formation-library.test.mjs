@@ -84,7 +84,7 @@ const { gameSpeedRate } = store;
 const mark = await server.ssrLoadModule("/src/game/iceMark.ts");
 const rinkGeom = await server.ssrLoadModule("/src/game/rink.ts");
 const iceGrid = await server.ssrLoadModule("/src/game/iceGrid.ts");
-const { world } = sim;
+const { world, strideFromTravel } = sim;
 const poses = await server.ssrLoadModule("/src/game/poseOverrideInfer.ts");
 const { inferNamedPose } = poses;
 
@@ -285,8 +285,10 @@ test("a recorded pose is shown, and an older frame without one still parses", ()
     const next = structuredClone(parsed[0]);
     next.frame = 13;
     next.adjusted.players[0] = { ...next.adjusted.players[0], pose: "goalieMid" };
-    const mid = sampleReplay([parsed[0], next], 0.5);
-    assert.equal(mid.players[0].pose, "goaliePlayPuck1");
+    const early = sampleReplay([parsed[0], next], 0.25);
+    assert.equal(early.players[0].pose, "goaliePlayPuck1");
+    const late = sampleReplay([parsed[0], next], 0.75);
+    assert.equal(late.players[0].pose, "goalieMid");
     const landed = sampleReplay([parsed[0], next], 1);
     assert.equal(landed.players[0].pose, "goalieMid");
     applyReplayPose(landed.players, landed.puck);
@@ -302,6 +304,45 @@ test("a recorded pose is shown, and an older frame without one still parses", ()
   }
   const goalie = world.skaters.find((s) => s.kind === "goalie");
   if (goalie) assert.notEqual(inferNamedPose(goalie, goalie.id), "goaliePlayPuck1");
+});
+
+test("a recorded stride parses, lerps, and is written onto the skater", () => {
+  const start = structuredClone(frame);
+  start.adjusted.players[0] = { ...start.adjusted.players[0], pose: "puckPossess1", stride: 1 };
+  const parsed = parseFormationJson(JSON.stringify(start));
+  assert.equal(parsed[0].adjusted.players[0].stride, 1);
+  const next = structuredClone(parsed[0]);
+  next.frame = 13;
+  next.adjusted.players[0] = { ...next.adjusted.players[0], stride: 3, x: next.adjusted.players[0].x + 4 };
+  const mid = sampleReplay([parsed[0], next], 0.5);
+  assert.ok(Math.abs(mid.players[0].stride - 2) < 1e-9);
+  const release = mountFormation(parsed[0].adjusted);
+  try {
+    const mounted = world.skaters.find((s) => s.id === start.adjusted.players[0].id);
+    assert.equal(mounted.stride, 1);
+    applyReplayPose(mid.players, mid.puck);
+    assert.ok(Math.abs(mounted.stride - 2) < 1e-9);
+  } finally {
+    release();
+  }
+});
+
+test("a possess pose without stride uses distance times the stride rate", () => {
+  const start = structuredClone(frame);
+  start.adjusted.players[0] = { ...start.adjusted.players[0], pose: "puckPossess1" };
+  delete start.adjusted.players[0].stride;
+  const next = structuredClone(start);
+  next.frame = 13;
+  next.adjusted.players[0] = {
+    ...next.adjusted.players[0],
+    x: start.adjusted.players[0].x + 3,
+    z: start.adjusted.players[0].z + 4,
+  };
+  const half = sampleReplay([start, next], 0.5);
+  const end = sampleReplay([start, next], 1);
+  assert.ok(Math.abs(half.players[0].stride - strideFromTravel(2.5)) < 1e-9);
+  assert.ok(Math.abs(end.players[0].stride - 5 * 2.35) < 1e-9);
+  assert.equal(end.players[0].stride, strideFromTravel(5));
 });
 
 test("a control id is kept when it is numeric and ignored when it is not", () => {
@@ -786,7 +827,7 @@ test("replay playback uses the in-game game-speed clock and the formation save l
   assert.match(replay, /formation-repo/);
   assert.match(overlay, /className="play-top"/);
   assert.match(overlay, /Elevation Edge Sports Data/);
-  assert.match(overlay, /Hockey Fast Break \(V4\)/);
+  assert.match(overlay, /Hockey Fast Break \(V5\)/);
   assert.match(
     overlay,
     /\{\(playing && !paused\) \|\| replay \? null : hudReady \? \(\s*<>\s*<span className="play-gap" aria-hidden="true" \/>\s*<FormationKits \/>/,

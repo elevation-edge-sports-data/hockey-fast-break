@@ -327,6 +327,12 @@ export function FormationMarkDriver({
       yMoved.current = false;
     }
     yHeld.current = yDown;
+    if (Math.hypot(act.aimX, act.aimY) > MARK_STICK_GATE) {
+      aimCamera();
+      const turned = orbitStick(orbit.current.theta, orbit.current.phi, act.aimX, act.aimY, dt);
+      orbit.current.theta = turned.theta;
+      orbit.current.phi = turned.phi;
+    }
     const cursor = mark.current;
     if (!sameLock(boundLock.current, cursor.lock)) {
       closeFormGesture(hist.current);

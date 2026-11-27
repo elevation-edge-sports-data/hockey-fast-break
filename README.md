@@ -80,7 +80,7 @@ The home crowd and the ribbons use the home kit. The away crowd sits in an upper
 
 HUD: YOU–CPU (or drill score), clock in Drill and Game, shot speed, puck status.
 
-Archive links to playable v0-v3, and this build (v4).
+Archive links to playable v0-v4, and this build (v5).
 
 ## Pose tools
 

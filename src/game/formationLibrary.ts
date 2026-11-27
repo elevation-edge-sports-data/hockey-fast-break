@@ -1,6 +1,6 @@
 import { lerpAngle } from "./iceMark";
 import { GOAL_LINE_X, RINK_L } from "./rink";
-import { setMountedFormationPoses, world, type Skater, type SkaterKind } from "./sim";
+import { setMountedFormationPoses, strideFromTravel, world, type Skater, type SkaterKind } from "./sim";
 
 export type FormationPlayer = {
   index: number;
@@ -16,6 +16,8 @@ export type FormationPlayer = {
   number?: number;
   /** Named pose sampled in gameplay. Absent on older downloads, which still infer one. */
   pose?: string | null;
+  /** Stride phase in radians. Absent on older downloads. */
+  stride?: number;
 };
 
 export type FormationSide = {
@@ -130,6 +132,7 @@ function asPlayer(v: unknown): FormationPlayer | null {
   const kind = optionalKind(p.kind);
   const jersey = p.number == null ? undefined : num(p.number);
   const pose = optionalPose(p.pose);
+  const stride = optionalNum(p.stride);
   if (index === null || id === null || x === null || z === null || yaw === null) return null;
   if (side === null || kind === null || jersey === null || pose === false) return null;
   return {
@@ -142,6 +145,7 @@ function asPlayer(v: unknown): FormationPlayer | null {
     ...(kind !== undefined ? { kind } : {}),
     ...(jersey !== undefined ? { number: jersey } : {}),
     ...(pose !== undefined ? { pose } : {}),
+    ...(stride !== undefined ? { stride } : {}),
   };
 }
 
@@ -546,7 +550,7 @@ function stillSkater(p: FormationPlayer, side: "home" | "away", kind: SkaterKind
     vx: 0,
     vz: 0,
     yaw: p.yaw,
-    stride: 0,
+    stride: p.stride ?? 0,
     lean: 0,
     bank: 0,
     radius: kind === "goalie" ? 0.58 : 0.42,
@@ -823,6 +827,47 @@ function lerpNum(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
+function possessPose(pose: string | null | undefined): boolean {
+  return typeof pose === "string" && pose.startsWith("puckPossess");
+}
+
+/** Path length of this id from the first adjusted frame through `cursor`. */
+function travelSinceStart(frames: readonly FormationFrame[], id: number, cursor: number): number {
+  const last = Math.max(0, frames.length - 1);
+  const u = Math.max(0, Math.min(last, cursor));
+  const i0 = Math.floor(u);
+  const t = i0 >= last ? 0 : u - i0;
+  const at = (i: number) => frames[i]?.adjusted.players.find((row) => row.id === id);
+  let dist = 0;
+  let prev = at(0);
+  for (let i = 1; i <= i0; i++) {
+    const cur = at(i);
+    if (prev && cur) dist += Math.hypot(cur.x - prev.x, cur.z - prev.z);
+    if (cur) prev = cur;
+  }
+  if (t > 0 && i0 < last) {
+    const cur = at(i0);
+    const next = at(i0 + 1);
+    if (cur && next) dist += Math.hypot(next.x - cur.x, next.z - cur.z) * t;
+  }
+  return dist;
+}
+
+function replayStride(
+  frames: readonly FormationFrame[],
+  p: FormationPlayer,
+  q: FormationPlayer,
+  pose: string | null | undefined,
+  cursor: number,
+  t: number,
+): number | undefined {
+  if (p.stride !== undefined && q.stride !== undefined) return lerpNum(p.stride, q.stride, t);
+  if (p.stride !== undefined) return p.stride;
+  if (q.stride !== undefined) return q.stride;
+  if (!possessPose(pose)) return undefined;
+  return strideFromTravel(travelSinceStart(frames, p.id, cursor));
+}
+
 export type ReplaySample = {
   players: FormationPlayer[];
   puck: FormationSide["puck"];
@@ -844,6 +889,9 @@ export function sampleReplay(frames: readonly FormationFrame[], cursor: number):
     const side = p.side ?? q.side;
     const kind = p.kind ?? q.kind;
     const number = p.number ?? q.number;
+    const pose =
+      t > 0.5 && q.pose !== undefined ? q.pose : p.pose !== undefined ? p.pose : q.pose;
+    const stride = replayStride(frames, p, q, pose, u, t);
     return {
       index: p.index,
       id: p.id,
@@ -853,7 +901,8 @@ export function sampleReplay(frames: readonly FormationFrame[], cursor: number):
       ...(side ? { side } : {}),
       ...(kind ? { kind } : {}),
       ...(number !== undefined ? { number } : {}),
-      ...(p.pose !== undefined ? { pose: p.pose } : q.pose !== undefined ? { pose: q.pose } : {}),
+      ...(pose !== undefined ? { pose } : {}),
+      ...(stride !== undefined ? { stride } : {}),
     };
   });
   const ap = a.adjusted.puck;
@@ -907,6 +956,7 @@ export function applyReplayPose(players: readonly FormationPlayer[], puck: Forma
     skater.x = player.x;
     skater.z = player.z;
     skater.yaw = player.yaw;
+    if (player.stride !== undefined) skater.stride = player.stride;
     if (player.side) skater.side = player.side;
     if (player.kind) {
       skater.kind = player.kind;

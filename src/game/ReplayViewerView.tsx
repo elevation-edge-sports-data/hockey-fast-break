@@ -292,16 +292,21 @@ function ReplayDriver({
           orbit.current.phi = turned.phi;
         }
       }
+      if (Math.hypot(act.aimX, act.aimY) > MARK_STICK_GATE) {
+        armOrbit();
+        const turned = orbitStick(orbit.current.theta, orbit.current.phi, act.aimX, act.aimY, dt);
+        orbit.current.theta = turned.theta;
+        orbit.current.phi = turned.phi;
+      }
       const yTap = !yDown && yHeld.current && !yMoved.current;
       if (!yDown) yMoved.current = false;
       yHeld.current = yDown;
       const live = !yDown && Math.hypot(act.stickX, act.stickY) > MARK_STICK_GATE;
-      const aimLive = Math.hypot(act.aimX, act.aimY) > MARK_STICK_GATE;
       const step = iceBasisStep(
         dt,
         viewRadius.current,
-        (typing ? 0 : act.arrowX) + (live ? act.stickX : 0) + (aimLive ? act.aimX : 0),
-        (typing ? 0 : act.arrowY) + (live ? act.stickY : 0) + (aimLive ? act.aimY : 0),
+        (typing ? 0 : act.arrowX) + (live ? act.stickX : 0),
+        (typing ? 0 : act.arrowY) + (live ? act.stickY : 0),
         basis.current,
       );
       const cursor = mark.current;

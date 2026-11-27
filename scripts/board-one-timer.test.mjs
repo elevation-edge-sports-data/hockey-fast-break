@@ -258,7 +258,7 @@ test("a named center one-times when the puck passes under him", () => {
   assert.equal(inferNamedPose(center, center.id), "wristFollow");
 });
 
-test("a puck in the body is caught while a one-timer is armed", () => {
+test("a puck in the body is a one-timer while the shot is armed", () => {
   const passer = world.skaters.find((s) => s.side === "home" && s.kind === "defense");
   const other = world.skaters.find((s) => s.side === "home" && s.kind === "winger");
   const close = world.skaters.filter((s) => s.side === "home" && s.kind === "winger")[1];
@@ -295,8 +295,10 @@ test("a puck in the body is caught while a one-timer is armed", () => {
   world.oneTimerArmed = true;
   world.oneTimerSlap = false;
   step(1);
-  assert.equal(world.lastShotOneTimer, false);
-  assert.equal(world.puck.owner, close.id);
+  assert.equal(world.lastShotOneTimer, true);
+  assert.equal(world.lastShooter, close.id);
+  assert.equal(world.puck.owner, null);
+  assert.equal(world.oneTimerArmed, false);
 });
 
 test("a fast puck through a non-target does not stick", () => {
@@ -593,7 +595,7 @@ test("an open-ice one-timer stays armed while the puck is still approaching", ()
   assert.equal(world.oneTimerUntil, until);
 });
 
-test("a missed open-ice one-timer is a normal catch for the next teammate", () => {
+test("a missed open-ice one-timer is a shot for the next teammate who reaches it", () => {
   fresh();
   const passer = world.skaters.find((s) => s.side === "home" && s.kind === "defense");
   const named = world.skaters.find((s) => s.side === "home" && s.kind === "winger");
@@ -635,13 +637,10 @@ test("a missed open-ice one-timer is a normal catch for the next teammate", () =
   world.oneTimerSaucer = false;
   world.oneTimerUntil = world.time + 1.5;
   step(1);
-  assert.equal(world.lastShotOneTimer, false);
+  assert.equal(world.lastShotOneTimer, true);
+  assert.equal(world.lastShooter, next.id);
+  assert.equal(world.puck.owner, null);
   assert.equal(world.oneTimerArmed, false);
-  assert.equal(world.oneTimerSlap, false);
-  assert.equal(world.oneTimerPass, false);
-  assert.equal(world.oneTimerSaucer, false);
-  assert.equal(world.oneTimerUntil, -10);
-  assert.equal(world.puck.owner, next.id);
 });
 
 test("pressing X again after an open-ice miss re-arms the one-timer", () => {
@@ -707,6 +706,64 @@ test("pressing X again after an open-ice miss re-arms the one-timer", () => {
   assert.equal(world.lastShotOneTimer, true);
   assert.equal(world.lastShooter, named.id);
   assert.equal(world.puck.owner, null);
+});
+
+test("the second teammate one-times after the first misses the lane", () => {
+  fresh();
+  const passer = world.skaters.find((s) => s.side === "home" && s.kind === "defense");
+  const first = world.skaters.find((s) => s.side === "home" && s.kind === "winger");
+  const second = world.skaters.filter((s) => s.side === "home" && s.kind === "winger")[1];
+  parkExcept(second.id);
+  passer.x = -40;
+  passer.z = 0;
+  first.x = -1.6;
+  first.z = 1.35;
+  first.yaw = -Math.PI / 2;
+  first.vx = 0;
+  first.vz = 0;
+  first.follow = 0;
+  first.windup = 0;
+  first.stun = 0;
+  first.struck = 0;
+  first.dive = 0;
+  second.x = 0.2;
+  second.z = 1.05;
+  second.yaw = -Math.PI / 2;
+  second.vx = 0;
+  second.vz = 0;
+  second.follow = 0;
+  second.windup = 0;
+  second.stun = 0;
+  second.struck = 0;
+  second.dive = 0;
+  world.userId = passer.id;
+  world.puck.owner = null;
+  world.puck.x = 0;
+  world.puck.z = 0;
+  world.puck.y = 0.042;
+  world.puck.vx = 18;
+  world.puck.vz = 0;
+  world.puck.vy = 0;
+  world.lastPass = world.time - 0.4;
+  world.lastPasser = passer.id;
+  world.lastPassTo = first.id;
+  world.lastPassX = -12;
+  world.lastPassZ = 0;
+  world.lastShoot = -10;
+  world.lastShotOneTimer = false;
+  world.lastShooter = null;
+  world.goalieSaveT = -10;
+  world.lastHitTime = -10;
+  world.oneTimerArmed = true;
+  world.oneTimerSlap = false;
+  world.oneTimerPass = false;
+  world.oneTimerSaucer = false;
+  world.oneTimerUntil = world.time + 1.5;
+  step(1);
+  assert.equal(world.lastShotOneTimer, true);
+  assert.equal(world.lastShooter, second.id);
+  assert.equal(world.puck.owner, null);
+  assert.notEqual(world.lastShooter, first.id);
 });
 
 test("a bank one-timer goes to the first teammate the puck reaches", () => {

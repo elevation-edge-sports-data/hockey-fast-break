@@ -1939,7 +1939,7 @@ export function Overlay() {
         <span className={`play-gap${(playing && !paused) || !hudReady ? " is-fixed" : ""}`} aria-hidden="true" />
         <div className="play-top-title">
           <p className="eyebrow">Elevation Edge Sports Data</p>
-          <h1>Hockey Fast Break (V4)</h1>
+          <h1>Hockey Fast Break (V5)</h1>
         </div>
         {hudReady ? (
           <>

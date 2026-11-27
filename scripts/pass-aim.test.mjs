@@ -287,6 +287,38 @@ test("pass lock off keeps the aimed angle", () => {
   assert.equal(world.lastPassTo, mate.id);
 });
 
+test("pass lock off names the teammate on the aim, not the nearer body off it", () => {
+  fresh("classic", "roller");
+  useGame.getState().setPassLock(false);
+  let near;
+  let far;
+  releaseAt([0, 0, 1, 0], () => {
+    const mates = world.skaters.filter(
+      (s) => s.side === "home" && s.id !== world.userId && s.kind !== "goalie",
+    );
+    assert.ok(mates.length >= 2);
+    near = mates[0];
+    far = mates[1];
+    near.x = 5;
+    near.z = 3;
+    near.vx = 0;
+    near.vz = 0;
+    far.x = 0.3;
+    far.z = 10;
+    far.vx = 0;
+    far.vz = 0;
+    for (const o of world.skaters) {
+      if (o.id === user().id || o.id === near.id || o.id === far.id) continue;
+      o.x = -45;
+      o.z = 0;
+      o.vx = 0;
+      o.vz = 0;
+    }
+  });
+  assertAlong("z");
+  assert.equal(world.lastPassTo, far.id);
+});
+
 test("pass lock off keeps the aim and still names the lane mate", () => {
   fresh("classic", "roller");
   useGame.getState().setIgnoreAutoFind(true);

@@ -60,7 +60,8 @@ ${css}
       <a href="archive/v1/index.html">v1</a>
       <a href="archive/v2/index.html">v2</a>
       <a href="archive/v3/index.html">v3</a>
-      <span aria-current="page">v4</span>
+      <a href="archive/v4/index.html">v4</a>
+      <span aria-current="page">v5</span>
     </div>
   </nav>
   <div id="app"></div>
